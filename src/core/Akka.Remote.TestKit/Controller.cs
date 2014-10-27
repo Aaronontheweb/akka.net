@@ -163,12 +163,12 @@ namespace Akka.Remote.TestKit
 
         public sealed class CreateServerFSM : NoSerializationVerificationNeeded
         {
-            public CreateServerFSM(IConnection channel)
+            public CreateServerFSM(RemoteConnection channel)
             {
                 Channel = channel;
             }
 
-            public IConnection Channel { get; private set; }
+            public RemoteConnection Channel { get; private set; }
         }
 
         int _initialParticipants;
@@ -239,7 +239,7 @@ namespace Akka.Remote.TestKit
                 var name = host.ToEndPoint() + ":" + host.Port + "-server" + _generation++;
                 Sender.Tell(
                     Context.ActorOf(
-                        new Props(typeof (ServerFSM), new object[] {Self, channel}).WithDeploy(Deploy.Local), name));
+                        new Props(typeof (ServerFSM), new object[] {Self, (RemoteConnection)channel}).WithDeploy(Deploy.Local), name));
                 return;
             }
             var nodeInfo = message as NodeInfo;
@@ -347,7 +347,7 @@ namespace Akka.Remote.TestKit
             }
             if (message is GetSockAddr)
             {
-                Sender.Tell(_connection.RemoteHost);
+                Sender.Tell(_connection.Local);
                 return;
             }
         }

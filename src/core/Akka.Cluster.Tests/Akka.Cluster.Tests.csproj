@@ -78,6 +78,7 @@
     <Compile Include="MetricsCollectorSpec.cs" />
     <Compile Include="MetricsGossipSpec.cs" />
     <Compile Include="MetricValuesSpec.cs" />
+    <Compile Include="MultiNode\JoinInProgressSpec.cs" />
     <Compile Include="MultiNode\MultiNodeClusterSpec.cs" />
     <Compile Include="NodeMetricsSpec.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

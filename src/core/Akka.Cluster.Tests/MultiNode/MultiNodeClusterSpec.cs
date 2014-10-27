@@ -4,16 +4,15 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 using Akka.Actor;
-using Akka.Cluster.Tests;
 using Akka.Configuration;
-using Akka.Remote;
 using Akka.Remote.TestKit;
 using Akka.TestKit;
+using Xunit;
 
-namespace Akka.Cluster.MultiNode
+namespace Akka.Cluster.Tests.MultiNode
 {
     //TODO: WatchedByCoroner?
-    abstract class MultiNodeClusterSpec : MultiNodeSpec
+    public abstract class MultiNodeClusterSpec : MultiNodeSpec
     {
         public static Config ClusterConfigWithFailureDetectorPuppet()
         {
@@ -42,8 +41,8 @@ namespace Akka.Cluster.MultiNode
                 akka.loglevel = INFO
                 akka.log-dead-letters = off
                 akka.log-dead-letters-during-shutdown = off
-                akka.remote.log-remote-lifecycle-events = off
-                akka.loggers = [""Akka.Testkit.TestEventListener""]
+                #akka.remote.log-remote-lifecycle-events = off
+                #akka.loggers = [""Akka.Testkit.TestEventListener""]
                 akka.test {
                     single-expect-default = 5 s
                 }
@@ -124,10 +123,9 @@ namespace Akka.Cluster.MultiNode
 
         readonly TestKitAssertions _assertions;
 
-        protected MultiNodeClusterSpec(TestKitAssertions assertions, MultiNodeConfig config)
-            : base(assertions, config)
+        protected MultiNodeClusterSpec(MultiNodeConfig config)
+            : base(config)
         {
-            _assertions = assertions;
             _roleNameComparer = new RoleNameComparer(this);
         }
 
@@ -199,7 +197,7 @@ namespace Akka.Cluster.MultiNode
             if (ClusterView.Members.IsEmpty)
             {
                 Cluster.Join(GetAddress(Myself));
-                AwaitAssert(() => _assertions.AssertTrue(ClusterView.Members.Select(m => m.Address).Contains(GetAddress(Myself))));
+                AwaitAssert(() => Assert.True(ClusterView.Members.Select(m => m.Address).Contains(GetAddress(Myself))));
             }
         }
 

@@ -236,7 +236,8 @@ namespace Akka.Remote.TestKit
         public async void OnConnect(INode remoteAddress, IConnection responseChannel)
         {
             _log.Debug("connection from {0}", responseChannel.RemoteHost);
-            var fsm = await _controller.Ask<ActorRef>(new Controller.CreateServerFSM(responseChannel), TimeSpan.MaxValue);
+            //TODO: Seems wrong to create new RemoteConnection here
+            var fsm = await _controller.Ask<ActorRef>(new Controller.CreateServerFSM(new RemoteConnection(responseChannel, this)), TimeSpan.FromMilliseconds(Int32.MaxValue));
             _clients.AddOrUpdate(responseChannel, fsm, (connection, @ref) => fsm);
         }
 
@@ -300,6 +301,8 @@ namespace Akka.Remote.TestKit
         {
             _controller = controller;
             _channel = channel;
+
+            InitFSM();
         }
 
         protected void InitFSM()

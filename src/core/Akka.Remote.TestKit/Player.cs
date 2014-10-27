@@ -282,13 +282,15 @@ namespace Akka.Remote.TestKit
         readonly PlayerHandler _handler;
         readonly RoleName _name;
 
-        public ClientFSM(RoleName name, IPEndPoint controllerAddr)
+        public ClientFSM(RoleName name, INode controllerAddr)
         {
             _settings = TestConductor.Get(Context.System).Settings;
             _handler = new PlayerHandler(controllerAddr, _settings.ClientReconnects, _settings.ReconnectBackoff,
                 _settings.ClientSocketWorkerPoolSize, Self, Logging.GetLogger(Context.System, "PlayerHandler"),
                 Context.System.Scheduler);
             _name = name;
+
+            InitFSM();
         }
 
         public void InitFSM()
@@ -503,7 +505,7 @@ namespace Akka.Remote.TestKit
     /// </summary>
     class PlayerHandler : IHeliosConnectionHandler
     {
-        readonly IPEndPoint _server;
+        readonly INode _server;
         int _reconnects;
         readonly TimeSpan _backoff;
         readonly int _poolSize;
@@ -513,7 +515,7 @@ namespace Akka.Remote.TestKit
         
         Deadline _nextAttempt;
         
-        public PlayerHandler(IPEndPoint server, int reconnects, TimeSpan backoff, int poolSize, ActorRef fsm,
+        public PlayerHandler(INode server, int reconnects, TimeSpan backoff, int poolSize, ActorRef fsm,
             LoggingAdapter log, Scheduler scheduler)
         {
             _server = server;
@@ -523,6 +525,8 @@ namespace Akka.Remote.TestKit
             _fsm = fsm;
             _log = log;
             _scheduler = scheduler;
+
+            Reconnect();
         }
 
         public void OnException(Exception ex, IConnection erroredChannel)
@@ -540,7 +544,7 @@ namespace Akka.Remote.TestKit
         private void Reconnect()
         {
             _nextAttempt = Deadline.Now + _backoff;
-            RemoteConnection.CreateConnection(Role.Client, _server.ToNode(TransportType.All), _poolSize, this);
+            RemoteConnection.CreateConnection(Role.Client, _server, _poolSize, this);
         }
 
         public void OnConnect(INode remoteAddress, IConnection responseChannel)

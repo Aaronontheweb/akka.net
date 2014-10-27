@@ -3,11 +3,14 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Linq;
+using System.Net;
+using System.Net.Sockets;
 using Akka.Actor;
 using Akka.Configuration;
 using Akka.Configuration.Hocon;
 using Akka.Event;
 using Akka.TestKit;
+using Akka.TestKit.Xunit;
 using Akka.Util.Internal;
 using Helios.Topology;
 
@@ -101,7 +104,7 @@ namespace Akka.Remote.TestKit
         {
             _myself = new Lazy<RoleName>(() =>
             {
-                if(_roles.Count > MultiNodeSpec.SelfIndex) throw new ArgumentException("not enough roles declared for this test");
+                if (MultiNodeSpec.SelfIndex > _roles.Count) throw new ArgumentException("not enough roles declared for this test");
                 return _roles[MultiNodeSpec.SelfIndex];
             });
         }
@@ -120,10 +123,15 @@ namespace Akka.Remote.TestKit
                     ConfigurationFactory.ParseString("akka.remote.netty.tcp.applied-adapters = [trttl, gremlin]")
                         :  ConfigurationFactory.Empty;
 
-                var configs = ImmutableList.Create(_nodeConf[Myself], _commonConf, transportConfig,
-                    MultiNodeSpec.NodeConfig, MultiNodeSpec.BaseConfig);
+                var builder = ImmutableList.CreateBuilder<Config>();
+                Config nodeConfig;
+                if(_nodeConf.TryGetValue(Myself, out nodeConfig)) builder.Add(nodeConfig);
+                builder.Add(_commonConf);
+                builder.Add(transportConfig);
+                builder.Add(MultiNodeSpec.NodeConfig);
+                builder.Add(MultiNodeSpec.BaseConfig);
 
-                return configs.Aggregate((a, b) => a.WithFallback(b));
+                return builder.ToImmutable().Aggregate((a, b) => a.WithFallback(b));
             }
         }
 
@@ -157,7 +165,9 @@ namespace Akka.Remote.TestKit
         /// Number of nodes node taking part in this test.
         /// -Dmultinode.max-nodes=4
         /// </summary>
-        public static int MaxNodes {get{ throw new NotImplementedException();}}
+        public static int MaxNodes {
+            get { return Convert.ToInt32(Environment.GetCommandLineArgs()[4]); }
+        }
 
         /// <summary>
         /// Name (or IP address; must be resolvable)
@@ -168,7 +178,7 @@ namespace Akka.Remote.TestKit
         /// InetAddress.getLocalHost.getHostAddress is used if empty or "localhost"
         /// is defined as system property "multinode.host".
         /// </summary>
-        public static string SelfName { get { throw new NotImplementedException(); } }
+        public static string SelfName { get { return Environment.GetCommandLineArgs()[5]; } }
 
         //TODO: require(selfName != "", "multinode.host must not be empty")
 
@@ -177,7 +187,7 @@ namespace Akka.Remote.TestKit
         /// 
         /// <code>-Dmultinode.port=0</code>
         /// </summary>
-        public static int SelfPort { get { throw new NotImplementedException(); } }
+        public static int SelfPort { get { return 0; } }
 
         //TODO: require(selfPort >= 0 && selfPort < 65535, "multinode.port is out of bounds: " + selfPort)
 
@@ -187,7 +197,7 @@ namespace Akka.Remote.TestKit
         /// 
         /// <code>-Dmultinode.server-host=server.example.com</code>
         /// </summary>
-        public static string ServerName { get { throw new NotImplementedException(); } }
+        public static string ServerName { get { return Environment.GetCommandLineArgs()[6]; } }
 
         //TODO: require(serverName != "", "multinode.server-host must not be empty")
 
@@ -196,7 +206,7 @@ namespace Akka.Remote.TestKit
         /// 
         /// <code>-Dmultinode.server-port=4711</code>
         /// </summary>
-        public static int ServerPort { get { throw new NotImplementedException(); } }
+        public static int ServerPort { get { return 4711; } }
 
         //TODO: require(serverPort > 0 && serverPort < 65535, "multinode.server-port is out of bounds: " + serverPort)
         
@@ -205,7 +215,7 @@ namespace Akka.Remote.TestKit
         /// is started in “controller” mode on selfIndex 0, i.e. there you can inject
         /// failures and shutdown other nodes etc.
         /// </summary>
-        public static int SelfIndex { get { throw new NotImplementedException(); } }
+        public static int SelfIndex { get { return Convert.ToInt32(Environment.GetCommandLineArgs()[7]); } }
 
         //TODO: require(selfIndex >= 0 && selfIndex < maxNodes, "multinode.index is out of bounds: " + selfIndex)
 
@@ -268,23 +278,30 @@ namespace Akka.Remote.TestKit
         readonly ImmutableDictionary<RoleName, Replacement> _replacements;
         readonly Address _myAddress;
 
-        public MultiNodeSpec(TestKitAssertions assertions, MultiNodeConfig config) :
-            this(assertions, config.Myself, ActorSystem.Create(GetCallerName(), config.Config), config.Roles, config.Deployments)
+        public MultiNodeSpec(MultiNodeConfig config) :
+            this(config.Myself, ActorSystem.Create(GetCallerName(), config.Config), config.Roles, config.Deployments)
         {   
         }
 
         public MultiNodeSpec(
-            TestKitAssertions assertions, 
             RoleName myself, 
             ActorSystem system, 
             ImmutableList<RoleName> roles, 
-            Func<RoleName, ImmutableList<string>> deployments) : base(assertions, system)
+            Func<RoleName, ImmutableList<string>> deployments) : base(new XunitAssertions() , system)
         {
             _myself = myself;
             _log = Logging.GetLogger(Sys, this);
             _roles = roles;
             _deployments = deployments;
-            _controllerAddr = Helios.Topology.Node.FromString(String.Format("{0}:{1}", ServerName, ServerPort));
+            var node = new Node()
+            {
+                Host = Dns.GetHostEntry(ServerName).AddressList.First(a => a.AddressFamily == AddressFamily.InterNetwork),
+                Port = ServerPort
+            };
+            _controllerAddr = node;
+
+            AttachConductor(new TestConductor(system));
+
             _replacements = _roles.ToImmutableDictionary(r => r, r => new Replacement("@" + r.Name + "@", r, this));
 
             InjectDeployments(system, myself);

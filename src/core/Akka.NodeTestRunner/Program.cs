@@ -54,10 +54,12 @@ namespace Akka.NodeTestRunner
     {
         static void Main(string[] args)
         {
-            var nodeIndex = Convert.ToInt32(args[0]);
-            var assemblyName = args[1];
-            var typeName = args[2];
-            var testName = args[3];
+            Debugger.Launch();
+
+            var nodeIndex = Convert.ToInt32(args[6]);
+            var assemblyName = args[0];
+            var typeName = args[1];
+            var testName = args[2];
             var displayName = "Whatever";
 
             using (var controller = new XunitFrontController(assemblyName))
