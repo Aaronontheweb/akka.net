@@ -421,9 +421,9 @@ namespace Akka.Remote.TestKit
             if (SelfIndex == 0)
             {
                 TestConductor.RemoveNode(_myself);
-                //TODO: Async stuff here
-                AwaitCondition(() => TestConductor.GetNodes().Result.Any(n => !n.Equals(_myself))
-                    , TestConductor.Settings.BarrierTimeout);
+                Within(TestConductor.Settings.BarrierTimeout, () => 
+                    AwaitCondition(() => TestConductor.GetNodes().Result.Any(n => !n.Equals(_myself))));
+              
             }
             Shutdown(Sys);
             AfterTermination();
