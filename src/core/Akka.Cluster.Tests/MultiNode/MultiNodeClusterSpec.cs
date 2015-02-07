@@ -131,7 +131,7 @@ namespace Akka.Cluster.Tests.MultiNode
             _roleNameComparer = new RoleNameComparer(this);
         }
 
-        public override int InitialParticipants
+        protected override int InitialParticipantsValueFactory
         {
             get { return Roles.Count; }
         }
