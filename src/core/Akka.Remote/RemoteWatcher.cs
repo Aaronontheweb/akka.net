@@ -200,6 +200,7 @@ namespace Akka.Remote
             readonly int _watching;
             readonly int _watchingNodes;
             //TODO: This should either be a deep copy or immutable
+            //@Aaronontheweb 2/7/2015 - we now return a deep copy everytime the refs get shared, see line 334
             readonly HashSet<Tuple<ActorRef, ActorRef>> _watchingRefs;
 
             public Stats(int watching, int watchingNodes, HashSet<Tuple<ActorRef, ActorRef>> watchingRefs)
@@ -219,6 +220,11 @@ namespace Akka.Remote
                 get { return _watchingNodes; }
             }
 
+            public HashSet<Tuple<ActorRef, ActorRef>> WatchingRefs
+            {
+                get { return _watchingRefs; }
+            }
+
             public override string ToString()
             {
                 Func<string> formatWatchingRefs = () =>
@@ -232,6 +238,23 @@ namespace Akka.Remote
 
                 return string.Format("Stats(watching={0}, watchingNodes={1}{2}", _watching, _watchingNodes,
                     formatWatchingRefs());
+            }
+
+            public static Stats Copy(int watching, int watchingNodes, HashSet<Tuple<ActorRef, ActorRef>> watchingRefs = null)
+            {
+                HashSet<Tuple<ActorRef, ActorRef>> finalRefs;
+                if (watchingRefs != null)
+                {
+                    var arr = new Tuple<ActorRef, ActorRef>[watchingRefs.Count];
+                    watchingRefs.CopyTo(arr);
+                    finalRefs = new HashSet<Tuple<ActorRef, ActorRef>>(arr);
+                }
+                else
+                {
+                    finalRefs = new HashSet<Tuple<ActorRef, ActorRef>>();
+                }
+
+                return new Stats(watching, watchingNodes, finalRefs);
             }
         }
 
@@ -308,7 +331,7 @@ namespace Akka.Remote
             }
 
             // test purpose
-            else if (message is Stats) Sender.Tell(new Stats(_watching.Count(), _watchingNodes.Count, _watching));
+            else if (message is Stats) Sender.Tell(Stats.Copy(_watching.Count(), _watchingNodes.Count, _watching));
         }
 
         private void ReceiveHeartbeat()
