@@ -1,7 +1,14 @@
-﻿using Akka.Actor;
+﻿using System;
+using System.Linq;
+using System.Runtime.InteropServices;
+using Akka.Actor;
 using Akka.Configuration;
+using Akka.Event;
 using Akka.Remote.TestKit;
 using Akka.TestKit;
+using Akka.TestKit.TestActors;
+using Akka.Util.Internal;
+using Xunit;
 
 namespace Akka.Cluster.Tests.MultiNode
 {
@@ -70,53 +77,119 @@ namespace Akka.Cluster.Tests.MultiNode
 
         protected override void AtStartup()
         {
-            //TODO: Mute
+            if (!Log.IsDebugEnabled)
+            {
+                MuteMarkingAsUnreachable();
+            }
+            base.AtStartup();
         }
 
         [MultiNodeFact]
         public void ClusterDeathWatchSpecTests()
         {
+            AnActorWatchingARemoteActorInTheClusterReceiveTerminatedWhenWatchedNodeBecomesDownRemoved();
         }
 
         public void AnActorWatchingARemoteActorInTheClusterReceiveTerminatedWhenWatchedNodeBecomesDownRemoved()
         {
-            AwaitClusterUp(_config.First, _config.Second, _config.Third, _config.Fourth);
-            EnterBarrier("cluster-up");
-
-            RunOn(() =>
+            Within(TimeSpan.FromSeconds(20), () =>
             {
-                EnterBarrier("subjected-started");
+                AwaitClusterUp(_config.First, _config.Second, _config.Third, _config.Fourth);
+                EnterBarrier("cluster-up");
 
-                var path2 = new RootActorPath(GetAddress(_config.Second)) / "user" / "subject";
-                var path3 = new RootActorPath(GetAddress(_config.Third)) / "user" / "subject";
-                var watchEstablished = new TestLatch(Sys, 2);
+                RunOn(() =>
+                {
+                    EnterBarrier("subjected-started");
 
+                    var path2 = new RootActorPath(GetAddress(_config.Second)) / "user" / "subject";
+                    var path3 = new RootActorPath(GetAddress(_config.Third)) / "user" / "subject";
+                    var watchEstablished = new TestLatch(Sys, 2);
+                    Sys.ActorOf(Props.Create(() => new Observer(path2, path3, watchEstablished, TestActor))
+                        .WithDeploy(Deploy.Local), "observer1");
+
+                    watchEstablished.Ready();
+                    EnterBarrier("watch-established");
+                    ExpectMsg(path2);
+                    ExpectNoMsg(TimeSpan.FromSeconds(2));
+                    EnterBarrier("second-terminated");
+                    MarkNodeAsUnavailable(GetAddress(_config.Third));
+                    AwaitAssert(() => Assert.True(ClusterView.UnreachableMembers.Select(x => x.Address).Contains(GetAddress(_config.Third))));
+                    Cluster.Down(GetAddress(_config.Third));
+                    //removed
+                    AwaitAssert(() => Assert.False(ClusterView.Members.Select(x => x.Address).Contains(GetAddress(_config.Third))));
+                    AwaitAssert(() => Assert.False(ClusterView.UnreachableMembers.Select(x => x.Address).Contains(GetAddress(_config.Third))));
+                    ExpectMsg(path3);
+                    EnterBarrier("third-terminated");
+                }, _config.First);
+
+                RunOn(() =>
+                {
+                    Sys.ActorOf(BlackHoleActor.Props, "subject");
+                    EnterBarrier("subjected-started");
+                    EnterBarrier("watch-established");
+                    RunOn(() =>
+                    {
+                        MarkNodeAsUnavailable(GetAddress(_config.Second));
+                        AwaitAssert(() => Assert.True(ClusterView.UnreachableMembers.Select(x => x.Address).Contains(GetAddress(_config.Second))));
+                        Cluster.Down(GetAddress(_config.Second));
+                        //removed
+                        AwaitAssert(() => Assert.False(ClusterView.Members.Select(x => x.Address).Contains(GetAddress(_config.Second))));
+                        AwaitAssert(() => Assert.False(ClusterView.UnreachableMembers.Select(x => x.Address).Contains(GetAddress(_config.Second))));
+                    }, _config.Third);
+                    EnterBarrier("second-terminated");
+                    EnterBarrier("third-terminated");
+                }, _config.Second, _config.Third, _config.Fourth);
+
+                RunOn(() =>
+                {
+                    EnterBarrier("subjected-started");
+                    EnterBarrier("watch-established");
+                    EnterBarrier("second-terminated");
+                    EnterBarrier("third-terminated");
+                }, _config.Fifth);
+
+                EnterBarrier("after-1");
             });
         }
 
-        class Observer : UntypedActor
+        /// <summary>
+        /// Used to report <see cref="Terminated"/> events to the <see cref="TestActor"/>
+        /// </summary>
+        class Observer : ReceiveActor
         {
-            readonly Address _oldLeaderAddress;
-            readonly TestLatch _latch;
+            private readonly ActorRef _testActorRef;
+            readonly TestLatch _watchEstablished;
 
-            public Observer(ActorPath path2, ActorPath path3)
+            public Observer(ActorPath path2, ActorPath path3, TestLatch watchEstablished, ActorRef testActorRef)
             {
+                _watchEstablished = watchEstablished;
+                _testActorRef = testActorRef;
+                
+                Receive<ActorIdentity>(identity => identity.MessageId.Equals(path2), identity =>
+                {
+                    Context.Watch(identity.Subject);
+                    _watchEstablished.CountDown();
+                });
+
+                Receive<ActorIdentity>(identity => identity.MessageId.Equals(path3), identity =>
+                {
+                    Context.Watch(identity.Subject);
+                    _watchEstablished.CountDown();
+                });
+
+                Receive<Terminated>(terminated =>
+                {
+                    _testActorRef.Tell(terminated.ActorRef.Path);
+                });
+
                 Context.ActorSelection(path2).Tell(new Identify(path2));
                 Context.ActorSelection(path3).Tell(new Identify(path3));
+
             }
 
-            protected override void OnReceive(object message)
+            protected override void Unhandled(object message)
             {
-                var actorIdentity = message as ActorIdentity;
-                if (actorIdentity != null)
-                {
-                    if (actorIdentity.MessageId == "path2")
-                        Context.Watch(actorIdentity.Subject);
-
-                }
-                var memberExited = message as ClusterEvent.MemberExited;
-                if (memberExited != null && memberExited.Member.Address == _oldLeaderAddress)
-                    _latch.CountDown();
+                Context.GetLogger().Error("Received unhandled message: {0}", message);
             }
         }
     }

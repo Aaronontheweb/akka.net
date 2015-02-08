@@ -237,6 +237,12 @@ namespace Akka.Cluster.Tests.MultiNode
             }
         }
 
+        /// <summary>
+        /// Initialize the cluster of the specified member nodes (<see cref="roles"/>)
+        /// and wait until all joined and <see cref="MemberStatus.Up"/>.
+        /// 
+        /// First node will be started firat and others will join the first.
+        /// </summary>
         public void AwaitClusterUp(params RoleName[] roles)
         {
             // make sure that the node-to-join is started before other join
