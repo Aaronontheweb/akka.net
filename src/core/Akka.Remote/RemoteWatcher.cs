@@ -358,8 +358,6 @@ namespace Akka.Remote
 
         protected virtual void PublishAddressTerminated(Address address)
         {
-            //TODO: What are consequence of not passing system through.
-            //TODO: Is AddressTerminatedTopic plumbed in?
             AddressTerminatedTopic.Get(Context.System).Publish(new AddressTerminated(address));
         }
 
@@ -380,12 +378,6 @@ namespace Akka.Remote
 
         private void ProcessWatchRemote(ActorRef watchee, ActorRef watcher)
         {
-            //TODO: What to do about this. Remote actors seem to get 0 uid
-            /*if (watchee.Path.Uid == ActorCell.UndefinedUid)
-            {
-                LogActorForDeprecationWarning(watchee);
-            }
-            else*/
             if (watcher != Self)
             {
                 _log.Debug("Watching: [{0} -> {1}]", watcher.Path, watchee.Path);
@@ -412,11 +404,6 @@ namespace Akka.Remote
 
         protected void ProcessUnwatchRemote(ActorRef watchee, ActorRef watcher)
         {
-            //TODO: What to do about this. Remote actors seem to get 0 uid
-            // as Surrogate doesn't contain the uid
-            /*if (watchee.Path.Uid == ActorCell.UndefinedUid)
-                LogActorForDeprecationWarning(watchee);
-            else*/
             if (watcher != Self)
             {
                 _log.Debug("Unwatching: [{0} -> {1}]", watcher.Path, watchee.Path);
@@ -431,13 +418,6 @@ namespace Akka.Remote
                 }
                 CheckLastUnwatchOfNode(watchee.Path.Address);
             }
-        }
-
-        private void LogActorForDeprecationWarning(ActorRef watchee)
-        {
-            _log.Debug(
-                "actorFor is deprecated, and watching a remote ActorRef acquired with actorFor is not reliable: [{0}]",
-                watchee.Path);
         }
 
         private void ProcessTerminated(ActorRef watchee, bool existenceConfirmed, bool addressTerminated)
