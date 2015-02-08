@@ -13,15 +13,15 @@ namespace Akka.Remote
 {
     /// <summary>
     /// Remote nodes with actors that are watched are monitored by this actor to be able
-    /// to detect network failures and JVM crashes. [[akka.remote.RemoteActorRefProvider]]
+    /// to detect network failures and process crashes. <see cref="RemoteActorRefProvider"/>
     /// intercepts Watch and Unwatch system messages and sends corresponding
-    /// [[RemoteWatcher.WatchRemote]] and [[RemoteWatcher.UnwatchRemote]] to this actor.
+    /// <see cref="RemoteWatcher.WatchRemote"/> and <see cref="RemoteWatcher.UnwatchRemote"/> to this actor.
     ///
-    /// For a new node to be watched this actor periodically sends [[RemoteWatcher.Heartbeat]]
-    /// to the peer actor on the other node, which replies with [[RemoteWatcher.HeartbeatRsp]]
+    /// For a new node to be watched this actor periodically sends <see cref="RemoteWatcher.Heartbeat"/>
+    /// to the peer actor on the other node, which replies with <see cref="RemoteWatcher.HeartbeatRsp"/>
     /// message back. The failure detector on the watching side monitors these heartbeat messages.
     /// If arrival of hearbeat messages stops it will be detected and this actor will publish
-    /// [[akka.actor.AddressTerminated]] to the [[akka.event.AddressTerminatedTopic]].
+    /// <see cref="AddressTerminated"/> to the <see cref="AddressTerminatedTopic"/>.
     ///
     /// When all actors on a node have been unwatched it will stop sending heartbeat messages.
     ///
@@ -360,7 +360,7 @@ namespace Akka.Remote
         {
             //TODO: What are consequence of not passing system through.
             //TODO: Is AddressTerminatedTopic plumbed in?
-            new AddressTerminatedTopic().Publish(new AddressTerminated(address));
+            AddressTerminatedTopic.Get(Context.System).Publish(new AddressTerminated(address));
         }
 
         protected virtual void Quarantine(Address address, int? addressUid)

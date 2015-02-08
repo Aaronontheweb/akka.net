@@ -22,7 +22,7 @@ namespace Akka.Actor
     /// references are compared the unique id of the actor is not taken into account
     /// when comparing actor paths.
     /// </summary>
-    public abstract class ActorPath : IEquatable<ActorPath>, IComparable<ActorPath>, ISurrogated,  IEquatable<ActorPath.Surrogate>
+    public abstract class ActorPath : IEquatable<ActorPath>, IComparable<ActorPath>, ISurrogated
     {
         public class Surrogate : ISurrogate, IEquatable<Surrogate>, IEquatable<ActorPath>
         {
@@ -380,11 +380,11 @@ namespace Akka.Actor
             return Equals(other);
         }
 
-        public bool Equals(Surrogate other)
-        {
-            if (other == null) return false;
-            return other.Equals(ToSurrogate(null));
-        }
+        //public bool Equals(Surrogate other)
+        //{
+        //    if (other == null) return false;
+        //    return other.Equals(ToSurrogate(null));
+        //}
 
         public static bool operator ==(ActorPath left, ActorPath right)
         {
