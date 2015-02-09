@@ -178,6 +178,7 @@ namespace Akka.Remote.Transport
         private Dictionary<Address, Tuple<ThrottleMode, ThrottleTransportAdapter.Direction>> _throttlingModes 
             = new Dictionary<Address, Tuple<ThrottleMode, ThrottleTransportAdapter.Direction>>();
         
+        private List<Tuple<Address, ThrottlerHandle>> _handleTable = new List<Tuple<Address, ThrottlerHandle>>();
 
         public ThrottlerManager(Transport wrappedTransport)
         {
@@ -186,8 +187,43 @@ namespace Akka.Remote.Transport
 
         protected override void Ready(object message)
         {
-            throw new NotImplementedException();
+            if (message is InboundAssociation)
+            {
+                var ia = message as InboundAssociation;
+                //TODO finish
+                throw new NotImplementedException();
+            }
         }
+
+        #region ThrottlerManager internal methods
+
+        private static Address NakedAddress(Address address)
+        {
+            return address.Copy(protocol: string.Empty, system: string.Empty);
+        }
+
+        private Task<SetThrottleAck> AskModeWithDeathCompletion(ActorRef target, ThrottleMode mode)
+        {
+            if (target.IsNobody()) return Task.FromResult(SetThrottleAck.Instance);
+            else
+            {
+                var internalTarget = target.AsInstanceOf<InternalActorRef>();
+                //TODO finish
+                throw new NotImplementedException();
+            }
+        }
+
+        private ThrottlerHandle WrapHandle(AssociationHandle originalHandle, IAssociationEventListener listener,
+            bool inbound)
+        {
+            var managerRef = Self;
+            return new ThrottlerHandle(originalHandle, Context.ActorOf(
+                RARP.For(Context.System).ConfigureDispatcher(
+                Props.Create(() => new ThrottledAssociation(managerRef, listener, originalHandle, inbound)).WithDeploy(Deploy.Local)),
+                "throttler" + nextId()));
+        }
+
+        #endregion
     }
 
     public abstract class ThrottleMode : NoSerializationVerificationNeeded
