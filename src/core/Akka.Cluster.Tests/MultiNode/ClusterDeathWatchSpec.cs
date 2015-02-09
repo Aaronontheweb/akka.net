@@ -34,7 +34,7 @@ namespace Akka.Cluster.Tests.MultiNode
             _third = Role("third");
             _fourth = Role("fourth");
             _fifth = Role("fifth");
-
+            DeployOn(_fourth, @"/hello.remote = ""@first@""");
             CommonConfig = ConfigurationFactory.ParseString(@"akka.cluster.publish-stats-interval = 25s")
                 .WithFallback(MultiNodeLoggingConfig.LoggingConfig)
                 .WithFallback(DebugConfig(true))
@@ -90,7 +90,7 @@ namespace Akka.Cluster.Tests.MultiNode
                 }
                 return _remoteWatcher;
             }
-        } 
+        }
 
         protected override void AtStartup()
         {
@@ -101,7 +101,7 @@ namespace Akka.Cluster.Tests.MultiNode
             base.AtStartup();
         }
 
-        
+
 
         [MultiNodeFact]
         public void ClusterDeathWatchSpecTests()
@@ -109,6 +109,7 @@ namespace Akka.Cluster.Tests.MultiNode
             AnActorWatchingARemoteActorInTheClusterMustReceiveTerminatedWhenWatchedNodeBecomesDownRemoved();
             //AnActorWatchingARemoteActorInTheClusterMustReceiveTerminatedWhenWatchedPathDoesNotExist();
             AnActorWatchingARemoteActorInTheClusterMustBeAbleToWatchActorBeforeNodeJoinsClusterAndClusterRemoteWatcherTakesOverFromRemoteWatcher();
+            AnActorWatchingARemoteActorInTheClusterMustBeAbleToShutdownSystemWhenUsingRemoteDeployedActorOnNodeThatCrashed();
         }
 
         public void AnActorWatchingARemoteActorInTheClusterMustReceiveTerminatedWhenWatchedNodeBecomesDownRemoved()
@@ -249,7 +250,84 @@ namespace Akka.Cluster.Tests.MultiNode
 
                 EnterBarrier("after-3");
             });
-           
+
+        }
+
+        public void AnActorWatchingARemoteActorInTheClusterMustBeAbleToShutdownSystemWhenUsingRemoteDeployedActorOnNodeThatCrashed()
+        {
+            Within(TimeSpan.FromSeconds(300), () =>
+            {
+                // fourth actor system will be shutdown, not part of testConductor any more
+                // so we can't use barriers to synchronize with it
+                var firstAddress = GetAddress(_config.First);
+                RunOn(() =>
+                {
+                    Sys.ActorOf(Props.Create(() => new EndActor(TestActor, null)), "end");
+                }, _config.First);
+                EnterBarrier("end-actor-created");
+
+                RunOn(() =>
+                {
+                    var hello = Sys.ActorOf(BlackHoleActor.Props, "hello");
+                    Assert.IsType<RemoteActorRef>(hello);
+                    hello.Path.Address.ShouldBe(GetAddress(_config.First));
+                    Watch(hello);
+                    EnterBarrier("hello-deployed");
+                    MarkNodeAsUnavailable(GetAddress(_config.First));
+                    AwaitAssert(() => ClusterView.UnreachableMembers.Select(x => x.Address).Contains(GetAddress(_config.First)).ShouldBeTrue());
+                    Cluster.Down(GetAddress(_config.First));
+                    // removed
+                    AwaitAssert(() => Assert.False(ClusterView.UnreachableMembers.Select(x => x.Address).Contains(GetAddress(_config.First))));
+                    AwaitAssert(() => Assert.False(ClusterView.Members.Select(x => x.Address).Contains(GetAddress(_config.First))));
+
+                    ExpectTerminated(hello);
+                    EnterBarrier("first-unavailable");
+
+                    var timeout = RemainingOrDefault;
+                    try
+                    {
+                        Sys.AwaitTermination(timeout);
+                    }
+                    catch (TimeoutException ex)
+                    {
+                        Assert.True(false, String.Format("Failed to stop [{0}] within [{1}]", Sys.Name, timeout));
+                    }
+
+                    
+                    // signal to the first node that the fourth nodeis done
+                    var endSystem = ActorSystem.Create("EndSystem", Sys.Settings.Config);
+                    try
+                    {
+                        var endProbe = CreateTestProbe(endSystem);
+                        var endActor = endSystem.ActorOf(Props.Create(() => new EndActor(endProbe.Ref, firstAddress)),
+                            "end");
+                        endActor.Tell(EndActor.SendEnd.Instance);
+                        endProbe.ExpectMsg<EndActor.EndAck>();
+                    }
+                    finally
+                    {
+                        Shutdown(endSystem, TimeSpan.FromSeconds(10));
+                    }
+
+                    // no barrier here, because it is not part of TestConductor roles any more
+
+                }, _config.Fourth);
+
+                RunOn(() =>
+                {
+                    EnterBarrier("hello-deployed");
+                    EnterBarrier("first-unavailable");
+
+                    // don't end the test until fourth is done
+                    RunOn(() =>
+                    {
+                        // fourth system will be shutdown, remove to not participate in barriers any more
+                        TestConductor.Shutdown(_config.Fourth).Wait();
+                        ExpectMsg<EndActor.End>();
+                    }, _config.First);
+                }, _config.First, _config.Second, _config.Third, _config.Fifth);
+
+            });
         }
 
         /// <summary>
@@ -264,7 +342,7 @@ namespace Akka.Cluster.Tests.MultiNode
             {
                 _watchEstablished = watchEstablished;
                 _testActorRef = testActorRef;
-                
+
                 Receive<ActorIdentity>(identity => identity.MessageId.Equals(path2), identity =>
                 {
                     Context.Watch(identity.Subject);

@@ -58,48 +58,50 @@ namespace Akka.Cluster.Tests.MultiNode
             ");
         }
 
-        // sometimes we need to coordinate test shutdown with messages instead of barriers
-        sealed class SendEnd
-        {
-            private SendEnd() { }
-            private static readonly SendEnd _instance = new SendEnd();
-            public static SendEnd Instance
-            {
-                get
-                {
-                    return _instance;
-                }
-            }
-        }
-
-        sealed class End
-        {
-            private End() { }
-            private static readonly End _instance = new End();
-            public static End Instance
-            {
-                get
-                {
-                    return _instance;
-                }
-            }
-        }
-
-        sealed class EndAck
-        {
-            private EndAck() { }
-            private static readonly EndAck _instance = new EndAck();
-            public static EndAck Instance
-            {
-                get
-                {
-                    return _instance;
-                }
-            }
-        }
 
         public class EndActor : UntypedActor
         {
+
+            // sometimes we need to coordinate test shutdown with messages instead of barriers
+            public sealed class SendEnd
+            {
+                private SendEnd() { }
+                private static readonly SendEnd _instance = new SendEnd();
+                public static SendEnd Instance
+                {
+                    get
+                    {
+                        return _instance;
+                    }
+                }
+            }
+
+            public sealed class End
+            {
+                private End() { }
+                private static readonly End _instance = new End();
+                public static End Instance
+                {
+                    get
+                    {
+                        return _instance;
+                    }
+                }
+            }
+
+            public sealed class EndAck
+            {
+                private EndAck() { }
+                private static readonly EndAck _instance = new EndAck();
+                public static EndAck Instance
+                {
+                    get
+                    {
+                        return _instance;
+                    }
+                }
+            }
+
             readonly ActorRef _testActor;
             readonly Address _target;
 
