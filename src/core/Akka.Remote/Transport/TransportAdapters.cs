@@ -178,6 +178,9 @@ namespace Akka.Remote.Transport
 
     internal abstract class AbstractTransportAdapterHandle : AssociationHandle
     {
+        protected AbstractTransportAdapterHandle(AssociationHandle wrappedHandle, string addedSchemeIdentifier)
+            : this(wrappedHandle.LocalAddress, wrappedHandle.RemoteAddress, wrappedHandle, addedSchemeIdentifier) { }
+
         protected AbstractTransportAdapterHandle(Address originalLocalAddress, Address originalRemoteAddress, AssociationHandle wrappedHandle, string addedSchemeIdentifier) : base(originalLocalAddress, originalRemoteAddress)
         {
             WrappedHandle = wrappedHandle;
