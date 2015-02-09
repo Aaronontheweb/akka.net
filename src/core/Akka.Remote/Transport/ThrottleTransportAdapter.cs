@@ -105,8 +105,74 @@ namespace Akka.Remote.Transport
         }
     }
 
+    /// <summary>
+    /// INTERNAL API
+    /// </summary>
     internal class ThrottlerManager : ActorTransportAdapterManager
     {
+        #region Internal message classes
+
+        internal sealed class Checkin : NoSerializationVerificationNeeded
+        {
+            public Checkin(Address origin, ThrottlerHandle handle)
+            {
+                ThrottlerHandle = handle;
+                Origin = origin;
+            }
+
+            public Address Origin { get; private set; }
+
+            public ThrottlerHandle ThrottlerHandle { get; private set; }
+        }
+
+        internal sealed class AssociateResult : NoSerializationVerificationNeeded
+        {
+            public AssociateResult(AssociationHandle associationHandle, TaskCompletionSource<AssociationHandle> statusPromise)
+            {
+                StatusPromise = statusPromise;
+                AssociationHandle = associationHandle;
+            }
+
+            public AssociationHandle AssociationHandle { get; private set; }
+
+            public TaskCompletionSource<AssociationHandle> StatusPromise { get; private set; }
+        }
+
+        internal sealed class ListenerAndMode : NoSerializationVerificationNeeded
+        {
+            public ListenerAndMode(IHandleEventListener handleEventListener, ThrottleMode mode)
+            {
+                Mode = mode;
+                HandleEventListener = handleEventListener;
+            }
+
+            public IHandleEventListener HandleEventListener { get; private set; }
+
+            public ThrottleMode Mode { get; private set; }
+        }
+
+        internal sealed class Handle : NoSerializationVerificationNeeded
+        {
+            public Handle(ThrottlerHandle throttlerHandle)
+            {
+                ThrottlerHandle = throttlerHandle;
+            }
+
+            public ThrottlerHandle ThrottlerHandle { get; private set; }
+        }
+
+        internal sealed class Listener : NoSerializationVerificationNeeded
+        {
+            public Listener(IHandleEventListener handleEventListener)
+            {
+                HandleEventListener = handleEventListener;
+            }
+
+            public IHandleEventListener HandleEventListener { get; private set; }
+        }
+
+        #endregion
+
         protected readonly Transport WrappedTransport;
         private Dictionary<Address, Tuple<ThrottleMode, ThrottleTransportAdapter.Direction>> _throttlingModes 
             = new Dictionary<Address, Tuple<ThrottleMode, ThrottleTransportAdapter.Direction>>();
@@ -453,5 +519,97 @@ namespace Akka.Remote.Transport
         }
 
         #endregion
+
+        protected ActorRef Manager;
+        protected IAssociationEventListener AssociationHandler;
+        protected AssociationHandle OriginalHandle;
+        protected bool Inbound;
+
+        protected ThrottleMode InboundThrottleMode;
+        protected readonly Queue<ByteString> ThrottledMessages = new Queue<ByteString>();
+        protected IHandleEventListener UpstreamListener;
+
+        /// <summary>
+        /// Used for decoding certain types of throttled messages on-the-fly
+        /// </summary>
+        private static readonly AkkaPduProtobuffCodec Codec = new AkkaPduProtobuffCodec();
+
+        public ThrottledAssociation(ActorRef manager, IAssociationEventListener associationHandler, AssociationHandle originalHandle, bool inbound)
+        {
+            Manager = manager;
+            AssociationHandler = associationHandler;
+            OriginalHandle = originalHandle;
+            Inbound = inbound;
+            InitializeFSM();
+        }
+
+        private void InitializeFSM()
+        {
+            When(ThrottlerState.WaitExposedHandle, @event =>
+            {
+                if (@event.FsmEvent is ThrottlerManager.Handle && @event.StateData is Uninitialized)
+                {
+                    // register to downstream layer and wait for origin
+                    OriginalHandle.ReadHandlerSource.SetResult(new ActorHandleEventListener(Self));
+                    return
+                        GoTo(ThrottlerState.WaitOrigin)
+                            .Using(
+                                new ExposedHandle(
+                                    @event.FsmEvent.AsInstanceOf<ThrottlerManager.Handle>().ThrottlerHandle));
+                }
+                return Stay();
+            });
+
+            When(ThrottlerState.WaitOrigin, @event =>
+            {
+                if (@event.FsmEvent is InboundPayload && @event.StateData is ExposedHandle)
+                {
+                    var b = @event.FsmEvent.AsInstanceOf<InboundPayload>().Payload;
+                    ThrottledMessages.Enqueue(b);
+                    var origin = PeekOrigin(b);
+                    if (origin != null)
+                    {
+                        Manager.Tell(new ThrottlerManager.Checkin(origin, @event.StateData.AsInstanceOf<ExposedHandle>().Handle));
+                        return GoTo(ThrottlerState.WaitMode);
+                    }
+                    return Stay();
+                }
+                return Stay();
+            });
+
+            When(ThrottlerState.WaitMode, @event =>
+            {
+                if (@event.FsmEvent is InboundPayload)
+                {
+                    var b = @event.FsmEvent.AsInstanceOf<InboundPayload>().Payload;
+                    ThrottledMessages.Enqueue(b);
+                    return Stay();
+                }
+            });
+        }
+
+        /// <summary>
+        /// This method captures ASSOCIATE packets and extracts the origin <see cref="Address"/>.
+        /// </summary>
+        /// <param name="b">Inbound <see cref="ByteString"/> received from network.</param>
+        /// <returns></returns>
+        private Address PeekOrigin(ByteString b)
+        {
+            try
+            {
+                var pdu = Codec.DecodePdu(b);
+                if (pdu is Associate)
+                {
+                    return pdu.AsInstanceOf<Associate>().Info.Origin;
+                }
+                return null;
+            }
+            catch
+            {
+                // This layer should not care about malformed packets. Also, this also useful for testing, because
+                // arbitrary payload could be passed in
+                return null;
+            }
+        }
     }
 }
