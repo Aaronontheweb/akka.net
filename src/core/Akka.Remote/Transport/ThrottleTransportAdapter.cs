@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Util;
@@ -17,7 +18,7 @@ namespace Akka.Remote.Transport
         }
     }
 
-    internal class ThrottleTransportAdapter : ActorTransportAdapter
+    public class ThrottleTransportAdapter : ActorTransportAdapter
     {
         #region Static methods and self-contained data types
 
@@ -386,6 +387,17 @@ namespace Akka.Remote.Transport
         }
     }
 
+    internal sealed class SetThrottleAck
+    {
+        private SetThrottleAck() { }
+// ReSharper disable once InconsistentNaming
+        private static readonly SetThrottleAck _instance = new SetThrottleAck();
+
+        public static SetThrottleAck Instance
+        {
+            get { return _instance; }
+        }
+    }
     /// <summary>
     /// INTERNAL API
     /// </summary>
@@ -394,16 +406,12 @@ namespace Akka.Remote.Transport
         private readonly ActorRef _throttlerActor;
         private AtomicReference<ThrottleMode> _outboundThrottleMode = new AtomicReference<ThrottleMode>(Unthrottled.Instance);
 
-        /// <summary>
-        /// Need to have time that is much more precise than <see cref="DateTime.Now"/> when throttling sends
-        /// </summary>
-        private readonly Stopwatch _stopWatch = new Stopwatch();
+        
 
         public ThrottlerHandle(AssociationHandle wrappedHandle, ActorRef throttlerActor) : base(wrappedHandle, ThrottleTransportAdapter.Scheme)
         {
             _throttlerActor = throttlerActor;
             ReadHandlerSource = new TaskCompletionSource<IHandleEventListener>();
-            _stopWatch.Start();
         }
 
         public override bool Write(ByteString payload)
@@ -414,7 +422,7 @@ namespace Akka.Remote.Transport
             Func<ThrottleMode, bool> tryConsume = null; 
             tryConsume = currentBucket =>
             {
-                var timeOfSend = _stopWatch.ElapsedTicks;
+                var timeOfSend = SystemNanoTime.GetNanos();
                 var res = currentBucket.TryConsumeTokens(timeOfSend, tokens);
                 var newBucket = res.Item1;
                 var allow = res.Item2;
@@ -443,13 +451,35 @@ namespace Akka.Remote.Transport
         }
     }
 
+    internal static class SystemNanoTime
+    {
+        /// <summary>
+        /// Need to have time that is much more precise than <see cref="DateTime.Now"/> when throttling sends
+        /// </summary>
+        private static readonly Stopwatch StopWatch;
+
+        static SystemNanoTime()
+        {
+            StopWatch = new Stopwatch();
+            StopWatch.Start();
+        }
+
+        public static long GetNanos()
+        {
+            return StopWatch.ElapsedTicks;
+        }
+    }
+
     /// <summary>
     /// INTERNAL API
     /// </summary>
-    internal class ThrottledAssociation : FSM<ThrottledAssociation.ThrottlerState, ThrottledAssociation.IThrottlerData>
+    internal class ThrottledAssociation : FSM<ThrottledAssociation.ThrottlerState, ThrottledAssociation.IThrottlerData>, LoggingFSM
     {
         #region ThrottledAssociation FSM state and data classes
 
+        private const string DequeueTimerName = "dequeue";
+
+        sealed class Dequeue { }
         
         public enum ThrottlerState
         {
@@ -495,7 +525,7 @@ namespace Akka.Remote.Transport
             private Uninitialized() { }
 // ReSharper disable once InconsistentNaming
             private static readonly Uninitialized _instance = new Uninitialized();
-            public Uninitialized Instance { get { return _instance; } }
+            public static Uninitialized Instance { get { return _instance; } }
         }
 
         internal sealed class ExposedHandle : IThrottlerData
@@ -526,7 +556,7 @@ namespace Akka.Remote.Transport
         protected bool Inbound;
 
         protected ThrottleMode InboundThrottleMode;
-        protected readonly Queue<ByteString> ThrottledMessages = new Queue<ByteString>();
+        protected Queue<ByteString> ThrottledMessages = new Queue<ByteString>();
         protected IHandleEventListener UpstreamListener;
 
         /// <summary>
@@ -557,7 +587,7 @@ namespace Akka.Remote.Transport
                                 new ExposedHandle(
                                     @event.FsmEvent.AsInstanceOf<ThrottlerManager.Handle>().ThrottlerHandle));
                 }
-                return Stay();
+                return null;
             });
 
             When(ThrottlerState.WaitOrigin, @event =>
@@ -574,7 +604,7 @@ namespace Akka.Remote.Transport
                     }
                     return Stay();
                 }
-                return Stay();
+                return null;
             });
 
             When(ThrottlerState.WaitMode, @event =>
@@ -585,7 +615,148 @@ namespace Akka.Remote.Transport
                     ThrottledMessages.Enqueue(b);
                     return Stay();
                 }
+
+                if (@event.FsmEvent is ThrottleMode && @event.StateData is ExposedHandle)
+                {
+                    var mode =  @event.FsmEvent.AsInstanceOf<ThrottleMode>();
+                    var exposedHandle = @event.StateData.AsInstanceOf<ExposedHandle>().Handle;
+                    InboundThrottleMode = mode;
+                    try
+                    {
+                        if (mode is Blackhole)
+                        {
+                            ThrottledMessages = new Queue<ByteString>();
+                            exposedHandle.Disassociate();
+                            return Stop();
+                        }
+                        else
+                        {
+                            AssociationHandler.Notify(new InboundAssociation(exposedHandle));
+                            exposedHandle.ReadHandlerSource.Task.ContinueWith(
+                                r => new ThrottlerManager.Listener(r.Result),
+                                TaskContinuationOptions.AttachedToParent & TaskContinuationOptions.ExecuteSynchronously)
+                                .PipeTo(Self);
+                            return GoTo(ThrottlerState.WaitUpstreamListener);
+                        }
+                    }
+                    finally
+                    {
+                        Sender.Tell(SetThrottleAck.Instance);
+                    }
+                }
+
+                return null;
             });
+
+            When(ThrottlerState.WaitUpstreamListener, @event =>
+            {
+                if (@event.FsmEvent is InboundPayload)
+                {
+                    var b = @event.FsmEvent.AsInstanceOf<InboundPayload>();
+                    ThrottledMessages.Enqueue(b.Payload);
+                    return Stay();
+                }
+
+                if (@event.FsmEvent is ThrottlerManager.Listener)
+                {
+                    UpstreamListener = @event.FsmEvent.AsInstanceOf<ThrottlerManager.Listener>().HandleEventListener;
+                    Self.Tell(new Dequeue());
+                    return GoTo(ThrottlerState.Throttling);
+                }
+
+                return null;
+            });
+
+            When(ThrottlerState.WaitModeAndUpstreamListener, @event =>
+            {
+                if (@event.FsmEvent is ThrottlerManager.ListenerAndMode)
+                {
+                    var listenerAndMode = @event.FsmEvent.AsInstanceOf<ThrottlerManager.ListenerAndMode>();
+                    UpstreamListener = listenerAndMode.HandleEventListener;
+                    InboundThrottleMode = listenerAndMode.Mode;
+                    Self.Tell(new Dequeue());
+                    return GoTo(ThrottlerState.Throttling);
+                }
+
+                if (@event.FsmEvent is InboundPayload)
+                {
+                    var b = @event.FsmEvent.AsInstanceOf<InboundPayload>();
+                    ThrottledMessages.Enqueue(b.Payload);
+                    return Stay();
+                }
+
+                return null;
+            });
+
+            When(ThrottlerState.Throttling, @event =>
+            {
+                if (@event.FsmEvent is ThrottleMode)
+                {
+                    var mode = @event.FsmEvent.AsInstanceOf<ThrottleMode>();
+                    InboundThrottleMode = mode;
+                    if(mode is Blackhole) ThrottledMessages = new Queue<ByteString>();
+                    CancelTimer(DequeueTimerName);
+                    if(!ThrottledMessages.Any())
+                        ScheduleDequeue(InboundThrottleMode.TimeToAvailable(SystemNanoTime.GetNanos(), ThrottledMessages.Peek().Length));
+                    Sender.Tell(SetThrottleAck.Instance);
+                    return Stay();
+                }
+
+                if (@event.FsmEvent is InboundPayload)
+                {
+                    ForwardOrDelay(@event.FsmEvent.AsInstanceOf<InboundPayload>().Payload);
+                    return Stay();
+                }
+
+                if (@event.FsmEvent is Dequeue)
+                {
+                    if (ThrottledMessages.Any())
+                    {
+                        var payload = ThrottledMessages.Dequeue();
+                        UpstreamListener.Notify(new InboundPayload(payload));
+                        InboundThrottleMode = InboundThrottleMode.TryConsumeTokens(SystemNanoTime.GetNanos(),
+                            payload.Length).Item1;
+                        if(ThrottledMessages.Any())
+                            ScheduleDequeue(InboundThrottleMode.TimeToAvailable(SystemNanoTime.GetNanos(), ThrottledMessages.Peek().Length));
+                    }
+                    return Stay();
+                }
+
+                return null;
+            });
+
+            WhenUnhandled(@event =>
+            {
+                // we should always set the throttling mode
+                if (@event.FsmEvent is ThrottleMode)
+                {
+                    InboundThrottleMode = @event.FsmEvent.AsInstanceOf<ThrottleMode>();
+                    Sender.Tell(SetThrottleAck.Instance);
+                    return Stay();
+                }
+
+                if (@event.FsmEvent is Disassociated)
+                {
+                    return Stop(); // not notifying the upstream handler is intentional: we are relying on heartbeating
+                }
+
+                if (@event.FsmEvent is FailWith)
+                {
+                    var reason = @event.FsmEvent.AsInstanceOf<FailWith>().FailReason;
+                    if(UpstreamListener != null) UpstreamListener.Notify(new Disassociated(reason));
+                    return Stop();
+                }
+
+                return null;
+            });
+
+            if(Inbound)
+                StartWith(ThrottlerState.WaitExposedHandle, Uninitialized.Instance);
+            else
+            {
+                OriginalHandle.ReadHandlerSource.SetResult(new ActorHandleEventListener(Self));
+                StartWith(ThrottlerState.WaitModeAndUpstreamListener, Uninitialized.Instance);
+            }
         }
 
         /// <summary>
@@ -609,6 +780,48 @@ namespace Akka.Remote.Transport
                 // This layer should not care about malformed packets. Also, this also useful for testing, because
                 // arbitrary payload could be passed in
                 return null;
+            }
+        }
+
+        private void ScheduleDequeue(TimeSpan delay)
+        {
+            if (InboundThrottleMode is Blackhole) return; //do nothing
+            if (delay <= TimeSpan.Zero) Self.Tell(new Dequeue());
+            else
+            {
+                SetTimer(DequeueTimerName, new Dequeue(), delay, repeat:false);
+            }
+        }
+
+        private void ForwardOrDelay(ByteString payload)
+        {
+            if (InboundThrottleMode is Blackhole)
+            {
+                // Do nothing
+            }
+            else
+            {
+                if (!ThrottledMessages.Any())
+                {
+                    var tokens = payload.Length;
+                    var res = InboundThrottleMode.TryConsumeTokens(SystemNanoTime.GetNanos(), tokens);
+                    var newBucket = res.Item1;
+                    var success = res.Item2;
+                    if (success)
+                    {
+                        InboundThrottleMode = newBucket;
+                        UpstreamListener.Notify(new InboundPayload(payload));
+                    }
+                    else
+                    {
+                        ThrottledMessages.Enqueue(payload);
+                        ScheduleDequeue(InboundThrottleMode.TimeToAvailable(SystemNanoTime.GetNanos(), tokens));
+                    }
+                }
+                else
+                {
+                    ThrottledMessages.Enqueue(payload);
+                }
             }
         }
     }

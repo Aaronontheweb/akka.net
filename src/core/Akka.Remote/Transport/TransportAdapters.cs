@@ -84,7 +84,7 @@ namespace Akka.Remote.Transport
         }
     }
 
-    internal class SchemeAugmenter
+    public class SchemeAugmenter
     {
         public SchemeAugmenter(string addedSchemeIdentifier)
         {
@@ -119,7 +119,7 @@ namespace Akka.Remote.Transport
     /// <summary>
     /// An adapter that wraps a transport and provides interception capabilities
     /// </summary>
-    internal abstract class AbstractTransportAdapter : Transport
+    public abstract class AbstractTransportAdapter : Transport
     {
         protected AbstractTransportAdapter(Transport wrappedTransport)
         {
@@ -278,7 +278,7 @@ namespace Akka.Remote.Transport
         public DisassociateInfo Info { get; private set; }
     }
 
-    internal abstract class ActorTransportAdapter : AbstractTransportAdapter
+    public abstract class ActorTransportAdapter : AbstractTransportAdapter
     {
         protected ActorTransportAdapter(Transport wrappedTransport, ActorSystem system) : base(wrappedTransport)
         {
