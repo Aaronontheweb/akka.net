@@ -208,8 +208,8 @@ namespace Akka.Remote.Transport
             else
             {
                 var internalTarget = target.AsInstanceOf<InternalActorRef>();
-                //TODO finish
-                throw new NotImplementedException();
+                //TODO: use PromiseActorRef here when implemented
+
             }
         }
 
