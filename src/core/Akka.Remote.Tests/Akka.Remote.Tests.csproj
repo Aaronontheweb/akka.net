@@ -94,6 +94,7 @@
     <Compile Include="Transport\AkkaProtocolSpec.cs" />
     <Compile Include="Transport\TestTransportSpec.cs" />
     <Compile Include="Transport\ThrottleModeSpec.cs" />
+    <Compile Include="Transport\ThrottlerTransportAdapterSpec.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\contrib\testkits\Akka.TestKit.Xunit\Akka.TestKit.Xunit.csproj">
