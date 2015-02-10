@@ -441,11 +441,15 @@ namespace Akka.Remote
             message.Match()
                 .With<ManagementCommand>(mc =>
                 {
-                    var allStatuses = _transportMapping.Values.Select(x => x.ManagementCommand(mc));
+                    var sender = Sender;
+                    var allStatuses = _transportMapping.Values.Select(x => x.ManagementCommand(mc.Cmd));
                     Task.WhenAll(allStatuses)
-                        .ContinueWith(x => new ManagementCommandAck(x.Result.All(y => y)),
-                            TaskContinuationOptions.ExecuteSynchronously | TaskContinuationOptions.AttachedToParent)
-                        .PipeTo(Self);
+                        .ContinueWith(x =>
+                        {
+                            return new ManagementCommandAck(x.Result.All(y => y));
+                        },
+                            TaskContinuationOptions.ExecuteSynchronously & TaskContinuationOptions.AttachedToParent)
+                        .PipeTo(sender);
                 })
                 .With<Quarantine>(quarantine =>
                 {

@@ -65,6 +65,30 @@ namespace Akka.Remote.Transport
                 return Props.Create(() => new ThrottlerManager(wt));
             }
         }
+
+        public override Task<bool> ManagementCommand(object message)
+        {
+            if (message is SetThrottle)
+            {
+                return manager.Ask(message, AskTimeout).ContinueWith(r =>
+                {
+                    return r.Result is SetThrottleAck;
+                }, 
+                    TaskContinuationOptions.AttachedToParent & 
+                    TaskContinuationOptions.ExecuteSynchronously &
+                    TaskContinuationOptions.OnlyOnRanToCompletion);
+            }
+
+            if (message is ForceDisassociate || message is ForceDisassociateExplicitly)
+            {
+                return manager.Ask(message, AskTimeout).ContinueWith(r => r.Result is ForceDisassociateAck,
+                    TaskContinuationOptions.AttachedToParent &
+                    TaskContinuationOptions.ExecuteSynchronously &
+                    TaskContinuationOptions.OnlyOnRanToCompletion);
+            }
+
+            return WrappedTransport.ManagementCommand(message);
+        }
     }
 
     /// <summary>
@@ -207,13 +231,21 @@ namespace Akka.Remote.Transport
 
                 // Slight modification of PipeTo, only success is sent, failure is propagated to a separate Task
                 var associateTask = WrappedTransport.Associate(ua.RemoteAddress);
-                associateTask.ContinueWith(tr => Self.Tell(new AssociateResult(tr.Result, ua.StatusPromise)), TaskContinuationOptions.AttachedToParent 
-                & TaskContinuationOptions.ExecuteSynchronously 
-                & TaskContinuationOptions.OnlyOnRanToCompletion);
+                var self = Self;
+                associateTask.ContinueWith(tr =>
+                {
+                    if (tr.IsFaulted)
+                    {
+                        ua.StatusPromise.SetException(tr.Exception ?? new Exception("association failed"));
+                    }
+                    else
+                    {
+                        self.Tell(new AssociateResult(tr.Result, ua.StatusPromise));
+                    }
+                    
+                }, TaskContinuationOptions.AttachedToParent 
+                & TaskContinuationOptions.ExecuteSynchronously);
 
-                associateTask.ContinueWith(tr => ua.StatusPromise.SetException(tr.Exception ?? new Exception("association failed")), TaskContinuationOptions.AttachedToParent
-                & TaskContinuationOptions.ExecuteSynchronously
-                & TaskContinuationOptions.OnlyOnFaulted);
             }
             else if (message is AssociateResult) // Finished outbound association and got back the handle
             {
@@ -233,15 +265,22 @@ namespace Akka.Remote.Transport
                 var naked = NakedAddress(st.Address);
                 _throttlingModes[naked] = new Tuple<ThrottleMode, ThrottleTransportAdapter.Direction>(st.Mode, st.Direction);
                 var ok = Task.FromResult(SetThrottleAck.Instance);
-                var modes = new List<Task<SetThrottleAck>>();
+                var modes = new List<Task<SetThrottleAck>>(){ ok };
                 foreach (var handle in _handleTable)
                 {
                     if(handle.Item1 == naked)
                         modes.Add(SetMode(handle.Item2, st.Mode, st.Direction));
                 }
-                Task.WhenAll(modes).ContinueWith(tr => SetThrottleAck.Instance,
+
+
+
+                var sender = Sender;
+                Task.WhenAll(modes).ContinueWith(tr =>
+                {
+                    return SetThrottleAck.Instance;
+                },
                     TaskContinuationOptions.AttachedToParent & TaskContinuationOptions.ExecuteSynchronously)
-                    .PipeTo(Sender);
+                    .PipeTo(sender);
             }
             else if (message is ForceDisassociate)
             {

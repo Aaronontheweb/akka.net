@@ -34,9 +34,9 @@ namespace Akka.Remote.Tests.Transport
         private const int PingPacketSize = 148;
         private const int MessageCount = 30;
         private const int BytesPerSecond = 500;
-        private static readonly long TotalTime = (MessageCount*PingPacketSize)/BytesPerSecond;
+        private static readonly long TotalTime = (MessageCount * PingPacketSize) / BytesPerSecond;
 
-        public class ThrottlingTester :  ReceiveActor
+        public class ThrottlingTester : ReceiveActor
         {
             private ActorRef _remoteRef;
             private ActorRef _controller;
@@ -56,7 +56,7 @@ namespace Akka.Remote.Tests.Transport
                     _startTime = SystemNanoTime.GetNanos();
                 });
 
-                Receive<string>(s => s.Equals("sendText") && _messageCount > 0, s =>
+                Receive<string>(s => s.Equals("sendNext") && _messageCount > 0, s =>
                 {
                     _remoteRef.Tell("ping");
                     Self.Tell("sendNext");
@@ -66,7 +66,7 @@ namespace Akka.Remote.Tests.Transport
                 Receive<string>(s => s.Equals("pong"), s =>
                 {
                     _received++;
-                    if(_received >= MessageCount)
+                    if (_received >= MessageCount)
                         _controller.Tell(SystemNanoTime.GetNanos() - _startTime);
                 });
             }
@@ -82,17 +82,29 @@ namespace Akka.Remote.Tests.Transport
             }
         }
 
+        public class Echo : UntypedActor
+        {
+            protected override void OnReceive(object message)
+            {
+                var str = message as string;
+                if(!string.IsNullOrEmpty(str) && string.Equals(str, "ping"))
+                    Sender.Tell("pong");
+                else
+                    Sender.Tell(message);
+            }
+        }
+
         private ActorSystem systemB;
         private ActorRef remote;
 
-        private RootActorPath rootB;
+        private readonly RootActorPath rootB;
 
         private ActorRef Here
         {
             get
             {
-                Sys.ActorSelection(rootB / "user" / "echo").Tell(new Identify(null));
-                return ExpectMsg<ActorIdentity>().Subject;
+                Sys.ActorSelection(rootB / "user" / "echo").Tell(new Identify(null), TestActor);
+                return ExpectMsg<ActorIdentity>(TimeSpan.FromMinutes(10)).Subject;
             }
         }
 
@@ -118,28 +130,27 @@ namespace Akka.Remote.Tests.Transport
 
         #endregion
 
-        public ThrottlerTransportAdapterSpec() : base(ThrottlerTransportAdapterSpecConfig)
+        public ThrottlerTransportAdapterSpec()
+            : base(ThrottlerTransportAdapterSpecConfig)
         {
             systemB = ActorSystem.Create("systemB", Sys.Settings.Config);
-            remote = systemB.ActorOf(Props.Create<EchoActor>(), "echo");
+            remote = systemB.ActorOf(Props.Create<Echo>(), "echo");
+            rootB = new RootActorPath(systemB.AsInstanceOf<ExtendedActorSystem>().Provider.DefaultAddress);
         }
 
         #region Tests
 
-        [Fact()]
+        [Fact]
         public void ThrottlerTransportAdapter_must_maintain_average_message_rate()
         {
-            Within(TimeSpan.FromSeconds(10), () =>
-            {
-                Throttle(ThrottleTransportAdapter.Direction.Send, new TokenBucket(200, 500, 0, 0)).ShouldBeTrue();
-                var tester = Sys.ActorOf(Props.Create(() => new ThrottlingTester(Here, TestActor)));
-                tester.Tell("start");
+            Throttle(ThrottleTransportAdapter.Direction.Send, new TokenBucket(200, 500, 0, 0)).ShouldBeTrue();
+            var tester = Sys.ActorOf(Props.Create(() => new ThrottlingTester(Here, TestActor)));
+            tester.Tell("start");
 
-                var time = TimeSpan.FromTicks(ExpectMsg<long>(TimeSpan.FromSeconds(TotalTime + 3))).TotalSeconds;
-                Log.Warning("Total time of transmission: {0}", time);
-                Assert.True(time > TotalTime - 3);
-                Throttle(ThrottleTransportAdapter.Direction.Send, Unthrottled.Instance).ShouldBeTrue();
-            });
+            var time = TimeSpan.FromTicks(ExpectMsg<long>(TimeSpan.FromSeconds(TotalTime + 3))).TotalSeconds;
+            Log.Warning("Total time of transmission: {0}", time);
+            Assert.True(time > TotalTime - 3);
+            Throttle(ThrottleTransportAdapter.Direction.Send, Unthrottled.Instance).ShouldBeTrue();
         }
 
         #endregion

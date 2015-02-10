@@ -37,7 +37,12 @@ namespace Akka.Remote
         //this is why this extension is called "RARP"
         private readonly RemoteActorRefProvider _provider;
 
-        public RARP(RemoteActorRefProvider provider)
+        /// <summary>
+        /// Used as part of the <see cref="ExtensionIdProvider{RARP}"/>
+        /// </summary>
+        public RARP() { }
+
+        private RARP(RemoteActorRefProvider provider)
         {
             _provider = provider;
         }
@@ -223,8 +228,11 @@ namespace Akka.Remote
             return
                 _endpointManager.Ask<EndpointManager.ManagementCommandAck>(new EndpointManager.ManagementCommand(cmd),
                     Provider.RemoteSettings.CommandAckTimeout)
-                    .ContinueWith(result => result.Result.Status,
-                        TaskContinuationOptions.ExecuteSynchronously | TaskContinuationOptions.AttachedToParent);
+                    .ContinueWith(result =>
+                    {
+                        return result.Result.Status;
+                    },
+                        TaskContinuationOptions.ExecuteSynchronously & TaskContinuationOptions.AttachedToParent);
         }
 
         public override Address LocalAddressForRemote(Address remote)
