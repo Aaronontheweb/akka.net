@@ -285,10 +285,11 @@ namespace Akka.Remote.Transport
             System = system;
         }
 
-        protected new ActorSystem System;       //TODO: Is it supposed to hide base? Explain why, or remove
-
         protected abstract string ManagerName { get; }
         protected abstract Props ManagerProps { get; }
+
+
+        public static readonly TimeSpan AskTimeout = TimeSpan.FromSeconds(5);
 
         protected volatile ActorRef manager;
 

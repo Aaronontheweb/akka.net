@@ -97,15 +97,15 @@ namespace Akka.Actor
     /// </summary>
     internal sealed class PromiseActorRef : MinimalActorRef
     {
-        public PromiseActorRef(ActorRefProvider provider, TaskCompletionSource<object> promise, string mcn)
+        public PromiseActorRef(ActorRefProvider provider, TaskCompletionSource<object> result, string mcn)
         {
             _provider = provider;
-            _promise = promise;
+            Result = result;
             _mcn = mcn;
         }
 
         private readonly ActorRefProvider _provider;
-        private readonly TaskCompletionSource<object> _promise;
+        public readonly TaskCompletionSource<object> Result;
 
         /// <summary>
         /// This is necessary for weaving the PromiseActorRef into the asked message, i.e. the replyTo pattern.
@@ -207,7 +207,9 @@ namespace Akka.Actor
                 {
                     c.Cancel(false);
                 }
-            });
+            }, TaskContinuationOptions.AttachedToParent & TaskContinuationOptions.ExecuteSynchronously);
+
+            return a;
         }
 
         #endregion
@@ -231,7 +233,7 @@ namespace Akka.Actor
         }
 
         /// <summary>
-        /// Returns false if the <see cref="_promise"/> is already completed.
+        /// Returns false if the <see cref="Result"/> is already completed.
         /// </summary>
         private bool AddWatcher(ActorRef watcher)
         {
@@ -341,7 +343,7 @@ namespace Akka.Actor
                 {
                     wrappedMessage = new Status.Success(message);
                 }
-                if (!(_promise.TrySetResult(wrappedMessage)))
+                if (!(Result.TrySetResult(wrappedMessage)))
                     Provider.DeadLetters.Tell(message);
             }
         }
@@ -386,7 +388,7 @@ namespace Akka.Actor
         {
             Action ensureCompleted = () =>
             {
-                _promise.TrySetResult(ActorStopResult);
+                Result.TrySetResult(ActorStopResult);
                 var watchers = ClearWatchers();
                 if (watchers.Any())
                 {
