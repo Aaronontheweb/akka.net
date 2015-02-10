@@ -75,7 +75,7 @@ namespace Akka.Remote.Transport
 
         public ITransportAdapterProvider GetAdapterProvider(string name)
         {
-            if (_adaptersTable.ContainsKey(name))
+            if (AdaptersTable().ContainsKey(name))
             {
                 return _adaptersTable[name];
             }

@@ -1,7 +1,11 @@
-﻿using Akka.Actor;
+﻿using System;
+using Akka.Actor;
 using Akka.Configuration;
 using Akka.Remote.Transport;
 using Akka.TestKit;
+using Akka.TestKit.TestActors;
+using Akka.Util.Internal;
+using Xunit;
 
 namespace Akka.Remote.Tests.Transport
 {
@@ -78,8 +82,66 @@ namespace Akka.Remote.Tests.Transport
             }
         }
 
+        private ActorSystem systemB;
+        private ActorRef remote;
+
+        private RootActorPath rootB;
+
+        private ActorRef Here
+        {
+            get
+            {
+                Sys.ActorSelection(rootB / "user" / "echo").Tell(new Identify(null));
+                return ExpectMsg<ActorIdentity>().Subject;
+            }
+        }
+
+        private bool Throttle(ThrottleTransportAdapter.Direction direction, ThrottleMode mode)
+        {
+            var rootBAddress = new Address("akka", "systemB", "localhost", rootB.Address.Port.Value);
+            var transport =
+                Sys.AsInstanceOf<ExtendedActorSystem>().Provider.AsInstanceOf<RemoteActorRefProvider>().Transport;
+            var task = transport.ManagementCommand(new SetThrottle(rootBAddress, direction, mode));
+            task.Wait(TimeSpan.FromSeconds(3));
+            return task.Result;
+        }
+
+        private bool Disassociate()
+        {
+            var rootBAddress = new Address("akka", "systemB", "localhost", rootB.Address.Port.Value);
+            var transport =
+                Sys.AsInstanceOf<ExtendedActorSystem>().Provider.AsInstanceOf<RemoteActorRefProvider>().Transport;
+            var task = transport.ManagementCommand(new ForceDisassociate(rootBAddress));
+            task.Wait(TimeSpan.FromSeconds(3));
+            return task.Result;
+        }
+
         #endregion
 
+        public ThrottlerTransportAdapterSpec() : base(ThrottlerTransportAdapterSpecConfig)
+        {
+            systemB = ActorSystem.Create("systemB", Sys.Settings.Config);
+            remote = systemB.ActorOf(Props.Create<EchoActor>(), "echo");
+        }
 
+        #region Tests
+
+        [Fact()]
+        public void ThrottlerTransportAdapter_must_maintain_average_message_rate()
+        {
+            Within(TimeSpan.FromSeconds(10), () =>
+            {
+                Throttle(ThrottleTransportAdapter.Direction.Send, new TokenBucket(200, 500, 0, 0)).ShouldBeTrue();
+                var tester = Sys.ActorOf(Props.Create(() => new ThrottlingTester(Here, TestActor)));
+                tester.Tell("start");
+
+                var time = TimeSpan.FromTicks(ExpectMsg<long>(TimeSpan.FromSeconds(TotalTime + 3))).TotalSeconds;
+                Log.Warning("Total time of transmission: {0}", time);
+                Assert.True(time > TotalTime - 3);
+                Throttle(ThrottleTransportAdapter.Direction.Send, Unthrottled.Instance).ShouldBeTrue();
+            });
+        }
+
+        #endregion
     }
 }
