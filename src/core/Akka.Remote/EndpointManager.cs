@@ -696,7 +696,7 @@ namespace Akka.Remote
                         //The chain at this point:
                         //  Adapter <-- .. <-- Adapter <-- Driver
                         var wrappedTransport = transportSettings.Adapters.Select(x => TransportAdaptersExtension.For(Context.System).GetAdapterProvider(x)).Aggregate(driver,
-                            (transport, provider) => provider.Create(transport, Context.System));
+                            (transport, provider) => provider.Create(transport, (ExtendedActorSystem)Context.System));
 
                         //Apply AkkaProtocolTransport wrapper to the end of the chain
                         //The chain at this point:

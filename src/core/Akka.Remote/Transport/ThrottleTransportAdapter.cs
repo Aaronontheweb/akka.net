@@ -16,7 +16,7 @@ namespace Akka.Remote.Transport
     /// </summary>
     public class ThrottlerProvider : ITransportAdapterProvider
     {
-        public Transport Create(Transport wrappedTransport, ActorSystem system)
+        public Transport Create(Transport wrappedTransport, ExtendedActorSystem system)
         {
             return new ThrottleTransportAdapter(wrappedTransport, system);
         }
@@ -70,7 +70,7 @@ namespace Akka.Remote.Transport
     /// <summary>
     /// Management command to force disassociation of an address
     /// </summary>
-    public sealed class ForceDisassociate
+    internal sealed class ForceDisassociate
     {
         public ForceDisassociate(Address address)
         {
@@ -83,7 +83,7 @@ namespace Akka.Remote.Transport
     /// <summary>
     /// Management command to force disassociation of an address with an explicit error.
     /// </summary>
-    public sealed class ForceDisassociateExplicitly
+    internal sealed class ForceDisassociateExplicitly
     {
         public ForceDisassociateExplicitly(Address address, DisassociateInfo reason)
         {
@@ -99,7 +99,7 @@ namespace Akka.Remote.Transport
     /// <summary>
     /// INTERNAL API
     /// </summary>
-    public sealed class ForceDisassociateAck
+    internal sealed class ForceDisassociateAck
     {
         private ForceDisassociateAck() { }
 // ReSharper disable once InconsistentNaming

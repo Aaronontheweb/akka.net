@@ -12,7 +12,7 @@ namespace Akka.Remote.Transport
         /// <summary>
         /// Create a transport adapter that wraps the underlying transport
         /// </summary>
-        Transport Create(Transport wrappedTransport, ActorSystem system);
+        Transport Create(Transport wrappedTransport, ExtendedActorSystem system);
     }
 
     internal class TransportAdaptersExtension : ExtensionIdProvider<TransportAdapters>
