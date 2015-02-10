@@ -397,7 +397,7 @@ namespace Akka.Remote.Transport
 
         public override Tuple<ThrottleMode, bool> TryConsumeTokens(long nanoTimeOfSend, int tokens)
         {
-            return Tuple.Create<ThrottleMode, bool>(this, true);
+            return Tuple.Create<ThrottleMode, bool>(this, false);
         }
 
         public override TimeSpan TimeToAvailable(long currentNanoTime, int tokens)
@@ -421,7 +421,7 @@ namespace Akka.Remote.Transport
 
         public override Tuple<ThrottleMode, bool> TryConsumeTokens(long nanoTimeOfSend, int tokens)
         {
-            return Tuple.Create<ThrottleMode, bool>(this, false);
+            return Tuple.Create<ThrottleMode, bool>(this, true);
         }
 
         public override TimeSpan TimeToAvailable(long currentNanoTime, int tokens)
@@ -472,7 +472,7 @@ namespace Akka.Remote.Transport
 
         int TokensGenerated(long nanoTimeOfSend)
         {
-            return Convert.ToInt32((nanoTimeOfSend - nanoTimeOfSend) * 1000000 * _tokensPerSecond / 1000);
+            return Convert.ToInt32(((double)(nanoTimeOfSend - _nanoTimeOfLastSend) / TimeSpan.TicksPerMillisecond) * _tokensPerSecond / 1000);
         }
 
         TokenBucket Copy(int? capacity = null, double? tokensPerSecond = null, long? nanoTimeOfLastSend = null, int? availableTokens = null)
