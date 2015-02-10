@@ -133,7 +133,8 @@ namespace Akka.Remote
         private static IDictionary<string, string> ConfigToMap(Config cfg)
         {
             if(cfg.IsEmpty) return new Dictionary<string, string>();
-            return cfg.Root.GetObject().Unwrapped.ToDictionary(k => k.Key, v => v.Value != null? v.Value.ToString():null);
+            var unwrapped = cfg.Root.GetObject().Unwrapped;
+            return unwrapped.ToDictionary(k => k.Key, v => v.Value != null? v.Value.ToString():null);
         }
     }
 }
