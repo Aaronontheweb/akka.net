@@ -397,7 +397,7 @@ namespace Akka.Remote
                     {
                         return new ListensResult(listen.AddressesPromise, listens.Result);
                     }
-                }, TaskContinuationOptions.ExecuteSynchronously | TaskContinuationOptions.AttachedToParent)
+                }, TaskContinuationOptions.ExecuteSynchronously & TaskContinuationOptions.AttachedToParent)
                     .PipeTo(Self))
                 .With<ListensResult>(listens =>
                 {

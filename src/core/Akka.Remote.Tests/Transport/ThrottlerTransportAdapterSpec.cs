@@ -24,7 +24,7 @@ namespace Akka.Remote.Tests.Transport
                   remote.log-remote-lifecycle-events = off
                   remote.retry-gate-closed-for = 1 s
                   remote.transport-failure-detector.heartbeat-interval = 1 s
-                  remote.transport-failure-detector.acceptable-heartbeat-pause = 300 s
+                  remote.transport-failure-detector.acceptable-heartbeat-pause = 3 s
                   remote.helios.tcp.applied-adapters = [""trttl""]
                   remote.helios.tcp.port = 0
                 }");
@@ -71,7 +71,7 @@ namespace Akka.Remote.Tests.Transport
                 });
             }
 
-            public sealed class Lost
+            public sealed class Lost : IEquatable<Lost>
             {
                 public Lost(string msg)
                 {
@@ -79,6 +79,25 @@ namespace Akka.Remote.Tests.Transport
                 }
 
                 public string Msg { get; private set; }
+
+                public bool Equals(Lost other)
+                {
+                    if (ReferenceEquals(null, other)) return false;
+                    if (ReferenceEquals(this, other)) return true;
+                    return string.Equals(Msg, other.Msg);
+                }
+
+                public override bool Equals(object obj)
+                {
+                    if (ReferenceEquals(null, obj)) return false;
+                    if (ReferenceEquals(this, obj)) return true;
+                    return obj is Lost && Equals((Lost) obj);
+                }
+
+                public override int GetHashCode()
+                {
+                    return (Msg != null ? Msg.GetHashCode() : 0);
+                }
             }
         }
 
@@ -151,6 +170,29 @@ namespace Akka.Remote.Tests.Transport
             Log.Warning("Total time of transmission: {0}", time);
             Assert.True(time > TotalTime - 12);
             Throttle(ThrottleTransportAdapter.Direction.Send, Unthrottled.Instance).ShouldBeTrue();
+        }
+
+        [Fact]
+        public void ThrottlerTransportAdapter_must_survive_blackholing()
+        {
+            Here.Tell(new ThrottlingTester.Lost("BlackHole 1"));
+            ExpectMsg(new ThrottlingTester.Lost("BlackHole 1"));
+
+            var here = Here;
+            //TODO: muteDeadLetters (typeof(Lost)) for both actor systems 
+
+            Throttle(ThrottleTransportAdapter.Direction.Both, Blackhole.Instance).ShouldBeTrue();
+            
+            here.Tell(new ThrottlingTester.Lost("BlackHole 2"));
+            ExpectNoMsg(TimeSpan.FromSeconds(1));
+            Disassociate().ShouldBeTrue();
+            ExpectNoMsg(TimeSpan.FromSeconds(3));
+
+            Throttle(ThrottleTransportAdapter.Direction.Both, Unthrottled.Instance).ShouldBeTrue();
+
+            // after we remove the Blackhole we can't be certain of the state
+            // of the connection, repeat until success
+
         }
 
         #endregion
