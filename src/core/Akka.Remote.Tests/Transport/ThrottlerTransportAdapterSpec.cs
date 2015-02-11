@@ -24,16 +24,16 @@ namespace Akka.Remote.Tests.Transport
                   remote.log-remote-lifecycle-events = off
                   remote.retry-gate-closed-for = 1 s
                   remote.transport-failure-detector.heartbeat-interval = 1 s
-                  remote.transport-failure-detector.acceptable-heartbeat-pause = 3 s
+                  remote.transport-failure-detector.acceptable-heartbeat-pause = 300 s
                   remote.helios.tcp.applied-adapters = [""trttl""]
                   remote.helios.tcp.port = 0
                 }");
             }
         }
 
-        private const int PingPacketSize = 148;
-        private const int MessageCount = 30;
-        private const int BytesPerSecond = 500;
+        private const int PingPacketSize = 350;
+        private const int MessageCount = 15;
+        private const int BytesPerSecond = 700;
         private static readonly long TotalTime = (MessageCount * PingPacketSize) / BytesPerSecond;
 
         public class ThrottlingTester : ReceiveActor
@@ -104,7 +104,7 @@ namespace Akka.Remote.Tests.Transport
             get
             {
                 Sys.ActorSelection(rootB / "user" / "echo").Tell(new Identify(null), TestActor);
-                return ExpectMsg<ActorIdentity>(TimeSpan.FromMinutes(10)).Subject;
+                return ExpectMsg<ActorIdentity>(TimeSpan.FromSeconds(3)).Subject;
             }
         }
 
@@ -143,13 +143,13 @@ namespace Akka.Remote.Tests.Transport
         [Fact]
         public void ThrottlerTransportAdapter_must_maintain_average_message_rate()
         {
-            Throttle(ThrottleTransportAdapter.Direction.Send, new TokenBucket(200, 500, 0, 0)).ShouldBeTrue();
+            Throttle(ThrottleTransportAdapter.Direction.Send, new TokenBucket(PingPacketSize*4, BytesPerSecond, 0, 0)).ShouldBeTrue();
             var tester = Sys.ActorOf(Props.Create(() => new ThrottlingTester(Here, TestActor)));
             tester.Tell("start");
 
-            var time = TimeSpan.FromTicks(ExpectMsg<long>(TimeSpan.FromSeconds(TotalTime + 3))).TotalSeconds;
+            var time = TimeSpan.FromTicks(ExpectMsg<long>(TimeSpan.FromSeconds(TotalTime + 12))).TotalSeconds;
             Log.Warning("Total time of transmission: {0}", time);
-            Assert.True(time > TotalTime - 3);
+            Assert.True(time > TotalTime - 12);
             Throttle(ThrottleTransportAdapter.Direction.Send, Unthrottled.Instance).ShouldBeTrue();
         }
 

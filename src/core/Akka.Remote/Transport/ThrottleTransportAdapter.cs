@@ -272,8 +272,6 @@ namespace Akka.Remote.Transport
                         modes.Add(SetMode(handle.Item2, st.Mode, st.Direction));
                 }
 
-
-
                 var sender = Sender;
                 Task.WhenAll(modes).ContinueWith(tr =>
                 {
@@ -373,31 +371,33 @@ namespace Akka.Remote.Transport
             if (target.IsNobody()) return Task.FromResult(SetThrottleAck.Instance);
             else
             {
-                var internalTarget = target.AsInstanceOf<InternalActorRef>();
+                return target.Ask<SetThrottleAck>(mode, timeout);
                 //TODO: use PromiseActorRef here when implemented
-                var promiseRef = PromiseActorRef.Apply(internalTarget.Provider, timeout, target, mode.GetType().Name);
-                internalTarget.Tell(new Watch(internalTarget, promiseRef));
-                target.Tell(mode, promiseRef);
-                return promiseRef.Result.Task.ContinueWith(tr =>
-                {
-                    if (tr.Result is Status.Success)
-                    {
-                        var resultMsg = tr.Result as Status.Success;
-                        if (resultMsg.Status is Terminated &&
-                            resultMsg.Status.AsInstanceOf<Terminated>().ActorRef.Path == target.Path)
-                            return SetThrottleAck.Instance;
-                        if (resultMsg.Status is SetThrottleAck)
-                        {
-                            internalTarget.Tell(new Unwatch(target, promiseRef));
-                        }
-                        return SetThrottleAck.Instance;
-                    }
-                    else
-                    {
-                        internalTarget.Tell(new Unwatch(target, promiseRef));
-                       return SetThrottleAck.Instance;
-                    }
-                }, TaskContinuationOptions.AttachedToParent & TaskContinuationOptions.ExecuteSynchronously);
+                //var internalTarget = target.AsInstanceOf<InternalActorRef>();
+                //var promiseRef = PromiseActorRef.Apply(internalTarget.Provider, timeout, target, mode.GetType().Name);
+                //internalTarget.Tell(new Watch(internalTarget, promiseRef));
+                //target.Tell(mode, promiseRef);
+                //return promiseRef.Result.Task.ContinueWith(tr =>
+                //{
+                //    if (tr.Result is Status.Success)
+                //    {
+                //        var resultMsg = tr.Result as Status.Success;
+                //        if (resultMsg.Status is Terminated &&
+                //            resultMsg.Status.AsInstanceOf<Terminated>().ActorRef.Path == target.Path)
+                //            return SetThrottleAck.Instance;
+                //        if (resultMsg.Status is SetThrottleAck)
+                //        {
+                //            internalTarget.Tell(new Unwatch(target, promiseRef));
+                //        }
+                //        return SetThrottleAck.Instance;
+                //    }
+                //    else
+                //    {
+                //        internalTarget.Tell(new Unwatch(target, promiseRef));
+                //       return SetThrottleAck.Instance;
+                //    }
+                //}, TaskContinuationOptions.AttachedToParent & TaskContinuationOptions.ExecuteSynchronously);
+
             }
         }
 
@@ -635,7 +635,6 @@ namespace Akka.Remote.Transport
         public ThrottlerHandle(AssociationHandle wrappedHandle, ActorRef throttlerActor) : base(wrappedHandle, ThrottleTransportAdapter.Scheme)
         {
             ThrottlerActor = throttlerActor;
-            ReadHandlerSource = new TaskCompletionSource<IHandleEventListener>();
         }
 
         public override bool Write(ByteString payload)
@@ -660,8 +659,8 @@ namespace Akka.Remote.Transport
             var throttleMode = OutboundThrottleMode.Value;
             if (throttleMode is Blackhole) return true;
             
-            var sucess = tryConsume(OutboundThrottleMode.Value);
-            return sucess && WrappedHandle.Write(payload);
+            var success = tryConsume(OutboundThrottleMode.Value);
+            return success && WrappedHandle.Write(payload);
         }
 
         public override void Disassociate()
@@ -856,10 +855,11 @@ namespace Akka.Remote.Transport
                         else
                         {
                             AssociationHandler.Notify(new InboundAssociation(exposedHandle));
+                            var self = Self;
                             exposedHandle.ReadHandlerSource.Task.ContinueWith(
                                 r => new ThrottlerManager.Listener(r.Result),
                                 TaskContinuationOptions.AttachedToParent & TaskContinuationOptions.ExecuteSynchronously)
-                                .PipeTo(Self);
+                                .PipeTo(self);
                             return GoTo(ThrottlerState.WaitUpstreamListener);
                         }
                     }
@@ -920,7 +920,7 @@ namespace Akka.Remote.Transport
                     InboundThrottleMode = mode;
                     if(mode is Blackhole) ThrottledMessages = new Queue<ByteString>();
                     CancelTimer(DequeueTimerName);
-                    if(!ThrottledMessages.Any())
+                    if(ThrottledMessages.Any())
                         ScheduleDequeue(InboundThrottleMode.TimeToAvailable(SystemNanoTime.GetNanos(), ThrottledMessages.Peek().Length));
                     Sender.Tell(SetThrottleAck.Instance);
                     return Stay();
