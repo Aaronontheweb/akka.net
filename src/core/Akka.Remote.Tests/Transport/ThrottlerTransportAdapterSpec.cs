@@ -116,20 +116,23 @@ namespace Akka.Remote.Tests.Transport
         private ActorSystem systemB;
         private ActorRef remote;
 
-        private readonly RootActorPath rootB;
+        private RootActorPath RootB
+        {
+            get { return new RootActorPath(systemB.AsInstanceOf<ExtendedActorSystem>().Provider.DefaultAddress); }
+        }
 
         private ActorRef Here
         {
             get
             {
-                Sys.ActorSelection(rootB / "user" / "echo").Tell(new Identify(null), TestActor);
+                Sys.ActorSelection(RootB / "user" / "echo").Tell(new Identify(null), TestActor);
                 return ExpectMsg<ActorIdentity>(TimeSpan.FromSeconds(3)).Subject;
             }
         }
 
         private bool Throttle(ThrottleTransportAdapter.Direction direction, ThrottleMode mode)
         {
-            var rootBAddress = new Address("akka", "systemB", "localhost", rootB.Address.Port.Value);
+            var rootBAddress = new Address("akka", "systemB", "localhost", RootB.Address.Port.Value);
             var transport =
                 Sys.AsInstanceOf<ExtendedActorSystem>().Provider.AsInstanceOf<RemoteActorRefProvider>().Transport;
             var task = transport.ManagementCommand(new SetThrottle(rootBAddress, direction, mode));
@@ -139,7 +142,7 @@ namespace Akka.Remote.Tests.Transport
 
         private bool Disassociate()
         {
-            var rootBAddress = new Address("akka", "systemB", "localhost", rootB.Address.Port.Value);
+            var rootBAddress = new Address("akka", "systemB", "localhost", RootB.Address.Port.Value);
             var transport =
                 Sys.AsInstanceOf<ExtendedActorSystem>().Provider.AsInstanceOf<RemoteActorRefProvider>().Transport;
             var task = transport.ManagementCommand(new ForceDisassociate(rootBAddress));
@@ -154,7 +157,6 @@ namespace Akka.Remote.Tests.Transport
         {
             systemB = ActorSystem.Create("systemB", Sys.Settings.Config);
             remote = systemB.ActorOf(Props.Create<Echo>(), "echo");
-            rootB = new RootActorPath(systemB.AsInstanceOf<ExtendedActorSystem>().Provider.DefaultAddress);
         }
 
         #region Tests
@@ -192,7 +194,25 @@ namespace Akka.Remote.Tests.Transport
 
             // after we remove the Blackhole we can't be certain of the state
             // of the connection, repeat until success
+            here.Tell(new ThrottlingTester.Lost("BlackHole 3"));
+            AwaitCondition(() =>
+            {
+                var received = ReceiveOne(TimeSpan.Zero);
+                if (received != null && received.Equals(new ThrottlingTester.Lost("BlackHole 3")))
+                    return true;
+                else
+                {
+                    here.Tell(new ThrottlingTester.Lost("BlackHole 3"));
+                    return false;
+                }
+            }, TimeSpan.FromSeconds(15));
 
+            here.Tell("Cleanup");
+            FishForMessage(o =>
+            {
+                if (o.Equals("Cleanup")) return true;
+                return false;
+            }, TimeSpan.FromSeconds(5));
         }
 
         #endregion

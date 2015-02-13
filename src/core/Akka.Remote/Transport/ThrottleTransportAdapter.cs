@@ -289,6 +289,11 @@ namespace Akka.Remote.Transport
                     if (handle.Item1 == naked)
                         handle.Item2.Disassociate();
                 }
+
+                /*
+                 * TODO: explain why we do this in .NET, but not in Scala version
+                 */
+                _handleTable.RemoveAll(tuple => tuple.Item1 == naked);
                 Sender.Tell(ForceDisassociateAck.Instance);
             }
             else if (message is ForceDisassociateExplicitly)
@@ -300,6 +305,11 @@ namespace Akka.Remote.Transport
                     if (handle.Item1 == naked)
                         handle.Item2.DisassociateWithFailure(fde.Reason);
                 }
+
+                /*
+                 * TODO: explain why we do this in .NET, but not in Scala version
+                 */
+                _handleTable.RemoveAll(tuple => tuple.Item1 == naked);
                 Sender.Tell(ForceDisassociateAck.Instance);
             }
             else if (message is Checkin)

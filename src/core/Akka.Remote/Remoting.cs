@@ -106,6 +106,16 @@ namespace Akka.Remote
 
         #region RemoteTransport overrides
 
+        public override ISet<Address> Addresses
+        {
+            get { return _addresses; }
+        }
+
+        public override Address DefaultAddress
+        {
+            get { return _defaultAddress; }
+        }
+
         public override void Start()
         {
             log.Info("Starting remoting");
@@ -126,7 +136,7 @@ namespace Akka.Remote
                     var akkaProtocolTransports = addressPromise.Task.Result;
                     if(akkaProtocolTransports.Count==0)
                         throw new Exception("No transports enabled");
-                    Addresses = new HashSet<Address>(akkaProtocolTransports.Select(a => a.Address));
+                    _addresses = new HashSet<Address>(akkaProtocolTransports.Select(a => a.Address));
                     //   this.transportMapping = akkaProtocolTransports
                     //       .ToDictionary(p => p.ProtocolTransport.Transport.SchemeIdentifier,);
                     IEnumerable<IGrouping<string, ProtocolTransportAddressPair>> tmp =
@@ -138,7 +148,7 @@ namespace Akka.Remote
                         _transportMapping.Add(g.Key, set);
                     }
 
-                    DefaultAddress = akkaProtocolTransports.Head().Address;
+                    _defaultAddress = akkaProtocolTransports.Head().Address;
                     _addresses = new HashSet<Address>(akkaProtocolTransports.Select(x => x.Address));
 
                     log.Info("Remoting started; listening on addresses : [{0}]", string.Join(",", _addresses.Select(x => x.ToString())));
