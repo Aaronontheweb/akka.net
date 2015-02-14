@@ -291,7 +291,20 @@ namespace Akka.Remote.Transport
                 }
 
                 /*
-                 * TODO: explain why we do this in .NET, but not in Scala version
+                 * NOTE: Important difference between Akka.NET and Akka here.
+                 * In canonical Akka, ThrottleHandlers are never removed from
+                 * the _handleTable. The reason is because Ask-ing a terminated ActorRef
+                 * doesn't cause any exceptions to be thrown upstream - it just times out
+                 * and propagates a failed Future.
+                 * 
+                 * In the CLR, a CancellationExcepiton gets thrown and causes all
+                 * parent tasks chaining back to the EndPointManager to fail due
+                 * to an Ask timeout.
+                 * 
+                 * So in order to avoid this problem, we remove any disassociated handles
+                 * from the _handleTable.
+                 * 
+                 * Questions? Ask @Aaronontheweb
                  */
                 _handleTable.RemoveAll(tuple => tuple.Item1 == naked);
                 Sender.Tell(ForceDisassociateAck.Instance);
@@ -307,7 +320,20 @@ namespace Akka.Remote.Transport
                 }
 
                 /*
-                 * TODO: explain why we do this in .NET, but not in Scala version
+                 * NOTE: Important difference between Akka.NET and Akka here.
+                 * In canonical Akka, ThrottleHandlers are never removed from
+                 * the _handleTable. The reason is because Ask-ing a terminated ActorRef
+                 * doesn't cause any exceptions to be thrown upstream - it just times out
+                 * and propagates a failed Future.
+                 * 
+                 * In the CLR, a CancellationExcepiton gets thrown and causes all
+                 * parent tasks chaining back to the EndPointManager to fail due
+                 * to an Ask timeout.
+                 * 
+                 * So in order to avoid this problem, we remove any disassociated handles
+                 * from the _handleTable.
+                 * 
+                 * Questions? Ask @Aaronontheweb
                  */
                 _handleTable.RemoveAll(tuple => tuple.Item1 == naked);
                 Sender.Tell(ForceDisassociateAck.Instance);
@@ -382,6 +408,7 @@ namespace Akka.Remote.Transport
             else
             {
                 return target.Ask<SetThrottleAck>(mode, timeout);
+
                 //TODO: use PromiseActorRef here when implemented
                 //var internalTarget = target.AsInstanceOf<InternalActorRef>();
                 //var promiseRef = PromiseActorRef.Apply(internalTarget.Provider, timeout, target, mode.GetType().Name);

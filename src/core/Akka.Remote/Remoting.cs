@@ -57,6 +57,11 @@ namespace Akka.Remote
             return new RARP(system.Provider.AsInstanceOf<RemoteActorRefProvider>());
         }
 
+        public RemoteActorRefProvider Provider
+        {
+            get { return _provider; }
+        }
+
         #region Static methods
 
         public static RARP For(ActorSystem system)

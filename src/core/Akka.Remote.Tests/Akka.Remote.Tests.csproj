@@ -92,6 +92,7 @@
     <Compile Include="RemotingSpec.cs" />
     <Compile Include="Serialization\DaemonMsgCreateSerializerSpec.cs" />
     <Compile Include="Transport\AkkaProtocolSpec.cs" />
+    <Compile Include="Transport\AkkaProtocolStressTest.cs" />
     <Compile Include="Transport\TestTransportSpec.cs" />
     <Compile Include="Transport\ThrottleModeSpec.cs" />
     <Compile Include="Transport\ThrottlerTransportAdapterSpec.cs" />

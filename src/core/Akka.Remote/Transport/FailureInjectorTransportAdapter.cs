@@ -186,13 +186,9 @@ namespace Akka.Remote.Transport
 
         public void Notify(IAssociationEvent ev)
         {
-            if (ev is InboundAssociation)
+            if (ev is InboundAssociation && ShouldDropInbound(ev.AsInstanceOf<InboundAssociation>().Association.RemoteAddress, ev, "notify"))
             {
-                var handle = ev.AsInstanceOf<InboundAssociation>().Association;
-                if (ShouldDropInbound(handle.RemoteAddress, ev, "notify"))
-                {
-                    //ignore
-                } 
+                //ignore
             }
             else
             {

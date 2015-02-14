@@ -1,9 +1,13 @@
 ﻿using System;
+using System.Text.RegularExpressions;
 using Akka.Actor;
 using Akka.Configuration;
 using Akka.Remote.Transport;
 using Akka.TestKit;
+using Akka.TestKit.Internal;
+using Akka.TestKit.Internal.StringMatcher;
 using Akka.TestKit.TestActors;
+using Akka.TestKit.TestEvent;
 using Akka.Util.Internal;
 using Xunit;
 
@@ -213,6 +217,26 @@ namespace Akka.Remote.Tests.Transport
                 if (o.Equals("Cleanup")) return true;
                 return false;
             }, TimeSpan.FromSeconds(5));
+        }
+
+        #endregion
+
+        #region Cleanup 
+
+        protected override void BeforeTermination()
+        {
+            EventFilter.Warning(start: "received dead letter").Mute();
+            EventFilter.Warning(new Regex("received dead letter.*(InboundPayload|Disassociate)")).Mute();
+            systemB.EventStream.Publish(new Mute(new WarningFilter(new RegexMatcher(new Regex("received dead letter.*(InboundPayload|Disassociate)"))), 
+                new ErrorFilter(typeof(EndpointException)),
+                new ErrorFilter(new StartsWithString("AssociationError"))));
+            base.BeforeTermination();
+        }
+
+        protected override void AfterTermination()
+        {
+            Shutdown(systemB);
+            base.AfterTermination();
         }
 
         #endregion
