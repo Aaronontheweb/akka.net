@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
 using Akka.Actor;
@@ -708,25 +707,6 @@ namespace Akka.Remote.Transport
         public void DisassociateWithFailure(DisassociateInfo reason)
         {
             ThrottlerActor.Tell(new ThrottledAssociation.FailWith(reason));
-        }
-    }
-
-    internal static class SystemNanoTime
-    {
-        /// <summary>
-        /// Need to have time that is much more precise than <see cref="DateTime.Now"/> when throttling sends
-        /// </summary>
-        private static readonly Stopwatch StopWatch;
-
-        static SystemNanoTime()
-        {
-            StopWatch = new Stopwatch();
-            StopWatch.Start();
-        }
-
-        public static long GetNanos()
-        {
-            return StopWatch.ElapsedTicks;
         }
     }
 
