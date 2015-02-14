@@ -529,7 +529,7 @@ namespace Akka.Remote
                     // The construction of the Task for shutdownStatus has to happen after the flushStatus future has been finished
                     // so that endpoints are shut down before transports.
                     var shutdownStatus = Task.WhenAll(endpoints.AllEndpoints.Select(
-                            x => x.GracefulStop(settings.FlushWait, new EndpointWriter.FlushAndStop()))).ContinueWith(
+                            x => x.GracefulStop(settings.FlushWait, EndpointWriter.FlushAndStop.Instance))).ContinueWith(
                                 result =>
                                 {
                                     if (result.IsFaulted)
