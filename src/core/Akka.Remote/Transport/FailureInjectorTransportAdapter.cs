@@ -215,7 +215,9 @@ namespace Akka.Remote.Transport
                 var drop = mode as Drop;
                 if (Rng.NextDouble() <= drop.InboundDropP)
                 {
-                    if(_shouldDebugLog) _log.Debug("Dropping inbound [{0}] for [{1}] {2}", instance.GetType(), remoteAddress, debugMessage);
+                    var logString = string.Format("Dropping inbound [{0}] for [{1}] {2}", instance.GetType(),
+                        remoteAddress, debugMessage);
+                    if(_shouldDebugLog) _log.Debug(logString);
                     return true;
                 }
             }
@@ -232,7 +234,8 @@ namespace Akka.Remote.Transport
                 var drop = mode as Drop;
                 if (Rng.NextDouble() <= drop.OutboundDropP)
                 {
-                    if (_shouldDebugLog) _log.Debug("Dropping outbound [{0}] for [{1}] {2}", instance.GetType(), remoteAddress, debugMessage);
+                    var logString = string.Format("Dropping outbound [{0}] for [{1}] {2}", instance.GetType(), remoteAddress, debugMessage);
+                    if (_shouldDebugLog) _log.Debug(logString);
                     return true;
                 }
             }
