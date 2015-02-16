@@ -58,7 +58,7 @@ namespace Akka.Remote.TestKit
         public async Task<INode> StartController(int participants, RoleName name, INode controllerPort)
         {
             if(_controller != null) throw new Exception("TestConductorServer was already started");
-            _controller = _system.ActorOf(new Props(typeof (Controller), new object[] {participants, controllerPort}),
+            _controller = _system.ActorOf(Props.Create(() => new Controller(participants, controllerPort)),
                 "controller");
             //TODO: Need to review this async stuff
             var node = await _controller.Ask<INode>(TestKit.Controller.GetSockAddr.Instance).ConfigureAwait(false);

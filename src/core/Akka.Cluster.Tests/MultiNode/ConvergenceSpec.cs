@@ -110,7 +110,7 @@ namespace Akka.Cluster.Tests.MultiNode
             MuteMarkingAsUnreachable();
         }
 
-        [MultiNodeFact]
+        //[MultiNodeFact]
         public void ConvergenceSpecTests()
         {
             //TODO: This better

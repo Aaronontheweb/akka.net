@@ -496,7 +496,10 @@ namespace Akka.Remote
                         Context.System.DeadLetters.Tell(send);
                     }
                 })
-                .With<EndpointWriter.FlushAndStop>(flush => Context.Stop(Self))
+                .With<EndpointWriter.FlushAndStop>(flush =>
+                {
+                    Context.Stop(Self);
+                })
                 .With<EndpointWriter.StopReading>(stop =>
                 {
                     stop.ReplyTo.Tell(new EndpointWriter.StoppedReading(stop.Writer));
@@ -520,7 +523,10 @@ namespace Akka.Remote
                     //Resending will be triggered by the incoming GotUid message after the connection finished
                     Context.Become(OnReceive);
                 })
-                .With<EndpointWriter.FlushAndStop>(stop => Context.Stop(Self))
+                .With<EndpointWriter.FlushAndStop>(stop =>
+                {
+                    Context.Stop(Self);
+                })
                 .With<EndpointWriter.StopReading>(stop => stop.ReplyTo.Tell(new EndpointWriter.StoppedReading(stop.Writer)));
         }
 

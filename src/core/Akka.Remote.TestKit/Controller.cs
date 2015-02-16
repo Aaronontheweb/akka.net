@@ -238,8 +238,7 @@ namespace Akka.Remote.TestKit
                 var host = channel.RemoteHost;
                 var name = host.ToEndPoint() + ":" + host.Port + "-server" + _generation++;
                 Sender.Tell(
-                    Context.ActorOf(
-                        new Props(typeof (ServerFSM), new object[] {Self, (RemoteConnection)channel}).WithDeploy(Deploy.Local), name));
+                    Context.ActorOf(Props.Create(() => new ServerFSM(Self, channel)).WithDeploy(Deploy.Local), name));
                 return;
             }
             var nodeInfo = message as NodeInfo;

@@ -45,8 +45,8 @@ namespace Akka.Remote.TestKit
         {
             if(_client != null) throw new IllegalStateException("TestConductorClient already started");
             _client =
-                _system.ActorOf(new Props(typeof (ClientFSM),
-                    new object[] {name, controllerAddr}), "TestConductorClient");
+                _system.ActorOf(Props.Create(() => new ClientFSM(name, controllerAddr))
+                , "TestConductorClient");
             
             //TODO: RequiresMessageQueue
             var a = _system.ActorOf(Props.Create<WaitForClientFSMToConnect>());

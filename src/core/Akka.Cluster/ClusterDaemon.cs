@@ -954,8 +954,7 @@ namespace Akka.Cluster
             }
             else
             {
-                //TODO: Akka exception?
-                if(!_latestGossip.Members.IsEmpty) throw new InvalidOperationException("Join can only be done from an empty state");
+                //Guard.Assert(!_latestGossip.Members.IsEmpty, "Join can only be done from an empty state");
 
                 // to support manual join when joining to seed nodes is stuck (no seed nodes available)
                 StopSeedNodeProcess();
@@ -972,7 +971,7 @@ namespace Akka.Cluster
                         : Deadline.Now + _cluster.Settings.RetryUnsuccessfulJoinAfter;
 
                     Context.Become(m => TryingToJoin(m, address, joinDeadline));
-                    ClusterCore(address).Tell(new InternalClusterAction.Join(_cluster.SelfUniqueAddress, _cluster.SelfRoles));
+                    ClusterCore(address).Tell(new InternalClusterAction.Join(SelfUniqueAddress, _cluster.SelfRoles));
                 }
             }
         }
