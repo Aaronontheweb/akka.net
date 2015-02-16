@@ -638,7 +638,7 @@ namespace Akka.Cluster
 
 
     //TODO: RequiresMessageQueue? 
-    sealed class ClusterDomainEventPublisher : UntypedActor
+    sealed class ClusterDomainEventPublisher : ReceiveActor
     {
         Gossip _latestGossip;
        
@@ -646,6 +646,13 @@ namespace Akka.Cluster
         {
             _latestGossip = Gossip.Empty;            
             _eventStream = Context.System.EventStream;
+
+            Receive<InternalClusterAction.PublishChanges>(m => PublishChanges(m.NewGossip));
+            Receive<ClusterEvent.CurrentInternalStats>(p => PublishInternalStats(p));
+            Receive<InternalClusterAction.SendCurrentClusterState>(m => SendCurrentClusterState(m.Receiver));
+            Receive<InternalClusterAction.Subscribe>(m => Subscribe(m.Subscriber, m.InitialStateMode, m.To));
+            Receive<InternalClusterAction.PublishEvent>(p => Publish(p));
+            Receive<InternalClusterAction.Unsubscribe>(u => Unsubscribe(u.Subscriber, u.To));
         }
 
         protected override void PreRestart(Exception reason, object message)
@@ -657,16 +664,6 @@ namespace Akka.Cluster
         {
             // publish the final removed state before shutting down
             PublishChanges(Gossip.Empty);
-        }
-
-        protected override void OnReceive(object message)
-        {
-            message.Match()
-                .With<InternalClusterAction.PublishChanges>(m => PublishChanges(m.NewGossip))
-                .With<ClusterEvent.CurrentInternalStats>(PublishInternalStats)
-                .With<InternalClusterAction.SendCurrentClusterState>(m => SendCurrentClusterState(m.Receiver))
-                .With<InternalClusterAction.Subscribe>(m => Subscribe(m.Subscriber, m.InitialStateMode, m.To))
-                .With<InternalClusterAction.PublishEvent>(Publish);
         }
 
         readonly EventStream _eventStream;

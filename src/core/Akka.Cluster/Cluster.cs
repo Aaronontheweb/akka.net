@@ -74,10 +74,15 @@ namespace Akka.Cluster
             //create supervisor for daemons under path "/system/cluster"
             _clusterDaemons = system.SystemActorOf(Props.Create(() => new ClusterDaemon(_settings)).WithDeploy(Deploy.Local), "cluster");
 
-            //TODO: Pretty sure this is bad and will at least throw aggregateexception possibly worse. 
-            _clusterCore = GetClusterCoreRef().Result;
-
+            SetClusterCore();
             _readView = new ClusterReadView(this);
+        }
+
+        private void SetClusterCore()
+        {
+            var clusterCoreTask = GetClusterCoreRef();
+            clusterCoreTask.Wait();
+            _clusterCore = clusterCoreTask.Result;
         }
 
         /// <summary>

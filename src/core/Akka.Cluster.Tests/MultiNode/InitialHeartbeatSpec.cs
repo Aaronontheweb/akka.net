@@ -3,6 +3,7 @@ using System.Linq;
 using Akka.Configuration;
 using Akka.Remote.TestKit;
 using Akka.Remote.Transport;
+using Akka.TestKit;
 using Xunit;
 
 namespace Akka.Cluster.Tests.MultiNode
@@ -47,7 +48,7 @@ namespace Akka.Cluster.Tests.MultiNode
 
             TestTransport = true;
         }
-        
+
         public class InitialHeartbeatMultiNode1 : InitialHeartbeatSpec
         {
         }
@@ -59,12 +60,13 @@ namespace Akka.Cluster.Tests.MultiNode
         public class InitialHeartbeatMultiNode3 : InitialHeartbeatSpec
         {
         }
-        
+
         public abstract class InitialHeartbeatSpec : MultiNodeClusterSpec
         {
             private readonly InitialHeartbeatMultiNodeConfig _config;
 
-            protected InitialHeartbeatSpec() : this(new InitialHeartbeatMultiNodeConfig())
+            protected InitialHeartbeatSpec()
+                : this(new InitialHeartbeatMultiNodeConfig())
             {
             }
 
@@ -84,27 +86,29 @@ namespace Akka.Cluster.Tests.MultiNode
                 AwaitClusterUp(_config.First);
 
                 RunOn(() =>
-                    AwaitAssert(() =>
+                {
+                    Within(TimeSpan.FromSeconds(10), () => AwaitAssert(() =>
                     {
                         Cluster.SendCurrentClusterState(TestActor);
-                        Assert.True(
-                            ExpectMsg<ClusterEvent.CurrentClusterState>(TimeSpan.FromMilliseconds(50))
-                                .Members.Select(m => m.Address)
-                                .Contains(secondAddress));
-                    }, TimeSpan.FromSeconds(20), TimeSpan.FromMilliseconds(50))
-                    , _config.First);
+                        ExpectMsg<ClusterEvent.CurrentClusterState>()
+                            .Members.Select(m => m.Address)
+                            .Contains(secondAddress).ShouldBeTrue();
+                    }, interval: TimeSpan.FromMilliseconds(50)));
+                    EnterBarrier("second-joined");
+                }, _config.First);
 
                 RunOn(() =>
                 {
-                    Cluster.Join(GetAddress(_config.First));
-                    AwaitAssert(() =>
+                    Cluster.Join(firstAddress);
+                    Within(TimeSpan.FromSeconds(10), () => AwaitAssert(() =>
                     {
                         Cluster.SendCurrentClusterState(TestActor);
-                        Assert.True(
-                            ExpectMsg<ClusterEvent.CurrentClusterState>(TimeSpan.FromMilliseconds(50))
-                                .Members.Select(m => m.Address)
-                                .Contains(firstAddress));
-                    }, TimeSpan.FromSeconds(20), TimeSpan.FromMilliseconds(50));
+
+                        ExpectMsg<ClusterEvent.CurrentClusterState>()
+                            .Members.Select(m => m.Address)
+                            .Contains(firstAddress).ShouldBeTrue();
+                    }, interval: TimeSpan.FromMilliseconds(50)));
+                    EnterBarrier("second-joined");
                 }, _config.Second);
 
                 //TODO: Seem to be able to pass barriers once other node fails?
@@ -114,16 +118,12 @@ namespace Akka.Cluster.Tests.MultiNode
                 // and when it does the messages doesn't go through and the first extra heartbeat is triggered.
                 // If the first heartbeat arrives, it will detect the failure anyway but not really exercise the
                 // part that we are trying to test here.
-                RunOn(
-                    () =>
+                RunOn(() =>
                         TestConductor.Blackhole(_config.First, _config.Second, ThrottleTransportAdapter.Direction.Both)
                             .Wait(), _config.Controller);
 
-                RunOn(
-                    () => AwaitCondition(
-                        () => !Cluster.FailureDetector.IsAvailable(GetAddress(_config.First))
-                        , TimeSpan.FromSeconds(15))
-                    , _config.Second);
+                RunOn(() => Within(TimeSpan.FromSeconds(15), () => AwaitCondition(
+                    () => !Cluster.FailureDetector.IsAvailable(GetAddress(_config.First)))), _config.Second);
 
                 EnterBarrier("after-1");
             }

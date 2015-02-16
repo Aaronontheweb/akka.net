@@ -733,40 +733,66 @@ namespace Akka.Cluster
 
         private void Uninitialized(object message)
         {
-            message.Match()
-                .With<InternalClusterAction.InitJoin>(m =>
-                    Sender.Tell(new InternalClusterAction.InitJoinAck(_cluster.SelfAddress)))
-                .With<ClusterUserAction.JoinTo>(m => Join(m.Address))
-                .With<InternalClusterAction.JoinSeedNodes>(m => JoinSeedNodes(m.SeedNodes))
-                .With<InternalClusterAction.ISubscriptionMessage>(msg => _publisher.Forward(msg));
+            if (message is InternalClusterAction.InitJoin)
+            {
+                Sender.Tell(new InternalClusterAction.InitJoinNack(_cluster.SelfAddress));
+            }
+            else if (message is ClusterUserAction.JoinTo)
+            {
+                var jt = message as ClusterUserAction.JoinTo;
+                Join(jt.Address);
+            }
+            else if (message is InternalClusterAction.JoinSeedNodes)
+            {
+                var js = message as InternalClusterAction.JoinSeedNodes;
+                JoinSeedNodes(js.SeedNodes);
+            }
+            else if (message is InternalClusterAction.ISubscriptionMessage)
+            {
+                var isub = message as InternalClusterAction.ISubscriptionMessage;
+                _publisher.Forward(isub);
+            }
+            else
+            {
+                Unhandled(message);
+            }
         }
 
         private void TryingToJoin(object message, Address joinWith, Deadline deadline)
         {
-            message.Match()
-                .With<InternalClusterAction.Welcome>(m => Welcome(joinWith, m.From, m.Gossip))
-                .With<InternalClusterAction.InitJoin>(
-                    m => Sender.Tell(new InternalClusterAction.InitJoinAck(_cluster.SelfAddress)))
-                .With<ClusterUserAction.JoinTo>(m =>
+            if (message is InternalClusterAction.Welcome)
+            {
+                var w = message as InternalClusterAction.Welcome;
+                Welcome(joinWith, w.From, w.Gossip);
+            }
+            else if (message is InternalClusterAction.InitJoin)
+            {
+                Sender.Tell(new InternalClusterAction.InitJoinNack(_cluster.SelfAddress));
+            }
+            else if (message is ClusterUserAction.JoinTo)
+            {
+                var jt = message as ClusterUserAction.JoinTo;
+                BecomeUnitialized();
+                Join(jt.Address);
+            }
+            else if (message is InternalClusterAction.ISubscriptionMessage)
+            {
+                var isub = message as InternalClusterAction.ISubscriptionMessage;
+                _publisher.Forward(isub);
+            }
+            else if (message is InternalClusterAction.ITick)
+            {
+                if (deadline != null && deadline.IsOverdue)
                 {
                     BecomeUnitialized();
-                    Join(m.Address);
-                })
-                .With<InternalClusterAction.JoinSeedNodes>(m =>
-                {
-                    BecomeUnitialized();
-                    JoinSeedNodes(m.SeedNodes);
-                })
-                .With<InternalClusterAction.ISubscriptionMessage>(msg => _publisher.Forward(msg))
-                .Default(m =>
-                {
-                    if (deadline != null && deadline.IsOverdue)
-                    {
-                        BecomeUnitialized();
-                        if (_cluster.Settings.SeedNodes.Any()) JoinSeedNodes(_cluster.Settings.SeedNodes);
-                        else Join(joinWith);
-                    }
-                });
+                    if (_cluster.Settings.SeedNodes.Any()) JoinSeedNodes(_cluster.Settings.SeedNodes);
+                    else Join(joinWith);
+                }
+            }
+            else
+            {
+                Unhandled(message);
+            }
         }
 
         private void BecomeUnitialized()
@@ -789,27 +815,79 @@ namespace Akka.Cluster
 
         private void Initialized(object message)
         {
-            message.Match()
-                .With<GossipEnvelope>(m => ReceiveGossip(m))
-                .With<GossipStatus>(ReceiveGossipStatus)
-                .With<InternalClusterAction.GossipTick>(m => GossipTick())
-                .With<InternalClusterAction.GossipSpeedupTick>(m => GossipSpeedupTick())
-                .With<InternalClusterAction.ReapUnreachableTick>(m => ReapUnreachableMembers())
-                .With<InternalClusterAction.LeaderActionsTick>(m => LeaderActions())
-                .With<InternalClusterAction.PublishStatsTick>(m => PublishInternalStats())
-                .With<InternalClusterAction.InitJoin>(m => InitJoin())
-                .With<InternalClusterAction.Join>(m => Joining(m.Node, m.Roles))
-                .With<ClusterUserAction.Down>(m => Downing(m.Address))
-                .With<ClusterUserAction.Leave>(m => Leaving(m.Address))
-                .With<InternalClusterAction.SendGossipTo>(m => SendGossipTo(m.Address))
-                .With<InternalClusterAction.ISubscriptionMessage>(m => _publisher.Forward(m))
-                .With<QuarantinedEvent>(m => Quarantined(new UniqueAddress(m.Address, m.Uid)))
-                .With<ClusterUserAction.JoinTo>(
-                    m => _log.Info("Trying to join [{0}] when already part of a cluster, ignoring", m.Address))
-                .With<InternalClusterAction.JoinSeedNodes>(
-                    m =>
-                        _log.Info("Trying to join seed nodes [{0}] when already part of a cluster, ignoring",
-                            m.SeedNodes.Select(a => a.ToString()).Aggregate((a, b) => a + ", " + b)));
+            if (message is GossipEnvelope)
+            {
+                var ge = message as GossipEnvelope;
+                ReceiveGossip(ge);
+            }
+            else if (message is GossipStatus)
+            {
+                var gs = message as GossipStatus;
+                ReceiveGossipStatus(gs);
+            }
+            else if (message is InternalClusterAction.GossipTick)
+            {
+                GossipTick();
+            }
+            else if (message is InternalClusterAction.GossipSpeedupTick)
+            {
+                GossipSpeedupTick();
+            }
+            else if (message is InternalClusterAction.ReapUnreachableTick)
+            {
+                ReapUnreachableMembers();
+            }
+            else if (message is InternalClusterAction.LeaderActionsTick)
+            {
+                LeaderActions();
+            }
+            else if (message is InternalClusterAction.PublishStatsTick)
+            {
+                PublishInternalStats();
+            }
+            else if (message is InternalClusterAction.InitJoin)
+            {
+                InitJoin();
+            }
+            else if (message is InternalClusterAction.Join)
+            {
+                var join = message as InternalClusterAction.Join;
+                Joining(join.Node, join.Roles);
+            }
+            else if (message is ClusterUserAction.Down)
+            {
+                var down = message as ClusterUserAction.Down;
+                Downing(down.Address);
+            }
+            else if (message is ClusterUserAction.Leave)
+            {
+                var leave = message as ClusterUserAction.Leave;
+                Leaving(leave.Address);
+            }
+            else if (message is InternalClusterAction.ISubscriptionMessage)
+            {
+                _publisher.Forward(message);
+            }
+            else if (message is QuarantinedEvent)
+            {
+                var q = message as QuarantinedEvent;
+                Quarantined(new UniqueAddress(q.Address, q.Uid));
+            }
+            else if (message is ClusterUserAction.JoinTo)
+            {
+                var jt = message as ClusterUserAction.JoinTo;
+                _log.Info("Trying to join [{0}] when already part of a cluster, ignoring", jt.Address);
+            }
+            else if (message is InternalClusterAction.JoinSeedNodes)
+            {
+                var joinSeedNodes = message as InternalClusterAction.JoinSeedNodes;
+                _log.Info("Trying to join seed nodes [{0}] when already part of a cluster, ignoring",
+                    joinSeedNodes.SeedNodes.Select(a => a.ToString()).Aggregate((a, b) => a + ", " + b));
+            }
+            else
+            {
+                Unhandled(message);
+            }
         }
 
         protected override void OnReceive(object message)
