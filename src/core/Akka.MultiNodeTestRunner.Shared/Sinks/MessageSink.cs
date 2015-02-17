@@ -82,7 +82,7 @@ namespace Akka.MultiNodeTestRunner.Shared.Sinks
         };
 
         private const string NodePassStatusRegexString =
-            @"\[(\w){4}(?<node>[0-9]{1,2})\]\[(?<status>(PASS|FAIL))\]{1}\s(?<test>.*)";
+            @"\[(\w|\W){4}(?<node>[0-9]{1,2})\]\[(?<status>(PASS|FAIL))\]{1}\s(?<test>.*)";
         protected static readonly Regex NodePassStatusRegex = new Regex(NodePassStatusRegexString);
 
         private const string NodePassed = "PASS";
@@ -96,13 +96,13 @@ namespace Akka.MultiNodeTestRunner.Shared.Sinks
         /*
          * Regular expressions - go big or go home. [Aaronontheweb]
          */
-        private const string NodeLogMessageRegexString = @"\[(\w){4}(?<node>[0-9]{1,2})\]\[(?<level>(\w)*)\]\[(?<time>\d{1,2}[- /.]\d{1,2}[- /.]\d{1,4}\s\d{1,2}:\d{1,2}:\d{1,2}\s(AM|PM))\](?<thread>\[(\w|\s)*\])\[(?<logsource>(\[|\w|:|/|\(|\)|\]|\.|-|\$|%|\+|\^|@)*)\]\s(?<message>(\w|\s|:|<|\.|\+|>|,|\[|/|-|]|%|\$|\+|\^|@)*)";
+        private const string NodeLogMessageRegexString = @"\[(\w|\W){4}(?<node>[0-9]{1,2})\]\[(?<level>(\w|\W)*)\]\[(?<time>\d{1,4}[- /.]\d{1,4}[- /.]\d{1,4}\s\d{1,2}:\d{1,2}:\d{1,2}(\s(AM|PM)){0,1})\](?<thread>\[(\w|\s|\W)*\])\[(?<logsource>(\[|\w|\W|:|/|\(|\)|\]|\.|-|\$|%|\+|\^|@)*)\]\s(?<message>(\w|\W|\s|:|<|\.|\+|>|,|\[|/|-|]|%|\$|\+|\^|@)*)";
         protected static readonly Regex NodeLogMessageRegex = new Regex(NodeLogMessageRegexString);
 
-        private const string RunnerLogMessageRegexString = @"\[(?<level>(\w)*)\]\[(?<time>\d{1,2}[- /.]\d{1,2}[- /.]\d{1,4}\s\d{1,2}:\d{1,2}:\d{1,2}\s(AM|PM))\](?<thread>\[(\w|\s)*\])\[(?<logsource>(\[|\w|:|/|\(|\)|\]|\.|-|\$|%|\+|\^|@)*)\]\s(?<message>(\w|\s|:|<|\.|\+|>|,|\[|/|-|]|%|\$|\+|\^|@)*)";
+        private const string RunnerLogMessageRegexString = @"\[(?<level>(\w|\W)*)\]\[(?<time>\d{1,4}[- /.]\d{1,4}[- /.]\d{1,4}\s\d{1,2}:\d{1,2}:\d{1,2}(\s(AM|PM)){0,1})\](?<thread>\[(\w|\W|\s)*\])\[(?<logsource>(\[|\w|\W|:|/|\(|\)|\]|\.|-|\$|%|\+|\^|@)*)\]\s(?<message>(\w|\W|\s|:|<|\.|\+|>|,|\[|/|-|]|%|\$|\+|\^|@)*)";
         protected static readonly Regex RunnerLogMessageRegex = new Regex(RunnerLogMessageRegexString);
 
-        private const string NodeLogFragmentRegexString = @"\[(\w){4}(?<node>[0-9]{1,2})\](?<message>(.)*)";
+        private const string NodeLogFragmentRegexString = @"\[(\w|\W){4}(?<node>[0-9]{1,2})\](?<message>(.)*)";
         protected static readonly Regex NodeLogFragmentRegex = new Regex(NodeLogFragmentRegexString);
 
         public static MultiNodeTestRunnerMessageType DetermineMessageType(string messageStr)
