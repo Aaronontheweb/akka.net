@@ -106,6 +106,7 @@
     <Compile Include="Actor\FSMTransitionSpec.cs" />
     <Compile Include="Actor\PatternSpec.cs" />
     <Compile Include="Actor\ReceiveTimeoutSpec.cs" />
+    <Compile Include="Actor\RelativeActorPathSpec.cs" />
     <Compile Include="Actor\RootGuardianActorRef_Tests.cs" />
     <Compile Include="Actor\StashMailboxSpec.cs" />
     <Compile Include="Actor\Stash\ActorWithStashSpec.cs" />

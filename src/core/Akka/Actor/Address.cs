@@ -1,4 +1,7 @@
 ﻿using System;
+using System.CodeDom;
+using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 
 namespace Akka.Actor
@@ -191,6 +194,25 @@ namespace Akka.Actor
     /// </summary>
     public static class RelativeActorPath
     {
+        public static IEnumerable<string> Unapply(string addr)
+        {
+            try
+            {
+                var finalAddr = addr;
+                if (!Uri.IsWellFormedUriString(addr, UriKind.RelativeOrAbsolute))
+                {
+                    //hack to cause the URI not to explode when we're only given an actor name
+                    finalAddr = "/" + addr;
+                }
+                var uri = new Uri(finalAddr, UriKind.RelativeOrAbsolute);
+                if (uri.IsAbsoluteUri) return null;
 
+                return finalAddr.Split('/').SkipWhile(x => string.IsNullOrEmpty(x));
+            }
+            catch (UriFormatException ex)
+            {
+                return null;
+            }
+        }
     }
 }
