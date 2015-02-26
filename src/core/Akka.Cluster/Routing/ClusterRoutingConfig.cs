@@ -10,7 +10,7 @@ using Akka.Util.Internal;
 namespace Akka.Cluster.Routing
 {
     /// <summary>
-    /// `TotalInstances` of cluster router must be > 0
+    /// <see cref="ClusterRouterSettingsBase.TotalInstances"/> of cluster router must be > 0
     /// </summary>
     public sealed class ClusterRouterGroupSettings : ClusterRouterSettingsBase
     {
@@ -23,7 +23,12 @@ namespace Akka.Cluster.Routing
             RouteesPaths = routeesPaths;
             if(routeesPaths == null || routeesPaths.IsEmpty || string.IsNullOrEmpty(routeesPaths.First())) throw new ArgumentException("routeesPaths must be defined", "routeesPaths");
 
-            //todo add relative actor path validation
+            //validate that all routeesPaths are relative
+            foreach (var path in routeesPaths)
+            {
+                if(RelativeActorPath.Unapply(path) == null)
+                    throw new ArgumentException(string.Format("routeesPaths [{0}] is not a valid relative actor path.", path), "routeesPaths");
+            }
         }
 
         public ImmutableHashSet<string> RouteesPaths { get; private set; }
@@ -35,9 +40,9 @@ namespace Akka.Cluster.Routing
     }
 
     /// <summary>
-    /// `totalInstances` of cluster router must be > 0
-    /// `maxInstancesPerNode` of cluster router must be > 0
-    /// `maxInstancesPerNode` of cluster router must be 1 when routeesPath is defined
+    /// <see cref="ClusterRouterSettingsBase.TotalInstances"/> of cluster router must be > 0
+    /// <see cref="MaxInstancesPerNode"/> of cluster router must be > 0
+    /// <see cref="MaxInstancesPerNode"/> of cluster router must be 1 when routeesPath is defined
     /// </summary>
     public sealed class ClusterRouterPoolSettings : ClusterRouterSettingsBase
     {
@@ -59,6 +64,9 @@ namespace Akka.Cluster.Routing
         }
     }
 
+    /// <summary>
+    /// Base class for defining <see cref="ClusterRouterGroupSettings"/> and <see cref="ClusterRouterPoolSetings"/>
+    /// </summary>
     public abstract class ClusterRouterSettingsBase
     {
         protected ClusterRouterSettingsBase(int totalInstances, bool allowLocalRoutees) : this(totalInstances, allowLocalRoutees, null)

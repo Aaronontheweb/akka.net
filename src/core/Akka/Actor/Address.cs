@@ -207,7 +207,7 @@ namespace Akka.Actor
                 var uri = new Uri(finalAddr, UriKind.RelativeOrAbsolute);
                 if (uri.IsAbsoluteUri) return null;
 
-                return finalAddr.Split('/').SkipWhile(x => string.IsNullOrEmpty(x));
+                return finalAddr.Split('/').SkipWhile(string.IsNullOrEmpty);
             }
             catch (UriFormatException ex)
             {
