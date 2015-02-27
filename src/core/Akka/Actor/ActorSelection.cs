@@ -219,6 +219,11 @@ namespace Akka.Actor
         public SelectionPathElement[] Elements { get; private set; }
 
         public bool WildCardFanOut { get; private set; }
+
+        public override string ToString()
+        {
+            return string.Format("ActorSelectionMessage: {0} to {1}", Message, string.Join("/", Elements.Select(x => x.ToString())));
+        }
     }
 
     /// <summary>
