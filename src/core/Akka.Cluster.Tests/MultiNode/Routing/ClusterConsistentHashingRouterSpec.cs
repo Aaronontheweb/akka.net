@@ -1,14 +1,12 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
-using System.Runtime.InteropServices;
-using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Cluster.Routing;
 using Akka.Configuration;
 using Akka.Remote.TestKit;
 using Akka.Routing;
 using Akka.TestKit;
+using Xunit;
 
 namespace Akka.Cluster.Tests.MultiNode.Routing
 {
@@ -114,6 +112,7 @@ namespace Akka.Cluster.Tests.MultiNode.Routing
             AClusterRouterWithConsistentHashingPoolMustSelectDestinationBasedOnHashKey();
             AClusterRouterWithConsistentHashingPoolMustDeployRouteesToNewMemberNodesInTheCluster();
             AClusterRouterWithConsistentHashingPoolMustDeployProgramaticallyDefinedRouteesToTheMemberNodesInTheCluster();
+            AClusterRouterWithConsistentHashingPoolMustRemoveRouteesFromDownedNode();
         }
 
         protected void AClusterRouterWithConsistentHashingPoolMustStartClusterWith2Nodes()
@@ -126,7 +125,7 @@ namespace Akka.Cluster.Tests.MultiNode.Routing
         {
             RunOn(() =>
             {
-                // it may take some timeuntil router receives cluster member events
+                // it may take some time until router receives cluster member events
                 AwaitAssert(() =>
                 {
                     CurrentRoutees(Router1).Members.Count().ShouldBe(4);
@@ -194,6 +193,34 @@ namespace Akka.Cluster.Tests.MultiNode.Routing
             }, _config.First);
 
             EnterBarrier("after-5");
+        }
+
+        /// <summary>
+        /// An explicit check to ensure that our routers can adjust to unreachable member events as well
+        /// </summary>
+        protected void AClusterRouterWithConsistentHashingPoolMustRemoveRouteesFromDownedNode()
+        {
+            
+
+            RunOn(() =>
+            {
+                Cluster.Down(GetAddress(_config.Third));
+                //removed
+                AwaitAssert(() => Assert.False(ClusterView.UnreachableMembers.Select(x => x.Address).Contains(GetAddress(_config.Third))));
+                AwaitAssert(() => Assert.False(ClusterView.Members.Select(x => x.Address).Contains(GetAddress(_config.Third))));
+
+                // it may take some time until router receives cluster member events
+                AwaitAssert(() =>
+                {
+                    CurrentRoutees(Router1).Members.Count().ShouldBe(4);
+                });
+                var routees = CurrentRoutees(Router1);
+                var routerMembers = routees.Members.Select(x => FullAddress(((ActorRefRoutee)x).Actor)).Distinct().ToList();
+                routerMembers.ShouldBe(new List<Address>() { GetAddress(_config.First), GetAddress(_config.Second) });
+
+            }, _config.First);
+
+            EnterBarrier("after-6");
         }
     }
 }

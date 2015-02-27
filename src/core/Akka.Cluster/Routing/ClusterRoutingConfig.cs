@@ -421,6 +421,9 @@ namespace Akka.Cluster.Routing
             }
             else
             {
+                //find the node with the fewest routees
+               
+
                 var minNode =
                     UsedRouteePaths.Aggregate(
                         (curMin, x) =>
