@@ -113,6 +113,7 @@ namespace Akka.Cluster.Tests.MultiNode.Routing
             AClusterRouterWithConsistentHashingPoolMustCreateRouteesFromConfiguration();
             AClusterRouterWithConsistentHashingPoolMustSelectDestinationBasedOnHashKey();
             AClusterRouterWithConsistentHashingPoolMustDeployRouteesToNewMemberNodesInTheCluster();
+            AClusterRouterWithConsistentHashingPoolMustDeployProgramaticallyDefinedRouteesToTheMemberNodesInTheCluster();
         }
 
         protected void AClusterRouterWithConsistentHashingPoolMustStartClusterWith2Nodes()
@@ -179,7 +180,7 @@ namespace Akka.Cluster.Tests.MultiNode.Routing
                     Sys.ActorOf(
                         new ClusterRouterPool(local: new ConsistentHashingPool(0),
                             settings: new ClusterRouterPoolSettings(totalInstances: 10, maxInstancesPerNode: 2,
-                                allowLocalRoutees: true, useRole: null)).Props(Props.Create<ConsistentHashingRouterMultiNodeConfig.Echo>()), "router3");
+                                allowLocalRoutees: true, useRole: null)).Props(Props.Create<ConsistentHashingRouterMultiNodeConfig.Echo>()), "router2");
 
                 //it may take some time until router receives cluster member events
                 //it may take some time until router receives cluster member events
@@ -193,20 +194,6 @@ namespace Akka.Cluster.Tests.MultiNode.Routing
             }, _config.First);
 
             EnterBarrier("after-5");
-        }
-
-        protected void
-            AClusterRouterWithConsistentHashingPoolMustHandleCombinationOfConfiguredRouterAndProgramaticallyDefinedHashMapping
-            ()
-        {
-            RunOn(() =>
-            {
-                Func<string, object> hashMapping = s => s;
-                var router4 = Sys.ActorOf(
-                        new ClusterRouterPool(local: new ConsistentHashingPool(0),
-                            settings: new ClusterRouterPoolSettings(totalInstances: 10, maxInstancesPerNode: 2,
-                                allowLocalRoutees: true, useRole: null)).Props(Props.Create<ConsistentHashingRouterMultiNodeConfig.Echo>()), "router4");
-            }, _config.First);
         }
     }
 }
