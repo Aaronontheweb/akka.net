@@ -1,8 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using Akka.Actor;
+using Akka.Cluster.Routing;
 using Akka.Configuration;
 using Akka.Remote.TestKit;
 using Akka.Routing;
@@ -155,8 +157,7 @@ namespace Akka.Cluster.Tests.MultiNode.Routing
 
             RunOn(() =>
             {
-                //it may take sometime until router receives cluster member events
-                // it may take some timeuntil router receives cluster member events
+                //it may take some time until router receives cluster member events
                 AwaitAssert(() =>
                 {
                     CurrentRoutees(Router1).Members.Count().ShouldBe(6);
@@ -169,6 +170,43 @@ namespace Akka.Cluster.Tests.MultiNode.Routing
             EnterBarrier("after-4");
         }
 
+        protected void
+            AClusterRouterWithConsistentHashingPoolMustDeployProgramaticallyDefinedRouteesToTheMemberNodesInTheCluster()
+        {
+            RunOn(() =>
+            {
+                var router2 =
+                    Sys.ActorOf(
+                        new ClusterRouterPool(local: new ConsistentHashingPool(0),
+                            settings: new ClusterRouterPoolSettings(totalInstances: 10, maxInstancesPerNode: 2,
+                                allowLocalRoutees: true, useRole: null)).Props(Props.Create<ConsistentHashingRouterMultiNodeConfig.Echo>()), "router3");
 
+                //it may take some time until router receives cluster member events
+                //it may take some time until router receives cluster member events
+                AwaitAssert(() =>
+                {
+                    CurrentRoutees(router2).Members.Count().ShouldBe(6);
+                });
+                var routees = CurrentRoutees(router2);
+                var routerMembers = routees.Members.Select(x => FullAddress(((ActorRefRoutee)x).Actor)).Distinct().ToList();
+                routerMembers.ShouldBe(Roles.Select(GetAddress).ToList());
+            }, _config.First);
+
+            EnterBarrier("after-5");
+        }
+
+        protected void
+            AClusterRouterWithConsistentHashingPoolMustHandleCombinationOfConfiguredRouterAndProgramaticallyDefinedHashMapping
+            ()
+        {
+            RunOn(() =>
+            {
+                Func<string, object> hashMapping = s => s;
+                var router4 = Sys.ActorOf(
+                        new ClusterRouterPool(local: new ConsistentHashingPool(0),
+                            settings: new ClusterRouterPoolSettings(totalInstances: 10, maxInstancesPerNode: 2,
+                                allowLocalRoutees: true, useRole: null)).Props(Props.Create<ConsistentHashingRouterMultiNodeConfig.Echo>()), "router4");
+            }, _config.First);
+        }
     }
 }
