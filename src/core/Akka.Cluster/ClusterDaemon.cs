@@ -1515,7 +1515,7 @@ namespace Akka.Cluster
                     return m.CopyUp(upNumber);
                 }
 
-                if (m.Status == MemberStatus.Leaving && hasPartionHandoffCompletedSuccessfully)
+                if (m.Status == MemberStatus.Leaving)
                 {
                     // Move LEAVING => EXITING (once we have a convergence on LEAVING
                     // *and* if we have a successful partition handoff)
@@ -1547,6 +1547,13 @@ namespace Akka.Cluster
                 // log status changes
                 foreach (var m in changedMembers)
                     _log.Info("Leader is moving node [{0}] to [{1}]", m.Address, m.Status);
+
+                //log the removal of unreachable nodes
+                foreach (var m in removedUnreachable)
+                {
+                    var status = m.Status == MemberStatus.Exiting ? "exiting" : "unreachable";
+                    _log.Info("Leader is removing {0} node [{1}]", status, m.Address);
+                }
 
                 Publish(_latestGossip);
 

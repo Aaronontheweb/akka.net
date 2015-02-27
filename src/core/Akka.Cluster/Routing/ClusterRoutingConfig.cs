@@ -175,7 +175,7 @@ namespace Akka.Cluster.Routing
 
         public override bool IsManagementMessage(object message)
         {
-            return message is IClusterMessage || message is ClusterEvent.CurrentClusterState || base.IsManagementMessage(message);
+            return message is ClusterEvent.IClusterDomainEvent || message is ClusterEvent.CurrentClusterState || base.IsManagementMessage(message);
         }
 
         public override Routee NewRoutee(Props routeeProps, IActorContext context)

@@ -51,7 +51,7 @@ namespace Akka.Cluster.Tests.MultiNode.Routing
                     /router3 = ${common-router-settings}
                     /router4 = ${common-router-settings}
                     }
-                    #akka.cluster.publish-stats-interval = 5s
+                    akka.cluster.publish-stats-interval = 5s
                 "))
                 .WithFallback(MultiNodeClusterSpec.ClusterConfig());
         }
