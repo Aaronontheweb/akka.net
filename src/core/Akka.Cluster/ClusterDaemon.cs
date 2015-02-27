@@ -655,9 +655,13 @@ namespace Akka.Cluster
             _publisher = publisher;
             SelfUniqueAddress = _cluster.SelfUniqueAddress;
             _vclockNode = new VectorClock.Node(VclockName(SelfUniqueAddress));
-            //TODO: _statsEnabled = PublishStatsInternal.IsFinite;
+            
             var settings = _cluster.Settings;
             var scheduler = _cluster.Scheduler;
+
+            _statsEnabled = settings.PublishStatsInterval.HasValue
+                            && settings.PublishStatsInterval >= TimeSpan.Zero
+                            && settings.PublishStatsInterval != TimeSpan.MaxValue;
 
             _gossipTaskCancellable = new CancellationTokenSource();
             _gossipTask =
@@ -686,7 +690,7 @@ namespace Akka.Cluster
                     InternalClusterAction.LeaderActionsTick.Instance,
                     _leaderActionsTaskCancellable.Token);
 
-            if (settings.PublishStatsInterval != null)
+            if (settings.PublishStatsInterval != null && settings.PublishStatsInterval >= TimeSpan.Zero && settings.PublishStatsInterval != TimeSpan.MaxValue)
             {
                 _publishStatsTaskTaskCancellable = new CancellationTokenSource();
                 _publishStatsTask =

@@ -321,33 +321,39 @@ namespace Akka.Cluster.Routing
 
         protected override void OnReceive(object message)
         {
-            message.Match()
-                .With<ClusterEvent.CurrentClusterState>(state =>
+            if (message is ClusterEvent.CurrentClusterState)
+            {
+                var state = message as ClusterEvent.CurrentClusterState;
+                Nodes = ImmutableSortedSet.Create(Member.AddressOrdering,
+                      state.Members.Where(IsAvailable).Select(x => x.Address).ToArray());
+                AddRoutees();
+            }
+            else if (message is ClusterEvent.IMemberEvent)
+            {
+                var @event = message as ClusterEvent.IMemberEvent;
+                if (IsAvailable(@event.Member))
+                    AddMember(@event.Member);
+                else
                 {
-                    Nodes = ImmutableSortedSet.Create(Member.AddressOrdering,
-                        state.Members.Where(IsAvailable).Select(x => x.Address).ToArray());
-                    AddRoutees();
-                })
-                .With<ClusterEvent.IMemberEvent>(@event =>
-                {
-                    if (IsAvailable(@event.Member))
-                        AddMember(@event.Member);
-                    else
-                    {
-                        // other events means that it is no onger interesting, such as
-                        // MemberExited, MemberRemoved
-                        RemoveMember(@event.Member);
-                    }
-                })
-                .With<ClusterEvent.UnreachableMember>(member => RemoveMember(member.Member))
-                .With<ClusterEvent.ReachableMember>(member =>
-                {
-                    if (IsAvailable(member.Member)) AddMember(member.Member);
-                })
-                .Default(msg =>
-                {
-                    base.OnReceive(msg);
-                });
+                    // other events means that it is no onger interesting, such as
+                    // MemberExited, MemberRemoved
+                    RemoveMember(@event.Member);
+                }
+            }
+            else if (message is ClusterEvent.UnreachableMember)
+            {
+                var member = message as ClusterEvent.UnreachableMember;
+                RemoveMember(member.Member);
+            }
+            else if (message is ClusterEvent.ReachableMember)
+            {
+                var member = message as ClusterEvent.ReachableMember;
+                if (IsAvailable(member.Member)) AddMember(member.Member);
+            }
+            else
+            {
+                base.OnReceive(message);
+            }
         }
     }
 
@@ -482,8 +488,8 @@ namespace Akka.Cluster.Routing
             if (currentNodes.IsEmpty || currentRoutees.Count >= Settings.TotalInstances) return null;
 
             //find the node with the least routees
-            var numberOfRouteesPerNode = currentRoutees.ToDictionary(FullAddress,
-                routee => currentNodes.Count(y => y == FullAddress(routee)));
+            var numberOfRouteesPerNode = currentNodes.ToDictionary(x => x,
+                routee => currentRoutees.Count(y => routee == FullAddress(y)));
 
             var target = numberOfRouteesPerNode.Aggregate(
                         (curMin, x) =>

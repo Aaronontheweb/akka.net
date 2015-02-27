@@ -51,6 +51,7 @@ namespace Akka.Cluster.Tests.MultiNode.Routing
                     /router3 = ${common-router-settings}
                     /router4 = ${common-router-settings}
                     }
+                    #akka.cluster.publish-stats-interval = 5s
                 "))
                 .WithFallback(MultiNodeClusterSpec.ClusterConfig());
         }
@@ -108,6 +109,8 @@ namespace Akka.Cluster.Tests.MultiNode.Routing
         {
             AClusterRouterWithConsistentHashingPoolMustStartClusterWith2Nodes();
             AClusterRouterWithConsistentHashingPoolMustCreateRouteesFromConfiguration();
+            AClusterRouterWithConsistentHashingPoolMustSelectDestinationBasedOnHashKey();
+            AClusterRouterWithConsistentHashingPoolMustDeployRouteesToNewMemberNodesInTheCluster();
         }
 
         protected void AClusterRouterWithConsistentHashingPoolMustStartClusterWith2Nodes()
@@ -126,10 +129,46 @@ namespace Akka.Cluster.Tests.MultiNode.Routing
                     CurrentRoutees(Router1).Members.Count().ShouldBe(4);
                 });
                 var routees = CurrentRoutees(Router1);
-                routees.Members.Select(x => FullAddress(((ActorRefRoutee)x).Actor)).ToList().ShouldBe(new List<Address>(){ GetAddress(_config.First), GetAddress(_config.Second) });
+                var routerMembers = routees.Members.Select(x => FullAddress(((ActorRefRoutee)x).Actor)).Distinct().ToList();
+                routerMembers.ShouldBe(new List<Address>(){ GetAddress(_config.First), GetAddress(_config.Second) });
             }, _config.First);
 
             EnterBarrier("after-2");
         }
+
+        protected void AClusterRouterWithConsistentHashingPoolMustSelectDestinationBasedOnHashKey()
+        {
+            RunOn(() =>
+            {
+                Router1.Tell(new ConsistentHashableEnvelope("A", "a"));
+                var destinationA = ExpectMsg<ActorRef>();
+                Router1.Tell(new ConsistentHashableEnvelope("AA", "a"));
+                ExpectMsg(destinationA);
+            }, _config.First);
+
+            EnterBarrier("after-3");
+        }
+
+        protected void AClusterRouterWithConsistentHashingPoolMustDeployRouteesToNewMemberNodesInTheCluster()
+        {
+            AwaitClusterUp(_config.First, _config.Second, _config.Third);
+
+            RunOn(() =>
+            {
+                //it may take sometime until router receives cluster member events
+                // it may take some timeuntil router receives cluster member events
+                AwaitAssert(() =>
+                {
+                    CurrentRoutees(Router1).Members.Count().ShouldBe(6);
+                });
+                var routees = CurrentRoutees(Router1);
+                var routerMembers = routees.Members.Select(x => FullAddress(((ActorRefRoutee)x).Actor)).Distinct().ToList();
+                routerMembers.ShouldBe(Roles.Select(GetAddress).ToList());
+            }, _config.First);
+
+            EnterBarrier("after-4");
+        }
+
+
     }
 }
