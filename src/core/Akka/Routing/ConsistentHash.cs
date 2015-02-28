@@ -1,9 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using Akka.Actor;
-using Akka.Configuration;
-using Akka.Event;
 using Akka.Util;
 
 namespace Akka.Routing
@@ -12,152 +9,49 @@ namespace Akka.Routing
     /// Marks a given class as consistently hashable, for use with <see cref="ConsistentHashingGroup"/>
     /// or <see cref="ConsistentHashingPool"/> routers.
     /// </summary>
-    public interface ConsistentHashable
+    public interface IConsistentHashable
     {
         object ConsistentHashKey { get; }
     }
 
-    /// <summary>
-    /// Envelope you can wrap around a message in order to make it hashable for use with <see cref="ConsistentHashingGroup"/>
-    /// or <see cref="ConsistentHashingPool"/> routers.
-    /// </summary>
-    public class ConsistentHashableEnvelope : RouterEnvelope,  ConsistentHashable
+    public class ConsistentHash<T>
     {
-        public ConsistentHashableEnvelope(object message,object hashKey) : base(message)
+        private readonly SortedDictionary<int, T> _nodes;
+        private readonly int _virtualNodesFactor;
+
+        public ConsistentHash(SortedDictionary<int, T> nodes, int virtualNodesFactor)
         {
-            HashKey = hashKey;
-        }
-        public object HashKey { get;private set; }
+            _nodes = nodes;
 
-        public object ConsistentHashKey
+            Guard.Assert(virtualNodesFactor >= 1, "virtualNodesFactor must be >= 1");
+
+            _virtualNodesFactor = virtualNodesFactor;
+        }
+
+        private Tuple<int[], T[]> _ring = null;
+        private Tuple<int[], T[]> NodeRing
         {
-            get { return HashKey; }
+            get { return _ring ?? (_ring = Tuple.Create<int[], T[]>(_nodes.Keys.ToArray(), _nodes.Values.ToArray())); }
         }
-    }
 
-    public class ConsistentHashingRoutingLogic : RoutingLogic
-    {
-        private readonly Lazy<LoggingAdapter> _log;
-        private Dictionary<Type, Func<object, object>> _hashMapping;
-        private ActorSystem _system;
-        public override Routee Select(object message, Routee[] routees)
+        public ConsistentHash<T> Add(T node)
         {
-            if (message == null || routees == null || routees.Length == 0)
-                return NoRoutee.NoRoutee;
-
-            if (_hashMapping.ContainsKey(message.GetType()))
-            {
-                var key = _hashMapping[message.GetType()](message);
-                if (key == null)
-                    return NoRoutee.NoRoutee;
-
-                var hash = Murmur3.Hash(key);
-                return routees[Math.Abs(hash) % routees.Length]; //The hash might be negative, so we have to make sure it's positive
-            }
-            else if (message is ConsistentHashable)
-            {
-                var hashable = (ConsistentHashable) message;
-                int hash = Murmur3.Hash(hashable.ConsistentHashKey);
-                return routees[Math.Abs(hash) % routees.Length]; //The hash might be negative, so we have to make sure it's positive
-            }
-            else
-            {
-                _log.Value.Warning("Message [{0}] must be handled by hashMapping, or implement [{1}] or be wrapped in [{2}]", message.GetType().Name, typeof(ConsistentHashable).Name, typeof(ConsistentHashableEnvelope).Name);
-                return Routee.NoRoutee;
-            }
-        }
-
-        public ConsistentHashingRoutingLogic(ActorSystem system) : this(system,new Dictionary<Type,Func<object,object>>())
-        {
-        }
-
-        private ConsistentHashingRoutingLogic(ActorSystem system, Dictionary<Type, Func<object, object>> hashMapping)
-        {            
-            _system = system;
-            _log = new Lazy<LoggingAdapter>(() => Logging.GetLogger(_system, this), true);
-            _hashMapping = hashMapping;
-        }
-   
-
-        public ConsistentHashingRoutingLogic WithHashMapping<T>(Func<T,object> mapping)
-        {
-            if (mapping == null)
-                throw new ArgumentNullException("mapping");
-
-            var copy = new Dictionary<Type, Func<object, object>>(_hashMapping);
-            copy.Add(typeof(T), o => mapping((T)o));
-            return new ConsistentHashingRoutingLogic(_system,copy);
-        }
-    }
-
-    public class ConsistentHashingGroup : Group
-    {        
-        protected ConsistentHashingGroup()
-        {
-        }
-
-        public ConsistentHashingGroup(Config config)
-            : base(config.GetStringList("routees.paths"))
-        {
-        }
-
-        public ConsistentHashingGroup(params string[] paths)
-            : base(paths)
-        {
-        }
-
-        public ConsistentHashingGroup(IEnumerable<string> paths)
-            : base(paths)
-        {
-        }
-
-        public ConsistentHashingGroup(IEnumerable<ActorRef> routees) : base(routees)
-        {
-        }
-
-        public override Router CreateRouter(ActorSystem system)
-        {
-            return new Router(new ConsistentHashingRoutingLogic(system));
-        }
-    }
-
-    public class ConsistentHashingPool : Pool
-    {
-        protected ConsistentHashingPool()
-        {            
-        }
-
-        /// <summary>
-        /// Initializes a new instance of the <see cref="ConsistentHashingPool"/> class.
-        /// </summary>
-        /// <param name="config">The configuration.</param>
-        public ConsistentHashingPool(Config config) : base(config)
-        {
+            var nodeHash = HashFor(node.ToString());
             
         }
-        /// <summary>
-        /// Initializes a new instance of the <see cref="ConsistentHashingPool"/> class.
-        /// </summary>
-        /// <param name="nrOfInstances">The nr of instances.</param>
-        /// <param name="resizer">The resizer.</param>
-        /// <param name="supervisorStrategy">The supervisor strategy.</param>
-        /// <param name="routerDispatcher">The router dispatcher.</param>
-        /// <param name="usePoolDispatcher">if set to <c>true</c> [use pool dispatcher].</param>
-        public ConsistentHashingPool(int nrOfInstances, Resizer resizer,SupervisorStrategy supervisorStrategy, string routerDispatcher, bool usePoolDispatcher = false)
-            : base(nrOfInstances, resizer, supervisorStrategy, routerDispatcher, usePoolDispatcher)
+
+        #region Hashing methods
+
+        private int ConcatenateNodeHash(int nodeHash, int vnode)
         {
             
         }
 
-        /// <summary>
-        /// Simple form of ConsistentHashingPool constructor
-        /// </summary>
-        /// <param name="nrOfInstances">The nr of instances.</param>
-        public ConsistentHashingPool(int nrOfInstances) : base(nrOfInstances, null, Pool.DefaultStrategy, null) { }
-
-        public override Router CreateRouter(ActorSystem system)
+        private int HashFor(object hashKey)
         {
-            return new Router(new ConsistentHashingRoutingLogic(system));
+            return Murmur3.Hash(hashKey);
         }
+
+        #endregion
     }
 }
