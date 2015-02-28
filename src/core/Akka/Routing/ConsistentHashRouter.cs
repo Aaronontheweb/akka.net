@@ -161,12 +161,12 @@ namespace Akka.Routing
 
             if (_hashMapping(message) != null)
             {
-                return target(_hashMapping(message));
+                return target(_hashMapping(ConsistentHash.ToBytesOrObject(message)));
             }
             else if (message is IConsistentHashable)
             {
                 var hashable = (IConsistentHashable)message;
-                return target(_hashMapping(hashable.ConsistentHashKey));
+                return target(_hashMapping(ConsistentHash.ToBytesOrObject(hashable.ConsistentHashKey)));
             }
             else
             {
@@ -232,8 +232,18 @@ namespace Akka.Routing
         }
     }
 
+    /// <summary>
+    /// <see cref="Group"/> implementation of the consistent hashing router.
+    /// </summary>
     public class ConsistentHashingGroup : Group
     {
+        /// <summary>
+        /// Virtual nodes used in the <see cref="ConsistentHash{T}"/>.
+        /// </summary>
+        public int VirtualNodesFactor { get; private set; }
+
+        protected ConsistentHashMapping HashMapping = ConsistentHashingRouter.EmptyConsistentHashMapping;
+
         protected ConsistentHashingGroup()
         {
         }
@@ -248,22 +258,53 @@ namespace Akka.Routing
         {
         }
 
-        public ConsistentHashingGroup(IEnumerable<string> paths)
+        public ConsistentHashingGroup(IEnumerable<string> paths, int virtualNodesFactor = 0, ConsistentHashMapping hashMapping = null)
             : base(paths)
         {
+            VirtualNodesFactor = virtualNodesFactor;
+            HashMapping = hashMapping ?? ConsistentHashingRouter.EmptyConsistentHashMapping;
         }
 
-        public ConsistentHashingGroup(IEnumerable<ActorRef> routees)
+        public ConsistentHashingGroup(IEnumerable<ActorRef> routees, int virtualNodesFactor = 0, ConsistentHashMapping hashMapping = null)
             : base(routees)
         {
+            VirtualNodesFactor = virtualNodesFactor;
+            HashMapping = hashMapping ?? ConsistentHashingRouter.EmptyConsistentHashMapping;
+        }
+
+        /// <summary>
+        /// Apply a <see cref="VirtualNodesFactor"/> to the <see cref="ConsistentHashingGroup"/>
+        /// 
+        /// Note: this method is immutable and will return a new instance.
+        /// </summary>
+        public ConsistentHashingGroup WithVirtualNodesFactor(int vnodes)
+        {
+            return new ConsistentHashingGroup(Paths, vnodes, HashMapping);
+        }
+
+        /// <summary>
+        /// Apply a <see cref="ConsistentHashMapping"/> to the <see cref="ConsistentHashingGroup"/>.
+        /// 
+        /// Note: this method is immutable and will return a new instance.
+        /// </summary>
+        public ConsistentHashingGroup WithHashMapping(ConsistentHashMapping mapping)
+        {
+            return new ConsistentHashingGroup(Paths, VirtualNodesFactor, mapping);
         }
 
         public override Router CreateRouter(ActorSystem system)
         {
-            return new Router(new ConsistentHashingRoutingLogic(system));
+            return new Router(new ConsistentHashingRoutingLogic(system, VirtualNodesFactor, HashMapping));
         }
     }
 
+    /// <summary>
+    /// <see cref="Pool"/> implementation of a consistent hash router.
+    /// 
+    /// NOTE: Using <see cref="Resizer"/> with <see cref="ConsistentHashingPool"/> is potentially harmful, as hash ranges
+    /// might change radically during live message processing. This router works best with fixed-sized pools or fixed
+    /// number of routees per node in the event of clustered deployments.
+    /// </summary>
     public class ConsistentHashingPool : Pool
     {
         /// <summary>
@@ -304,9 +345,24 @@ namespace Akka.Routing
             HashMapping = hashMapping ?? ConsistentHashingRouter.EmptyConsistentHashMapping;
         }
 
+        /// <summary>
+        /// Apply a <see cref="VirtualNodesFactor"/> to the <see cref="ConsistentHashingPool"/>
+        /// 
+        /// Note: this method is immutable and will return a new instance.
+        /// </summary>
         public ConsistentHashingPool WithVirtualNodesFactor(int vnodes)
         {
-            
+            return new ConsistentHashingPool(NrOfInstances, Resizer, SupervisorStrategy, RouterDispatcher, UsePoolDispatcher, vnodes, HashMapping);
+        }
+
+        /// <summary>
+        /// Apply a <see cref="ConsistentHashMapping"/> to the <see cref="ConsistentHashingPool"/>.
+        /// 
+        /// Note: this method is immutable and will return a new instance.
+        /// </summary>
+        public ConsistentHashingPool WithHashMapping(ConsistentHashMapping mapping)
+        {
+            return new ConsistentHashingPool(NrOfInstances, Resizer, SupervisorStrategy, RouterDispatcher, UsePoolDispatcher, VirtualNodesFactor, mapping);
         }
 
         /// <summary>
