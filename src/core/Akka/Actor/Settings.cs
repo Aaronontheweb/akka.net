@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using Akka.Configuration;
+using Akka.Routing;
 
 namespace Akka.Actor
 {
@@ -93,7 +94,7 @@ namespace Akka.Actor
             DebugUnhandledMessage = Config.GetBoolean("akka.actor.debug.unhandled");
             DebugRouterMisConfiguration = Config.GetBoolean("akka.actor.debug.router-misconfiguration");
             Home = Config.GetString("akka.home") ?? "";
-
+            DefaultVirtualNodesFactor = Config.GetInt("akka.actor.deployment.default.virtual-nodes-factor");
             //TODO: dunno.. we dont have FiniteStateMachines, dont know what the rest is
             /*              
                 final val SchedulerClass: String = getString("akka.scheduler.implementation")
@@ -247,6 +248,11 @@ namespace Akka.Actor
         public bool DebugLifecycle { get; private set; }
 
         public bool FsmDebugEvent { get; private set; }
+
+        /// <summary>
+        /// The number of default virtual nodes to use with <see cref="ConsistentHashingRoutingLogic"/>.
+        /// </summary>
+        public int DefaultVirtualNodesFactor { get; private set; }
 
         /// <summary>
         ///     Returns a <see cref="string" /> that represents this instance.

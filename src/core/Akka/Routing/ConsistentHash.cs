@@ -7,15 +7,6 @@ using Akka.Util.Internal;
 namespace Akka.Routing
 {
     /// <summary>
-    /// Marks a given class as consistently hashable, for use with <see cref="ConsistentHashingGroup"/>
-    /// or <see cref="ConsistentHashingPool"/> routers.
-    /// </summary>
-    public interface IConsistentHashable
-    {
-        object ConsistentHashKey { get; }
-    }
-
-    /// <summary>
     /// Consistent Hashing node ring implementaiton.
     /// 
     ///  A good explanation of Consistent Hashing:

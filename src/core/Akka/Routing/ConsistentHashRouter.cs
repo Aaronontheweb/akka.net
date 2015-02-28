@@ -1,12 +1,36 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using Akka.Actor;
 using Akka.Configuration;
 using Akka.Event;
+using Akka.Serialization;
 using Akka.Util;
+using Akka.Util.Internal;
 
 namespace Akka.Routing
 {
+    /// <summary>
+    /// Static class for assisting with <see cref="ConsistentHashMapping"/> instances
+    /// </summary>
+    internal static class ConsistentHashingRouter
+    {
+        /// <summary>
+        /// Default empty <see cref="ConsistentHashMapping"/> implementation
+        /// </summary>
+        public static readonly ConsistentHashMapping EmptyConsistentHashMapping = key => null;
+    }
+
+    /// <summary>
+    /// Marks a given class as consistently hashable, for use with <see cref="ConsistentHashingGroup"/>
+    /// or <see cref="ConsistentHashingPool"/> routers.
+    /// </summary>
+    public interface IConsistentHashable
+    {
+        object ConsistentHashKey { get; }
+    }
+
+
     /// <summary>
     /// Envelope you can wrap around a message in order to make it hashable for use with <see cref="ConsistentHashingGroup"/>
     /// or <see cref="ConsistentHashingPool"/> routers.
@@ -27,32 +51,122 @@ namespace Akka.Routing
     }
 
     /// <summary>
-    /// <see cref="RoutingLogic"/> designed to enable consistent hash distributions of messages to routees.
+    /// Delegate for computing the hashkey from any given
+    /// type of message. Extracts the property / data that is going
+    /// to be used for a given hash, but doesn't actually return
+    /// the hash values themselves.
+    /// 
+    /// If returning an byte[] or string it will be used as is,
+    /// otherwise the configured <see cref="Serializer"/> will be applied
+    /// to the returned data."/>
+    /// </summary>
+    public delegate object ConsistentHashMapping(object hashKey);
+
+    /// <summary>
+    /// Uses consistent hashing to select a <see cref="Routee"/> based on the sent message.
+    /// 
+    /// There are 3 ways to define what data to use for the consistent hash key.
+    /// 
+    /// 1. You can define a <see cref="ConsistentHashMapping"/> or use <see cref="WithHashMapper"/>
+    /// of the router to map incoming messages to their consistent hash key.
+    /// This makes the decision transparent for the sender.
+    /// 
+    /// 2. Messages may implement <see cref="IConsistentHashable"/>. The hash key is part
+    /// of the message and it's convenient to define it together with the message
+    /// definition.
+    /// 
+    /// 3. The message can be wrapped in a <see cref="ConsistentHashableEnvelope"/> to
+    /// define what data to use for the consistent hash key. The sender knows what key
+    /// to use.
+    /// 
+    /// These ways to define the consistent hash key can be used together and at the
+    /// same time for one router. The <see cref="ConsistentHashMapping"/> is tried first.
     /// </summary>
     public class ConsistentHashingRoutingLogic : RoutingLogic
     {
         private readonly Lazy<LoggingAdapter> _log;
-        private Dictionary<Type, Func<object, object>> _hashMapping;
-        private ActorSystem _system;
+        private ConsistentHashMapping _hashMapping;
+        private readonly ActorSystem _system;
+
+        private readonly AtomicReference<Tuple<Routee[], ConsistentHash<ConsistentRoutee>>> _consistentHashRef = new AtomicReference<Tuple<Routee[], ConsistentHash<ConsistentRoutee>>>(Tuple.Create<Routee[], ConsistentHash<ConsistentRoutee>>(null, null));
+
+        private readonly Address _selfAddress;
+        private readonly int _vnodes;
+
+        public ConsistentHashingRoutingLogic(ActorSystem system)
+            : this(system, 0, ConsistentHashingRouter.EmptyConsistentHashMapping)
+        {
+        }
+
+        public ConsistentHashingRoutingLogic(ActorSystem system, int virtualNodesFactor, ConsistentHashMapping hashMapping)
+        {
+            _system = system;
+            _log = new Lazy<LoggingAdapter>(() => Logging.GetLogger(_system, this), true);
+            _hashMapping = hashMapping;
+            _selfAddress = system.AsInstanceOf<ExtendedActorSystem>().Provider.DefaultAddress;
+            _vnodes = virtualNodesFactor == 0 ? system.Settings.DefaultVirtualNodesFactor : virtualNodesFactor;
+        }
+
+
         public override Routee Select(object message, Routee[] routees)
         {
             if (message == null || routees == null || routees.Length == 0)
-                return NoRoutee.NoRoutee;
+                return Routee.NoRoutee;
 
-            if (_hashMapping.ContainsKey(message.GetType()))
+            Func<ConsistentHash<ConsistentRoutee>> updateConsistentHash = () =>
             {
-                var key = _hashMapping[message.GetType()](message);
-                if (key == null)
-                    return NoRoutee.NoRoutee;
+                // update consistentHash when routees are changed
+                // changes to routees are rare when no changes this is a quick operation
+                var oldConsistHashTuple = _consistentHashRef.Value;
+                var oldRoutees = oldConsistHashTuple.Item1;
+                var oldConsistentHash = oldConsistHashTuple.Item2;
 
-                var hash = Murmur3.Hash(key);
-                return routees[Math.Abs(hash) % routees.Length]; //The hash might be negative, so we have to make sure it's positive
+                if (!routees.SequenceEqual(oldRoutees))
+                {
+                    // when other instance, same content, no need to re-hash, but try to set routees
+                    var consistentHash = routees == oldRoutees
+                        ? oldConsistentHash
+                        : ConsistentHash.Create(routees.Select(x => new ConsistentRoutee(x, _selfAddress)), _vnodes);
+                    //ignore, don't update, in case of CAS failure
+                    _consistentHashRef.CompareAndSet(oldConsistHashTuple, Tuple.Create(routees, consistentHash));
+                    return consistentHash;
+                }
+                return oldConsistentHash;
+            };
+
+            Func<object, Routee> target = hashData =>
+            {
+                try
+                {
+                    var currentConsistentHash = updateConsistentHash();
+                    if (currentConsistentHash.IsEmpty) return Routee.NoRoutee;
+                    else
+                    {
+                        if (hashData is byte[])
+                            return currentConsistentHash.NodeFor(hashData as byte[]).Routee;
+                        if (hashData is string)
+                            return currentConsistentHash.NodeFor(hashData as string).Routee;
+                        return
+                            currentConsistentHash.NodeFor(
+                                _system.Serialization.FindSerializerFor(hashData).ToBinary(hashData)).Routee;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    //serializationfailed
+                    _log.Value.Warning("Couldn't route message with consistent hash key [{0}] due to [{1}]", hashData, ex.Message);
+                    return Routee.NoRoutee;
+                }
+            };
+
+            if (_hashMapping(message) != null)
+            {
+                return target(_hashMapping(message));
             }
             else if (message is IConsistentHashable)
             {
                 var hashable = (IConsistentHashable)message;
-                int hash = Murmur3.Hash(hashable.ConsistentHashKey);
-                return routees[Math.Abs(hash) % routees.Length]; //The hash might be negative, so we have to make sure it's positive
+                return target(_hashMapping(hashable.ConsistentHashKey));
             }
             else
             {
@@ -61,27 +175,60 @@ namespace Akka.Routing
             }
         }
 
-        public ConsistentHashingRoutingLogic(ActorSystem system)
-            : this(system, new Dictionary<Type, Func<object, object>>())
-        {
-        }
-
-        private ConsistentHashingRoutingLogic(ActorSystem system, Dictionary<Type, Func<object, object>> hashMapping)
-        {
-            _system = system;
-            _log = new Lazy<LoggingAdapter>(() => Logging.GetLogger(_system, this), true);
-            _hashMapping = hashMapping;
-        }
-
-
-        public ConsistentHashingRoutingLogic WithHashMapping<T>(Func<T, object> mapping)
+        public ConsistentHashingRoutingLogic WithHashMapping(ConsistentHashMapping mapping)
         {
             if (mapping == null)
                 throw new ArgumentNullException("mapping");
+           
+            return new ConsistentHashingRoutingLogic(_system, _vnodes, mapping);
+        }
 
-            var copy = new Dictionary<Type, Func<object, object>>(_hashMapping);
-            copy.Add(typeof(T), o => mapping((T)o));
-            return new ConsistentHashingRoutingLogic(_system, copy);
+    }
+
+    /// <summary>
+    /// INTERNAL API
+    /// 
+    /// Important to use ActorRef with full address, with host and port, in the hash ring,
+    /// so that same ring is produced on different nodes.
+    /// The ConsistentHash uses toString of the ring nodes, and the ActorRef itself
+    /// isn't a good representation, because LocalActorRef doesn't include the
+    /// host and port.
+    /// </summary>
+    internal sealed class ConsistentRoutee
+    {
+        public ConsistentRoutee(Routee routee, Address selfAddress)
+        {
+            SelfAddress = selfAddress;
+            Routee = routee;
+        }
+
+        public Routee Routee { get; private set; }
+
+        public Address SelfAddress { get; private set; }
+
+        public override string ToString()
+        {
+            if (Routee is ActorRefRoutee)
+            {
+                var actorRef = Routee as ActorRefRoutee;
+                return ToStringWithFullAddress(actorRef.Actor.Path);
+            }
+            else if (Routee is ActorSelectionRoutee)
+            {
+                var selection = Routee as ActorSelectionRoutee;
+                return ToStringWithFullAddress(selection.Selection.Anchor.Path) + selection.Selection.PathString;
+            }
+            else
+            {
+                return Routee.ToString();
+            }
+        }
+
+        private string ToStringWithFullAddress(ActorPath path)
+        {
+            if (string.IsNullOrEmpty(path.Address.Host) || !path.Address.Port.HasValue)
+                return path.ToStringWithAddress(SelfAddress);
+            return path.ToString();
         }
     }
 
@@ -119,6 +266,13 @@ namespace Akka.Routing
 
     public class ConsistentHashingPool : Pool
     {
+        /// <summary>
+        /// Virtual nodes used in the <see cref="ConsistentHash{T}"/>.
+        /// </summary>
+        public int VirtualNodesFactor { get; private set; }
+
+        protected ConsistentHashMapping HashMapping = ConsistentHashingRouter.EmptyConsistentHashMapping;
+
         protected ConsistentHashingPool()
         {
         }
@@ -132,6 +286,7 @@ namespace Akka.Routing
         {
 
         }
+
         /// <summary>
         /// Initializes a new instance of the <see cref="ConsistentHashingPool"/> class.
         /// </summary>
@@ -140,10 +295,18 @@ namespace Akka.Routing
         /// <param name="supervisorStrategy">The supervisor strategy.</param>
         /// <param name="routerDispatcher">The router dispatcher.</param>
         /// <param name="usePoolDispatcher">if set to <c>true</c> [use pool dispatcher].</param>
-        public ConsistentHashingPool(int nrOfInstances, Resizer resizer, SupervisorStrategy supervisorStrategy, string routerDispatcher, bool usePoolDispatcher = false)
+        /// <param name="virtualNodesFactor">The number of virtual nodes to use on the hash ring</param>
+        /// <param name="hashMapping">The consistent hash mapping function to use on incoming messages</param>
+        public ConsistentHashingPool(int nrOfInstances, Resizer resizer, SupervisorStrategy supervisorStrategy, string routerDispatcher, bool usePoolDispatcher = false, int virtualNodesFactor = 0, ConsistentHashMapping hashMapping = null)
             : base(nrOfInstances, resizer, supervisorStrategy, routerDispatcher, usePoolDispatcher)
         {
+            VirtualNodesFactor = virtualNodesFactor;
+            HashMapping = hashMapping ?? ConsistentHashingRouter.EmptyConsistentHashMapping;
+        }
 
+        public ConsistentHashingPool WithVirtualNodesFactor(int vnodes)
+        {
+            
         }
 
         /// <summary>
@@ -154,7 +317,7 @@ namespace Akka.Routing
 
         public override Router CreateRouter(ActorSystem system)
         {
-            return new Router(new ConsistentHashingRoutingLogic(system));
+            return new Router(new ConsistentHashingRoutingLogic(system, VirtualNodesFactor, HashMapping));
         }
     }
 }
