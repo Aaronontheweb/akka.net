@@ -292,6 +292,14 @@ namespace Akka.Routing
         #endregion
     }
 
+    /// <summary>
+    /// Used to tell <see cref="ActorRefProvider"/> to create router based on what's stored in configuration.
+    /// 
+    /// For example:
+    /// <code>
+    ///      ActorRef router1 = Sys.ActorOf(Props.Create{Echo}().WithRouter(FromConfig.Instance), "router1");
+    /// </code>
+    /// </summary>
     public class FromConfig : RouterConfig
     {
         private static readonly FromConfig _instance = new FromConfig();

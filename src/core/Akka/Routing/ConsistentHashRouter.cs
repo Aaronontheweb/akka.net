@@ -60,7 +60,7 @@ namespace Akka.Routing
     /// otherwise the configured <see cref="Serializer"/> will be applied
     /// to the returned data."/>
     /// </summary>
-    public delegate object ConsistentHashMapping(object hashKey);
+    public delegate object ConsistentHashMapping(object msg);
 
     /// <summary>
     /// Uses consistent hashing to select a <see cref="Routee"/> based on the sent message.
@@ -121,7 +121,7 @@ namespace Akka.Routing
                 var oldRoutees = oldConsistHashTuple.Item1;
                 var oldConsistentHash = oldConsistHashTuple.Item2;
 
-                if (!routees.SequenceEqual(oldRoutees))
+                if (oldRoutees == null || !routees.SequenceEqual(oldRoutees))
                 {
                     // when other instance, same content, no need to re-hash, but try to set routees
                     var consistentHash = routees == oldRoutees
@@ -161,12 +161,12 @@ namespace Akka.Routing
 
             if (_hashMapping(message) != null)
             {
-                return target(_hashMapping(ConsistentHash.ToBytesOrObject(message)));
+                return target(ConsistentHash.ToBytesOrObject(_hashMapping(message)));
             }
             else if (message is IConsistentHashable)
             {
                 var hashable = (IConsistentHashable)message;
-                return target(_hashMapping(ConsistentHash.ToBytesOrObject(hashable.ConsistentHashKey)));
+                return target(ConsistentHash.ToBytesOrObject(hashable.ConsistentHashKey));
             }
             else
             {
@@ -242,7 +242,7 @@ namespace Akka.Routing
         /// </summary>
         public int VirtualNodesFactor { get; private set; }
 
-        protected ConsistentHashMapping HashMapping = ConsistentHashingRouter.EmptyConsistentHashMapping;
+        protected ConsistentHashMapping HashMapping;
 
         protected ConsistentHashingGroup()
         {
@@ -251,6 +251,7 @@ namespace Akka.Routing
         public ConsistentHashingGroup(Config config)
             : base(config.GetStringList("routees.paths"))
         {
+            VirtualNodesFactor = config.GetInt("virtual-nodes-factor", 0);
         }
 
         public ConsistentHashingGroup(params string[] paths)
@@ -262,14 +263,14 @@ namespace Akka.Routing
             : base(paths)
         {
             VirtualNodesFactor = virtualNodesFactor;
-            HashMapping = hashMapping ?? ConsistentHashingRouter.EmptyConsistentHashMapping;
+            HashMapping = hashMapping;
         }
 
         public ConsistentHashingGroup(IEnumerable<ActorRef> routees, int virtualNodesFactor = 0, ConsistentHashMapping hashMapping = null)
             : base(routees)
         {
             VirtualNodesFactor = virtualNodesFactor;
-            HashMapping = hashMapping ?? ConsistentHashingRouter.EmptyConsistentHashMapping;
+            HashMapping = hashMapping;
         }
 
         /// <summary>
@@ -294,7 +295,7 @@ namespace Akka.Routing
 
         public override Router CreateRouter(ActorSystem system)
         {
-            return new Router(new ConsistentHashingRoutingLogic(system, VirtualNodesFactor, HashMapping));
+            return new Router(new ConsistentHashingRoutingLogic(system, VirtualNodesFactor, HashMapping ?? ConsistentHashingRouter.EmptyConsistentHashMapping));
         }
     }
 
@@ -312,7 +313,7 @@ namespace Akka.Routing
         /// </summary>
         public int VirtualNodesFactor { get; private set; }
 
-        protected ConsistentHashMapping HashMapping = ConsistentHashingRouter.EmptyConsistentHashMapping;
+        protected AtomicReference<ConsistentHashMapping> HashMapping = new AtomicReference<ConsistentHashMapping>(ConsistentHashingRouter.EmptyConsistentHashMapping);
 
         protected ConsistentHashingPool()
         {
@@ -325,7 +326,7 @@ namespace Akka.Routing
         public ConsistentHashingPool(Config config)
             : base(config)
         {
-
+            VirtualNodesFactor = config.GetInt("virtual-nodes-factor", 0);
         }
 
         /// <summary>
@@ -342,7 +343,7 @@ namespace Akka.Routing
             : base(nrOfInstances, resizer, supervisorStrategy, routerDispatcher, usePoolDispatcher)
         {
             VirtualNodesFactor = virtualNodesFactor;
-            HashMapping = hashMapping ?? ConsistentHashingRouter.EmptyConsistentHashMapping;
+            HashMapping.CompareAndSet(ConsistentHashingRouter.EmptyConsistentHashMapping, hashMapping);
         }
 
         /// <summary>
@@ -373,7 +374,12 @@ namespace Akka.Routing
 
         public override Router CreateRouter(ActorSystem system)
         {
-            return new Router(new ConsistentHashingRoutingLogic(system, VirtualNodesFactor, HashMapping));
+            return new Router(new ConsistentHashingRoutingLogic(system, VirtualNodesFactor, HashMapping ?? ConsistentHashingRouter.EmptyConsistentHashMapping));
+        }
+
+        public override RouterConfig WithFallback(RouterConfig routerConfig)
+        {
+            return base.WithFallback(routerConfig);
         }
     }
 }
