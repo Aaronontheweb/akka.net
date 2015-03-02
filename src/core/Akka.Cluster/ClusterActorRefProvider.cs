@@ -61,6 +61,15 @@ namespace Akka.Cluster
         private ClusterScope() { }
 
         public static readonly ClusterScope Instance = new ClusterScope();
+        public override Scope WithFallback(Scope other)
+        {
+            return Instance;
+        }
+
+        public override Scope Copy()
+        {
+            return Instance;
+        }
     }
 
     /// <summary>

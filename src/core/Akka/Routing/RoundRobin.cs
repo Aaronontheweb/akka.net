@@ -151,5 +151,10 @@ namespace Akka.Routing
         {
             return new RoundRobinPool(NrOfInstances, resizer, SupervisorStrategy, RouterDispatcher, UsePoolDispatcher);
         }
+
+        public override RouterConfig WithFallback(RouterConfig routerConfig)
+        {
+            return OverrideUnsetConfig(routerConfig);
+        }
     }
 }

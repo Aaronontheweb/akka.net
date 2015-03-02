@@ -74,6 +74,10 @@ namespace Akka.Routing
         {
             return new BroadcastPool(NrOfInstances, resizer, SupervisorStrategy, RouterDispatcher, UsePoolDispatcher);
         }
+        public override RouterConfig WithFallback(RouterConfig routerConfig)
+        {
+            return OverrideUnsetConfig(routerConfig);
+        }
     }
 
     public class BroadcastGroup : Group

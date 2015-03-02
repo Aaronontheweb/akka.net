@@ -158,5 +158,10 @@ namespace Akka.Routing
         {
             return new ScatterGatherFirstCompletedPool(NrOfInstances, resizer, SupervisorStrategy, RouterDispatcher, _within, UsePoolDispatcher);
         }
+
+        public override RouterConfig WithFallback(RouterConfig routerConfig)
+        {
+            return OverrideUnsetConfig(routerConfig);
+        }
     }
 }

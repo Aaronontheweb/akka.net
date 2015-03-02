@@ -182,7 +182,7 @@ namespace Akka.Routing
             // OMG, if every member in Java is virtual - you must never call any members in a constructor!!1!
             // In all seriousness, without making these members virtual RemoteRouterConfig won't work
             // ReSharper disable DoNotCallOverridableMethodsInConstructor
-           NrOfInstances = nrOfInstances;
+            NrOfInstances = nrOfInstances;
 
             Resizer = resizer;
             SupervisorStrategy = supervisorStrategy ?? Pool.DefaultStrategy;
@@ -280,8 +280,8 @@ namespace Akka.Routing
             {
                 Pool wssConf;
                 var p = other as Pool;
-                if (SupervisorStrategy.Equals(Pool.DefaultStrategy) &&
-                    !p.SupervisorStrategy.Equals(Pool.DefaultStrategy))
+                if (SupervisorStrategy == null || (SupervisorStrategy.Equals(Pool.DefaultStrategy) &&
+                    !p.SupervisorStrategy.Equals(Pool.DefaultStrategy)))
                     wssConf = this.WithSupervisorStrategy(p.SupervisorStrategy);
                 else
                     wssConf = this;

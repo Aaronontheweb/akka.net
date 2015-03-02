@@ -241,7 +241,7 @@ namespace Akka.Cluster.Routing
 
         public override RouterConfig WithFallback(RouterConfig routerConfig)
         {
-            var otherClusterRouterPool = (ClusterRouterPool) routerConfig;
+            var otherClusterRouterPool = routerConfig as ClusterRouterPool;
             if(otherClusterRouterPool != null && otherClusterRouterPool.Local is ClusterRouterPool) throw new ConfigurationException("ClusterRouterPool is not allowed to wrap a ClusterRouterPool");
             if (otherClusterRouterPool != null)
                 return Copy(Local.WithFallback(otherClusterRouterPool.Local).AsInstanceOf<Pool>());

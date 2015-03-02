@@ -239,6 +239,11 @@ namespace Akka.Routing
         {
             return new Router(new TailChoppingRoutingLogic(_within, _interval, system.Scheduler));
         }
+
+        public override RouterConfig WithFallback(RouterConfig routerConfig)
+        {
+            return OverrideUnsetConfig(routerConfig);
+        }
     }
 
     /// <summary>
