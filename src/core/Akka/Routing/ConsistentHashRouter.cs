@@ -330,7 +330,7 @@ namespace Akka.Routing
         /// </summary>
         public int VirtualNodesFactor { get; private set; }
 
-        protected AtomicReference<ConsistentHashMapping> HashMapping = new AtomicReference<ConsistentHashMapping>(ConsistentHashingRouter.EmptyConsistentHashMapping);
+        private ConsistentHashMapping HashMapping;
 
         protected ConsistentHashingPool()
         {
@@ -360,7 +360,7 @@ namespace Akka.Routing
             : base(nrOfInstances, resizer, supervisorStrategy, routerDispatcher, usePoolDispatcher)
         {
             VirtualNodesFactor = virtualNodesFactor;
-            HashMapping.CompareAndSet(ConsistentHashingRouter.EmptyConsistentHashMapping, hashMapping);
+            HashMapping = hashMapping;
         }
 
         /// <summary>
