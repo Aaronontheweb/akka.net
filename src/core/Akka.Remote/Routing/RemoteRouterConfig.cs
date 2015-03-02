@@ -58,10 +58,21 @@ namespace Akka.Remote.Routing
             set { Local.Resizer = value; }
         }
 
+        public override int GetNrOfInstances(ActorSystem system)
+        {
+            return Local.GetNrOfInstances(system);
+        }
+
         public override int NrOfInstances
         {
-            get { return Local.NrOfInstances; }
-            set { Local.NrOfInstances = value; }
+            get
+            {
+                return Local.NrOfInstances;
+            }
+            set
+            {
+                Local.NrOfInstances = value;
+            }
         }
 
         public override string RouterDispatcher

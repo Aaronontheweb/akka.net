@@ -1,8 +1,12 @@
 ﻿using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Linq;
 using Akka.Actor;
+using Akka.Cluster.Routing;
 using Akka.Configuration;
 using Akka.Remote.TestKit;
 using Akka.Routing;
+using Akka.TestKit;
 
 namespace Akka.Cluster.Tests.MultiNode.Routing
 {
@@ -111,7 +115,41 @@ namespace Akka.Cluster.Tests.MultiNode.Routing
 
         protected void AClusterRouterWithConsistentHashingGroupMustSendToSameDestinationsFromDifferentNodes()
         {
-            
+            ConsistentHashMapping hashMapping = msg =>
+            {
+                if (msg is string) return msg;
+                return null;
+            };
+
+            var paths = new List<string>() {"/user/dest"};
+            var router =
+                Sys.ActorOf(
+                    new ClusterRouterGroup(new ConsistentHashingGroup(paths).WithHashMapping(hashMapping),
+                        new ClusterRouterGroupSettings(10, true, null, ImmutableHashSet.Create<string>(paths.ToArray())))
+                        .Props(), "router");
+
+            // it may take some time until router receives cluster member events
+            AwaitAssert(() =>
+            {
+                CurrentRoutees(router).Members.Count().ShouldBe(3);
+            });
+            var keys = new[] {"A", "B", "C", "D", "E", "F", "G"};
+            foreach (var key in Enumerable.Range(1, 10).SelectMany(i => keys))
+            {
+                router.Tell(key);
+            }
+            EnterBarrier("messages-sent");
+            router.Tell(new Broadcast(new Get()));
+            var a = ExpectMsg<ClusterConsistentHashingGroupSpecConfig.Collected>().Messages;
+            var b = ExpectMsg<ClusterConsistentHashingGroupSpecConfig.Collected>().Messages;
+            var c = ExpectMsg<ClusterConsistentHashingGroupSpecConfig.Collected>().Messages;
+
+            a.Intersect(b).Count().ShouldBe(0);
+            a.Intersect(c).Count().ShouldBe(0);
+            b.Intersect(c).Count().ShouldBe(0);
+
+            (a.Count + b.Count + c.Count).ShouldBe(keys.Length);
+            EnterBarrier("after-2");
         }
     }
 }

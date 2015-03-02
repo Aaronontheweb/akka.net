@@ -690,7 +690,7 @@ namespace Akka.Cluster
                     InternalClusterAction.LeaderActionsTick.Instance,
                     _leaderActionsTaskCancellable.Token);
 
-            if (settings.PublishStatsInterval != null && settings.PublishStatsInterval >= TimeSpan.Zero && settings.PublishStatsInterval != TimeSpan.MaxValue)
+            if (settings.PublishStatsInterval != null && settings.PublishStatsInterval > TimeSpan.Zero && settings.PublishStatsInterval != TimeSpan.MaxValue)
             {
                 _publishStatsTaskTaskCancellable = new CancellationTokenSource();
                 _publishStatsTask =

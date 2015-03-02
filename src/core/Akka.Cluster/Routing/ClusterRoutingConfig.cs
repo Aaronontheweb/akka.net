@@ -5,6 +5,7 @@ using System.Linq;
 using Akka.Actor;
 using Akka.Configuration;
 using Akka.Routing;
+using Akka.Util;
 using Akka.Util.Internal;
 
 namespace Akka.Cluster.Routing
@@ -65,7 +66,7 @@ namespace Akka.Cluster.Routing
     }
 
     /// <summary>
-    /// Base class for defining <see cref="ClusterRouterGroupSettings"/> and <see cref="ClusterRouterPoolSetings"/>
+    /// Base class for defining <see cref="ClusterRouterGroupSettings"/> and <see cref="ClusterRouterPoolSettings"/>
     /// </summary>
     public abstract class ClusterRouterSettingsBase
     {
@@ -149,12 +150,7 @@ namespace Akka.Cluster.Routing
         {
             Settings = settings;
             Local = local;
-            RouterDispatcher = local.RouterDispatcher;
-
-            if(local.Resizer != null) throw new ConfigurationException("Resizer can't be used together with cluster router.");
-            NrOfInstances = Settings.AllowLocalRoutees ? settings.MaxInstancesPerNode : 0;
-            Resizer = local.Resizer;
-            SupervisorStrategy = local.SupervisorStrategy;
+            Guard.Assert(local.Resizer == null, "Resizer can't be used together with cluster router.");
         }
 
         private readonly AtomicCounter _childNameCounter = new AtomicCounter(0);
@@ -162,6 +158,51 @@ namespace Akka.Cluster.Routing
         public Pool Local { get; private set; }
 
         public ClusterRouterPoolSettings Settings { get; private set; }
+
+        public override SupervisorStrategy SupervisorStrategy
+        {
+            get { return Local.SupervisorStrategy; }
+            set
+            {
+                Local.SupervisorStrategy = value;
+            }
+        }
+
+        public override Resizer Resizer { get { return Local.Resizer; } }
+
+
+        public override int GetNrOfInstances(ActorSystem system)
+        {
+            if (Settings.AllowLocalRoutees && !string.IsNullOrEmpty(Settings.UseRole))
+            {
+                return Cluster.Get(system).SelfRoles.Contains(Settings.UseRole) ? Settings.MaxInstancesPerNode : 0;
+            }
+            else if (Settings.AllowLocalRoutees && string.IsNullOrEmpty(Settings.UseRole))
+            {
+                return Settings.MaxInstancesPerNode;
+            }
+            else
+            {
+                return 0;
+            }
+        }
+
+        public override int NrOfInstances
+        {
+            get
+            {
+                return Local.NrOfInstances;
+            }
+            set
+            {
+                Local.NrOfInstances = value;
+            }
+        }
+
+        public override string RouterDispatcher
+        {
+            get { return Local.RouterDispatcher; }
+        }
 
         public override Router CreateRouter(ActorSystem system)
         {
@@ -172,6 +213,8 @@ namespace Akka.Cluster.Routing
         {
             return new ClusterRouterPoolActor(((Pool) Local).SupervisorStrategy, (ClusterRouterPoolSettings) Settings);
         }
+
+        
 
         public override Pool WithSupervisorStrategy(SupervisorStrategy strategy)
         {

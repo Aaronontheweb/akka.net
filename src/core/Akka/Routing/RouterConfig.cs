@@ -182,7 +182,7 @@ namespace Akka.Routing
             // OMG, if every member in Java is virtual - you must never call any members in a constructor!!1!
             // In all seriousness, without making these members virtual RemoteRouterConfig won't work
             // ReSharper disable DoNotCallOverridableMethodsInConstructor
-            NrOfInstances = nrOfInstances;
+           NrOfInstances = nrOfInstances;
 
             Resizer = resizer;
             SupervisorStrategy = supervisorStrategy ?? Pool.DefaultStrategy;
@@ -204,6 +204,16 @@ namespace Akka.Routing
         /// The number of instances in the pool.
         /// </summary>
         public virtual int NrOfInstances { get; set; }
+
+        /// <summary>
+        /// Used by the <see cref="RoutedActorCell"/> to determine the initial number of routees.
+        /// 
+        /// Needs to be connected to an <see cref="ActorSystem"/> for clustered deployment scenarios.
+        /// </summary>
+        public virtual int GetNrOfInstances(ActorSystem system)
+        {
+            return NrOfInstances;
+        }
 
         /// <summary>
         /// Whether or not to use the pool dispatcher.
