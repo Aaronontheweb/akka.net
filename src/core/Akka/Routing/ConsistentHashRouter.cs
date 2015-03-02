@@ -297,6 +297,23 @@ namespace Akka.Routing
         {
             return new Router(new ConsistentHashingRoutingLogic(system, VirtualNodesFactor, HashMapping ?? ConsistentHashingRouter.EmptyConsistentHashMapping));
         }
+
+        public override RouterConfig WithFallback(RouterConfig routerConfig)
+        {
+            if (routerConfig is FromConfig || routerConfig is NoRouter)
+            {
+                return base.WithFallback(routerConfig);
+            }
+            else if (routerConfig is ConsistentHashingGroup)
+            {
+                var other = routerConfig as ConsistentHashingGroup;
+                return WithHashMapping(other.HashMapping);
+            }
+            else
+            {
+                throw new ArgumentException(string.Format("Expected ConsistentHashingGroup, got {0}", routerConfig), "routerConfig");
+            }
+        }
     }
 
     /// <summary>
@@ -377,9 +394,31 @@ namespace Akka.Routing
             return new Router(new ConsistentHashingRoutingLogic(system, VirtualNodesFactor, HashMapping ?? ConsistentHashingRouter.EmptyConsistentHashMapping));
         }
 
+        public override Pool WithSupervisorStrategy(SupervisorStrategy strategy)
+        {
+            return new ConsistentHashingPool(NrOfInstances, Resizer, strategy, RouterDispatcher, UsePoolDispatcher, VirtualNodesFactor, HashMapping);
+        }
+
+        public override Pool WithResizer(Resizer resizer)
+        {
+            return new ConsistentHashingPool(NrOfInstances, resizer, SupervisorStrategy, RouterDispatcher, UsePoolDispatcher, VirtualNodesFactor, HashMapping);
+        }
+
         public override RouterConfig WithFallback(RouterConfig routerConfig)
         {
-            return base.WithFallback(routerConfig);
+            if (routerConfig is FromConfig || routerConfig is NoRouter)
+            {
+                return OverrideUnsetConfig(routerConfig);
+            }
+            else if (routerConfig is ConsistentHashingPool)
+            {
+                var other = routerConfig as ConsistentHashingPool;
+                return WithHashMapping(other.HashMapping).OverrideUnsetConfig(other);
+            }
+            else
+            {
+                throw new ArgumentException(string.Format("Expected ConsistentHashingPool, got {0}", routerConfig), "routerConfig");
+            }
         }
     }
 }

@@ -95,7 +95,7 @@ namespace Akka.Cluster.Routing
     /// possible to mix this with built-in routers such as <see cref="RoundRobinGroup"/> or
     /// custom routers.
     /// </summary>
-    public sealed class ClusterRouterGroup : Group, IClusterRouterConfigBase
+    public sealed class ClusterRouterGroup : Group, IClusterRouterConfigBase<Group, ClusterRouterGroupSettings>
     {
         public ClusterRouterGroup(Group local, ClusterRouterGroupSettings settings)
         {
@@ -105,8 +105,8 @@ namespace Akka.Cluster.Routing
             RouterDispatcher = local.RouterDispatcher;
         }
 
-        public RouterConfig Local { get; private set; }
-        public ClusterRouterSettingsBase Settings { get; private set; }
+        public Group Local { get; private set; }
+        public ClusterRouterGroupSettings Settings { get; private set; }
 
         public override Router CreateRouter(ActorSystem system)
         {
@@ -143,7 +143,7 @@ namespace Akka.Cluster.Routing
     /// possible to mix this with built-in routers such as <see cref="RoundRobinGroup"/> or
     /// custom routers.
     /// </summary>
-    public sealed class ClusterRouterPool : Pool, IClusterRouterConfigBase
+    public sealed class ClusterRouterPool : Pool, IClusterRouterConfigBase<Pool, ClusterRouterPoolSettings>
     {
         public ClusterRouterPool(Pool local, ClusterRouterPoolSettings settings)
         {
@@ -159,8 +159,9 @@ namespace Akka.Cluster.Routing
 
         private readonly AtomicCounter _childNameCounter = new AtomicCounter(0);
 
-        public RouterConfig Local { get; private set; }
-        public ClusterRouterSettingsBase Settings { get; private set; }
+        public Pool Local { get; private set; }
+
+        public ClusterRouterPoolSettings Settings { get; private set; }
 
         public override Router CreateRouter(ActorSystem system)
         {
@@ -170,6 +171,16 @@ namespace Akka.Cluster.Routing
         internal override RouterActor CreateRouterActor()
         {
             return new ClusterRouterPoolActor(((Pool) Local).SupervisorStrategy, (ClusterRouterPoolSettings) Settings);
+        }
+
+        public override Pool WithSupervisorStrategy(SupervisorStrategy strategy)
+        {
+            return new ClusterRouterPool(Local.WithSupervisorStrategy(strategy), Settings);
+        }
+
+        public override Pool WithResizer(Resizer resizer)
+        {
+            return new ClusterRouterPool(Local.WithResizer(resizer), Settings);
         }
 
 
@@ -208,11 +219,12 @@ namespace Akka.Cluster.Routing
     /// Have to implement this as an interface rather than a base class, so we can continue to inherit from <see cref="Group"/> and <see cref="Pool"/>
     /// on the concrete cluster router implementations.
     /// </summary>
-    public interface IClusterRouterConfigBase
+    public interface IClusterRouterConfigBase<out TR, out TC> where TR:RouterConfig
+                                                        where TC:ClusterRouterSettingsBase
     {
-        RouterConfig Local { get; }
+        TR Local { get; }
 
-        ClusterRouterSettingsBase Settings { get; }
+        TC Settings { get; }
     }
 
     /// <summary>

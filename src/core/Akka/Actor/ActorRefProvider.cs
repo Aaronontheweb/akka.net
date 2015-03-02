@@ -374,6 +374,11 @@ namespace Akka.Actor
             {
                 deploy = deploy.WithRouterConfig(props.RouterConfig);
             }
+            else
+            {
+                //otherwise, use the procedural input as a fallback
+                deploy = deploy.WithRouterConfig(deploy.RouterConfig.WithFallback(props.RouterConfig));
+            }
 
             var routerDispatcher = system.Dispatchers.FromConfig(props.RouterConfig.RouterDispatcher);
             var routerMailbox = _system.Mailboxes.CreateMailbox(props, null);

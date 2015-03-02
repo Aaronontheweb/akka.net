@@ -78,6 +78,16 @@ namespace Akka.Remote.Routing
             return Local.CreateRouterActor();
         }
 
+        public override Pool WithSupervisorStrategy(SupervisorStrategy strategy)
+        {
+            return new RemoteRouterConfig(Local.WithSupervisorStrategy(strategy), Nodes);
+        }
+
+        public override Pool WithResizer(Resizer resizer)
+        {
+            return new RemoteRouterConfig(Local.WithResizer(resizer), Nodes);
+        }
+
         public override Router CreateRouter(ActorSystem system)
         {
             return Local.CreateRouter(system);

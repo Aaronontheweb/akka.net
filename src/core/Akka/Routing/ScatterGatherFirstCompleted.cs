@@ -148,5 +148,15 @@ namespace Akka.Routing
         {
             return new Router(new ScatterGatherFirstCompletedRoutingLogic(_within));
         }
+
+        public override Pool WithSupervisorStrategy(SupervisorStrategy strategy)
+        {
+            return new ScatterGatherFirstCompletedPool(NrOfInstances, Resizer, strategy, RouterDispatcher, _within, UsePoolDispatcher);
+        }
+
+        public override Pool WithResizer(Resizer resizer)
+        {
+            return new ScatterGatherFirstCompletedPool(NrOfInstances, resizer, SupervisorStrategy, RouterDispatcher, _within, UsePoolDispatcher);
+        }
     }
 }

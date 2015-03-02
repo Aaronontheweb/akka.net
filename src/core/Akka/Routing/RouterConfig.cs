@@ -256,12 +256,46 @@ namespace Akka.Routing
 
         public override IEnumerable<Routee> GetRoutees(RoutedActorCell routedActorCell)
         {
-            for (int i = 0; i < NrOfInstances; i++)
+            for (var i = 0; i < NrOfInstances; i++)
             {
                 //TODO: where do we get props?
                 yield return NewRoutee(Akka.Actor.Props.Empty, routedActorCell);
             }
         }
+
+        protected RouterConfig OverrideUnsetConfig(RouterConfig other)
+        {
+            if (other is NoRouter) return this; // NoRouter is thedefault, hence "neutral"
+            if (other is Pool)
+            {
+                Pool wssConf;
+                var p = other as Pool;
+                if (SupervisorStrategy.Equals(Pool.DefaultStrategy) &&
+                    !p.SupervisorStrategy.Equals(Pool.DefaultStrategy))
+                    wssConf = this.WithSupervisorStrategy(p.SupervisorStrategy);
+                else
+                    wssConf = this;
+
+                if (wssConf.Resizer == null && p.Resizer != null)
+                    return wssConf.WithResizer(p.Resizer);
+                return wssConf;
+            }
+            return this;
+        }
+
+        /// <summary>
+        /// Returns a new instance of the <see cref="Pool"/> router with a new <see cref="SupervisorStrategy"/>.
+        /// 
+        /// NOTE: this method is immutable and returns a new instance of the <see cref="Pool"/>.
+        /// </summary>
+        public abstract Pool WithSupervisorStrategy(SupervisorStrategy strategy);
+
+        /// <summary>
+        /// Returns a new instance of the <see cref="Pool"/> router with a new <see cref="Resizer"/>.
+        /// 
+        /// NOTE: this method is immutable and returns a new instance of the <see cref="Pool"/>.
+        /// </summary>
+        public abstract Pool WithResizer(Resizer resizer);
 
         #region Static methods
 
