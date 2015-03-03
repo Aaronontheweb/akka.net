@@ -92,7 +92,7 @@ namespace Akka.Actor
             FsmDebugEvent = Config.GetBoolean("akka.actor.debug.fsm");
             DebugEventStream = Config.GetBoolean("akka.actor.debug.event-stream");
             DebugUnhandledMessage = Config.GetBoolean("akka.actor.debug.unhandled");
-            DebugRouterMisConfiguration = Config.GetBoolean("akka.actor.debug.router-misconfiguration");
+            DebugRouterMisconfiguration = Config.GetBoolean("akka.actor.debug.router-misconfiguration");
             Home = Config.GetString("akka.home") ?? "";
             DefaultVirtualNodesFactor = Config.GetInt("akka.actor.deployment.default.virtual-nodes-factor");
             //TODO: dunno.. we dont have FiniteStateMachines, dont know what the rest is
@@ -234,12 +234,6 @@ namespace Akka.Actor
         /// </summary>
         /// <value>The home.</value>
         public string Home { get; private set; }
-
-        /// <summary>
-        ///     Gets a value indicating whether [debug router mis configuration].
-        /// </summary>
-        /// <value><c>true</c> if [debug router mis configuration]; otherwise, <c>false</c>.</value>
-        public bool DebugRouterMisConfiguration { get; private set; }
 
         /// <summary>
         ///     Gets a value indicating whether [debug lifecycle].

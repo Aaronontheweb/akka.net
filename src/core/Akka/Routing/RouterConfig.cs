@@ -70,6 +70,11 @@ namespace Akka.Routing
         {
             throw new NotImplementedException();
         }
+
+        public override RouterConfig WithFallback(RouterConfig routerConfig)
+        {
+            return routerConfig;
+        }
     }
 
     /// <summary>

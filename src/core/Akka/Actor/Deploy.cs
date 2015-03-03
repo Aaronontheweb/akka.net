@@ -11,7 +11,7 @@ namespace Akka.Actor
         public static readonly string NoDispatcherGiven = string.Empty;
         public static readonly string NoMailboxGiven = string.Empty;
         public static readonly Scope NoScopeGiven = Actor.NoScopeGiven.Instance;
-        public static readonly Deploy None = null;
+        public static readonly Deploy None = new Deploy();
         /*
          path: String = "",
   config: Config = ConfigFactory.empty,
