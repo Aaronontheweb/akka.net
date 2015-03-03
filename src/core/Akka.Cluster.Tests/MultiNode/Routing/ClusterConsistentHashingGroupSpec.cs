@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 using Akka.Actor;
@@ -131,12 +132,13 @@ namespace Akka.Cluster.Tests.MultiNode.Routing
             // it may take some time until router receives cluster member events
             AwaitAssert(() =>
             {
-                CurrentRoutees(router).Members.Count().ShouldBe(3);
+                var members = CurrentRoutees(router).Members;
+                members.Count().ShouldBe(3);
             });
             var keys = new[] {"A", "B", "C", "D", "E", "F", "G"};
             foreach (var key in Enumerable.Range(1, 10).SelectMany(i => keys))
             {
-                router.Tell(key);
+                router.Tell(key, TestActor);
             }
             EnterBarrier("messages-sent");
             router.Tell(new Broadcast(new Get()));

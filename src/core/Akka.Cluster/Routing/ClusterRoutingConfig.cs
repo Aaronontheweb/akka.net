@@ -126,7 +126,7 @@ namespace Akka.Cluster.Routing
 
         public override RouterConfig WithFallback(RouterConfig routerConfig)
         {
-            var localFallback = (ClusterRouterGroup) routerConfig;
+            var localFallback = routerConfig as ClusterRouterGroup;
             if (localFallback != null && (localFallback.Local is ClusterRouterGroup)) throw new ConfigurationException("ClusterRouterGroup is not allowed to wrap a ClusterRouterGroup");
             if (localFallback != null) return Copy(Local.WithFallback(localFallback.Local).AsInstanceOf<Group>());
             return Copy(Local.WithFallback(routerConfig).AsInstanceOf<Group>());
@@ -446,20 +446,30 @@ namespace Akka.Cluster.Routing
         /// </summary>
         public override void AddRoutees()
         {
-            var deploymentTarget = SelectDeploymentTarget();
-            while (deploymentTarget != null)
+
+            Action doAddRoutees = null;
+            doAddRoutees = () =>
             {
-                var address = deploymentTarget.Item1;
-                var path = deploymentTarget.Item2;
-                var routee = _group.RouteeFor(address + path, Context);
-                UsedRouteePaths = UsedRouteePaths.SetItem(address,
-                    UsedRouteePaths.GetOrElse(address, ImmutableHashSet<string>.Empty).Add(path));
+                var deploymentTarget = SelectDeploymentTarget();
+                if (deploymentTarget != null)
+                {
+                    var address = deploymentTarget.Item1;
+                    var path = deploymentTarget.Item2;
+                    var routee = _group.RouteeFor(address + path, Context);
+                    UsedRouteePaths = UsedRouteePaths.SetItem(address,
+                        UsedRouteePaths.GetOrElse(address, ImmutableHashSet<string>.Empty).Add(path));
 
-                //must register each one, since registered routees are used in SelectDeploymentTarget
-                Cell.AddRoutee(routee);
+                    var currentRoutees = Cell.Router.Routees.ToList();
 
-                deploymentTarget = SelectDeploymentTarget();
-            }
+                    //must register each one, since registered routees are used in SelectDeploymentTarget
+                    Cell.AddRoutee(routee);
+
+                    doAddRoutees();
+                }
+            };
+
+            doAddRoutees();
+           
         }
 
         public Tuple<Address, string> SelectDeploymentTarget()
@@ -477,18 +487,12 @@ namespace Akka.Cluster.Routing
             else
             {
                 //find the node with the fewest routees
-               
-
                 var minNode =
-                    UsedRouteePaths.Aggregate(
-                        (curMin, x) =>
-                            (curMin.Value == ImmutableHashSet<string>.Empty || x.Value.Count < curMin.Value.Count)
-                                ? x
-                                : curMin);
+                    UsedRouteePaths.Select(x => new{ Address = x.Key, Used = x.Value }).OrderBy(x => x.Used.Count).First();
 
                 // pick next of unused paths
-                var minPath = Settings.RouteesPaths.FirstOrDefault(p => !minNode.Value.Contains(p));
-                return minPath == null ? null : new Tuple<Address, string>(minNode.Key, minPath);
+                var minPath = Settings.RouteesPaths.FirstOrDefault(p => !minNode.Used.Contains(p));
+                return minPath == null ? null : new Tuple<Address, string>(minNode.Address, minPath);
             }
         }
 
