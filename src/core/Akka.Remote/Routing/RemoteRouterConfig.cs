@@ -19,8 +19,8 @@ namespace Akka.Remote.Routing
     /// </summary>
     public sealed class RemoteRouterConfig : Pool
     {
-        internal readonly Pool Local;
-        internal readonly IList<Address> Nodes;
+        public readonly Pool Local;
+        public readonly IList<Address> Nodes;
 
         /// <summary>
         /// Used for distributing routees to <see cref="Nodes"/>. Needs to be an instance variable since <see cref="Resizer"/> may call <see cref="RoutedActorCell.AddRoutees"/> several times.

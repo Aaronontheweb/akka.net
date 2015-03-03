@@ -160,15 +160,10 @@ namespace Akka.Remote
             }
 
             //merge all of the fallbacks together
-            var deployment = new List<Deploy>() {configDeploy, deploy}.Where(x => x != null).Aggregate(Deploy.None, (deploy1, deploy2) => deploy2.WithFallback(deploy1));
+            var deployment = new List<Deploy>() { deploy, configDeploy }.Where(x => x != null).Aggregate(Deploy.None, (deploy1, deploy2) => deploy2.WithFallback(deploy1));
             var propsDeploy = new List<Deploy>() {props.Deploy, deployment}.Where(x => x != null)
                 .Aggregate(Deploy.None, (deploy1, deploy2) => deploy2.WithFallback(deploy1));
 
-            //deploy = configDeploy ?? props.Deploy ?? Deploy.None;
-            //if (deploy.Mailbox != null)
-            //    props = props.WithMailbox(deploy.Mailbox);
-            //if (deploy.Dispatcher != null)
-            //    props = props.WithDispatcher(deploy.Dispatcher);
             //match for remote scope
             if (propsDeploy.Scope is RemoteScope)
             {
