@@ -5,9 +5,43 @@ using System.Threading;
 using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Configuration;
+using Akka.Dispatch.SysMsg;
+using Akka.Event;
 
 namespace Akka.Dispatch
 {
+    /// <summary>
+    /// Base class used for hooking new <see cref="MessageDispatcher"/> types into <see cref="Dispatchers"/>
+    /// </summary>
+    public abstract class MessageDispatcherConfigurator
+    {
+        /// <summary>
+        /// Takes a <see cref="Config"/> object, usually passed in via <see cref="Settings.Config"/>
+        /// </summary>
+        protected MessageDispatcherConfigurator(Config config)
+        {
+            Config = config;
+        }
+
+        /// <summary>
+        /// System-wide configuration
+        /// </summary>
+        public Config Config { get; private set; }
+
+        /// <summary>
+        /// Returns a <see cref="Dispatcher"/> instance.
+        /// 
+        /// Whether or not this <see cref="MessageDispatcherConfigurator"/> returns a new instance 
+        /// or returns a reference to an existing instance is an implementation detail of the
+        /// underlying implementation.
+        /// </summary>
+        /// <returns></returns>
+        public abstract MessageDispatcher Dispatcher();
+    }
+
+    /// <summary>
+    /// Lookup list for different types of out-of-the-box <see cref="Dispatcher"/>s.
+    /// </summary>
     public enum DispatcherType
     {
         Dispatcher,
@@ -59,11 +93,17 @@ namespace Akka.Dispatch
         /// <param name="run">The run.</param>
         public abstract void Schedule(Action run);
 
+        /// <summary>
+        /// Dispatches a user-defined message from a mailbox to an <see cref="ActorCell"/>        
+        /// </summary>
         public virtual void Dispatch(ActorCell cell, Envelope envelope)
         {
             cell.Invoke(envelope);
         }
 
+        /// <summary>
+        /// Dispatches a <see cref="SystemMessage"/> from a mailbox to an <see cref="ActorCell"/>        
+        /// </summary>
         public virtual void SystemDispatch(ActorCell cell, Envelope envelope)
         {
             cell.SystemInvoke(envelope);
