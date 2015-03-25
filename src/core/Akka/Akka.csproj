@@ -168,6 +168,7 @@
     <Compile Include="Configuration\Hocon\HoconTokenizer.cs" />
     <Compile Include="Configuration\Hocon\HoconValue.cs" />
     <Compile Include="Configuration\Hocon\IHoconElement.cs" />
+    <Compile Include="Dispatch\AbstractDispatcher.cs" />
     <Compile Include="Dispatch\ActorTaskScheduler.cs" />
     <Compile Include="Dispatch\BoundedDequeBasedMailbox.cs" />
     <Compile Include="Dispatch\ConcurrentQueueMailbox.cs" />
@@ -175,6 +176,7 @@
     <Compile Include="Dispatch\GenericMailbox.cs" />
     <Compile Include="Dispatch\Dispatchers.cs" />
     <Compile Include="Actor\Exceptions.cs" />
+    <Compile Include="Dispatch\IDispatcherPrerequisites.cs" />
     <Compile Include="Dispatch\MessageQueueMailbox.cs" />
     <Compile Include="Dispatch\MessageQueues\BlockingMessageQueue.cs" />
     <Compile Include="Dispatch\MessageQueues\BoundedMessageQueue.cs" />

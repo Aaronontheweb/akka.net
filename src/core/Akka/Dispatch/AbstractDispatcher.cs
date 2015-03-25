@@ -33,10 +33,13 @@ namespace Akka.Dispatch
     }
 
     /// <summary>
-    /// The default 
+    /// The default set of contextual data needed for <see cref="MessageDispatcherConfigurator"/>s
     /// </summary>
     public sealed class DefaultDispatcherPrerequisites : IDispatcherPrerequisites
     {
+        /// <summary>
+        /// Default constructor...
+        /// </summary>
         public DefaultDispatcherPrerequisites(EventStream eventStream, IScheduler scheduler, Settings settings, Mailboxes mailboxes)
         {
             Mailboxes = mailboxes;
