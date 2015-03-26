@@ -171,6 +171,7 @@
     <Compile Include="Dispatch\AbstractDispatcher.cs" />
     <Compile Include="Dispatch\ActorTaskScheduler.cs" />
     <Compile Include="Dispatch\BoundedDequeBasedMailbox.cs" />
+    <Compile Include="Dispatch\CachingConfig.cs" />
     <Compile Include="Dispatch\ConcurrentQueueMailbox.cs" />
     <Compile Include="Dispatch\DequeBasedMailbox.cs" />
     <Compile Include="Dispatch\GenericMailbox.cs" />

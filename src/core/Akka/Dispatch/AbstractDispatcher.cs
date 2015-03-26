@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Threading;
 using Akka.Actor;
 using Akka.Configuration;
 using Akka.Dispatch.SysMsg;
@@ -63,8 +64,9 @@ namespace Akka.Dispatch
         /// <summary>
         /// Takes a <see cref="Config"/> object, usually passed in via <see cref="Settings.Config"/>
         /// </summary>
-        protected MessageDispatcherConfigurator(Config config)
+        protected MessageDispatcherConfigurator(Config config, IDispatcherPrerequisites prerequisites)
         {
+            Prerequisites = prerequisites;
             Config = config;
         }
 
@@ -72,6 +74,11 @@ namespace Akka.Dispatch
         /// System-wide configuration
         /// </summary>
         public Config Config { get; private set; }
+
+        /// <summary>
+        /// The system prerequisites needed for this dispatcher to do its job
+        /// </summary>
+        public IDispatcherPrerequisites Prerequisites { get; private set; }
 
         /// <summary>
         /// Returns a <see cref="Dispatcher"/> instance.
@@ -82,6 +89,31 @@ namespace Akka.Dispatch
         /// </summary>
         /// <returns></returns>
         public abstract MessageDispatcher Dispatcher();
+    }
+
+    /// <summary>
+    /// Used to create instances of the <see cref="ThreadPoolDispatcher"/>.
+    /// 
+    /// <remarks>
+    /// Always returns the same instance, since the <see cref="ThreadPool"/> is global.
+    /// This is also the default dispatcher for all actors.
+    /// </remarks>
+    /// </summary>
+    class ThreadPoolDispatcherConfigurator : MessageDispatcherConfigurator
+    {
+        public ThreadPoolDispatcherConfigurator(Config config, IDispatcherPrerequisites prerequisites) : base(config, prerequisites)
+        {
+        }
+
+        private static readonly ThreadPoolDispatcher Instance = new ThreadPoolDispatcher();
+
+        public override MessageDispatcher Dispatcher()
+        {
+            /*
+             * Always want to return the same instance of the ThreadPoolDispatcher
+             */
+            return Instance;
+        }
     }
 
     /// <summary>

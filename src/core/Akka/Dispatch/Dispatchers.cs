@@ -1,12 +1,9 @@
 ﻿using System;
 using System.Collections.Concurrent;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Configuration;
-using Akka.Dispatch.SysMsg;
-using Akka.Event;
 
 namespace Akka.Dispatch
 {
@@ -98,7 +95,7 @@ namespace Akka.Dispatch
     }
 
     /// <summary>
-    ///     Class Dispatchers.
+    /// The registry of all <see cref="MessageDispatcher"/> instances available to this <see cref="ActorSystem"/>.
     /// </summary>
     public class Dispatchers
     {
@@ -112,11 +109,20 @@ namespace Akka.Dispatch
 
         private readonly MessageDispatcher _defaultGlobalDispatcher;
 
+        /// <summary>
+        /// The list of all configurators used to create <see cref="MessageDispatcher"/> instances.
+        /// 
+        /// Has to be thread-safe, as this collection can be accessed concurrently by many actors.
+        /// </summary>
+        private ConcurrentDictionary<string, MessageDispatcherConfigurator> _dispatcherConfigurators = new ConcurrentDictionary<string, MessageDispatcherConfigurator>();
+
         /// <summary>Initializes a new instance of the <see cref="Dispatchers" /> class.</summary>
         /// <param name="system">The system.</param>
-        public Dispatchers(ActorSystem system)
+        /// <param name="prerequisites">The prerequisites required for some <see cref="MessageDispatcherConfigurator"/> instances.</param>
+        public Dispatchers(ActorSystem system, IDispatcherPrerequisites prerequisites)
         {
             _system = system;
+            Prerequisites = prerequisites;
             _defaultGlobalDispatcher = FromConfig(DefaultDispatcherId);
         }
 
@@ -125,6 +131,11 @@ namespace Akka.Dispatch
         {
             get { return _defaultGlobalDispatcher; }
         }
+
+        /// <summary>
+        /// The prerequisites required for some <see cref="MessageDispatcherConfigurator"/> instances.
+        /// </summary>
+        public IDispatcherPrerequisites Prerequisites { get; private set; }
 
         /// <summary>
         ///     Gets the MessageDispatcher for the current SynchronizationContext.
