@@ -103,16 +103,80 @@ namespace Akka.Dispatch
     {
         public ThreadPoolDispatcherConfigurator(Config config, IDispatcherPrerequisites prerequisites) : base(config, prerequisites)
         {
+            _instance = new ThreadPoolDispatcher(this);
         }
 
-        private static readonly ThreadPoolDispatcher Instance = new ThreadPoolDispatcher();
+        //cached instance
+        private readonly ThreadPoolDispatcher _instance;
 
         public override MessageDispatcher Dispatcher()
         {
             /*
              * Always want to return the same instance of the ThreadPoolDispatcher
              */
-            return Instance;
+            return _instance;
+        }
+    }
+
+    /// <summary>
+    /// Used to create instances of the <see cref="TaskDispatcher"/>.
+    /// 
+    /// <remarks>
+    /// Always returns the same instance.
+    /// </remarks>
+    /// </summary>
+    class TaskDispatcherConfigurator : MessageDispatcherConfigurator
+    {
+        public TaskDispatcherConfigurator(Config config, IDispatcherPrerequisites prerequisites) : base(config, prerequisites)
+        {
+            _instance = new TaskDispatcher(this);
+        }
+
+        private readonly TaskDispatcher _instance;
+
+        public override MessageDispatcher Dispatcher()
+        {
+            return _instance;
+        }
+    }
+
+    /// <summary>
+    /// Used to create instances of the <see cref="SingleThreadDispatcher"/>. 
+    /// <remarks>
+    /// Always returns the same instance.
+    /// </remarks>
+    /// </summary>
+    class PinnedDispatcherConfigurator : MessageDispatcherConfigurator
+    {
+        public PinnedDispatcherConfigurator(Config config, IDispatcherPrerequisites prerequisites) : base(config, prerequisites)
+        {
+            _dispatcher = new SingleThreadDispatcher();
+        }
+
+        private readonly SingleThreadDispatcher _dispatcher;
+
+        public override MessageDispatcher Dispatcher()
+        {
+            return _dispatcher;
+        }
+    }
+
+    /// <summary>
+    /// Used to create instances of the <see cref="CurrentSynchronizationContextDispatcher"/>.
+    /// 
+    /// <remarks>
+    /// Always returns the a new instance.
+    /// </remarks>
+    /// </summary>
+    class CurrentSynchronizationContextDispatcherConfigurator : MessageDispatcherConfigurator
+    {
+        public CurrentSynchronizationContextDispatcherConfigurator(Config config, IDispatcherPrerequisites prerequisites) : base(config, prerequisites)
+        {
+        }
+
+        public override MessageDispatcher Dispatcher()
+        {
+            return new CurrentSynchronizationContextDispatcher();
         }
     }
 
@@ -145,10 +209,16 @@ namespace Akka.Dispatch
         public const int DefaultThroughput = 100;
 
         /// <summary>
+        /// The configuator used to configure this message dispatcher.
+        /// </summary>
+        public MessageDispatcherConfigurator Configurator { get; private set; }
+
+        /// <summary>
         ///     Initializes a new instance of the <see cref="MessageDispatcher" /> class.
         /// </summary>
-        protected MessageDispatcher()
+        protected MessageDispatcher(MessageDispatcherConfigurator configurator)
         {
+            Configurator = configurator;
             Throughput = DefaultThroughput;
         }
 

@@ -1,4 +1,8 @@
-﻿using System;
+﻿/**
+ * Copyright (C) 2009-2015 Typesafe Inc. <http://www.typesafe.com>
+ * Original C# code written by Akka.NET project <http://getakka.net/>
+ */
+using System;
 using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,6 +16,13 @@ namespace Akka.Dispatch
     /// </summary>
     public class ThreadPoolDispatcher : MessageDispatcher
     {
+        /// <summary>
+        /// Takes a <see cref="MessageDispatcherConfigurator"/>
+        /// </summary>
+        public ThreadPoolDispatcher(MessageDispatcherConfigurator configurator) : base(configurator)
+        {
+        }
+
         /// <summary>
         ///     Schedules the specified run.
         /// </summary>
@@ -106,7 +117,7 @@ namespace Akka.Dispatch
         public readonly static string SynchronizedDispatcherId = "akka.actor.synchronized-dispatcher";
 
         private readonly ActorSystem _system;
-
+        private readonly CachingConfig _cachingConfig;
         private readonly MessageDispatcher _defaultGlobalDispatcher;
 
         /// <summary>
@@ -123,6 +134,7 @@ namespace Akka.Dispatch
         {
             _system = system;
             Prerequisites = prerequisites;
+            _cachingConfig = new CachingConfig(prerequisites.Settings.Config);
             _defaultGlobalDispatcher = FromConfig(DefaultDispatcherId);
         }
 
@@ -151,6 +163,76 @@ namespace Akka.Dispatch
         public MessageDispatcher Lookup(string dispatcherName)
         {
             return FromConfig(dispatcherName);
+        }
+
+        private MessageDispatcherConfigurator LookupConfigurator(string id)
+        {
+            MessageDispatcherConfigurator configurator;
+            if (_dispatcherConfigurators.TryGetValue(id, out configurator))
+            {
+                // It doesn't matter if we create a dispatcher configurator that isn't used due to concurrent lookup.
+                // That shouldn't happen often and in case it does the actual ExecutorService isn't
+                // created until used, i.e. cheap.
+                
+            }
+        }
+
+        /// <summary>
+        /// Register a <see cref="MessageDispatcherConfigurator"/> that will be used by <see cref="Lookup"/>
+        /// and <see cref="HasDispatcher"/> instead of looking up the configurator from the system
+        /// configuration.
+        /// 
+        /// This enables dynamic addtition of dispatchers.
+        /// 
+        /// <remarks>
+        /// A <see cref="MessageDispatcherConfigurator"/> for a certain id can only be registered once,
+        /// i.e. it can not be replaced. It is safe to call this method multiple times, but only the
+        /// first registration will be used.
+        /// </remarks>
+        /// </summary>
+        /// <returns>This method returns <c>true</c> if the specified configurator was successfully regisetered.</returns>
+        private bool RegisterConfigurator(string id, MessageDispatcherConfigurator configurator)
+        {
+            return _dispatcherConfigurators.TryAdd(id, configurator);
+        }
+
+        private MessageDispatcherConfigurator ConfiguratorFrom(Config cfg)
+        {
+            if(!cfg.HasPath("id")) throw new ConfigurationException(string.Format("Missing dispatcher `id` property in config: {0}", cfg.Root));
+
+            var type = cfg.GetString("type");
+            var throughput = cfg.GetInt("throughput");
+            var throughputDeadlineTime = cfg.GetTimeSpan("throughput-deadline-time").Ticks;
+
+
+            MessageDispatcherConfigurator dispatcher;
+            switch (type)
+            {
+                case "Dispatcher":
+                    dispatcher = new ThreadPoolDispatcherConfigurator(cfg, Prerequisites);
+                    break;
+                case "TaskDispatcher":
+                    dispatcher = new TaskDispatcherConfigurator(cfg, Prerequisites);
+                    break;
+                case "PinnedDispatcher":
+                    dispatcher = new PinnedDispatcherConfigurator(cfg, Prerequisites);
+                    break;
+                case "SynchronizedDispatcher":
+                    dispatcher = new CurrentSynchronizationContextDispatcherConfigurator(cfg, Prerequisites);
+                    break;
+                case null:
+                    throw new NotSupportedException("Could not resolve dispatcher for path " + path + ". type is null");
+                default:
+                    Type dispatcherType = Type.GetType(type);
+                    if (dispatcherType == null)
+                    {
+                        throw new NotSupportedException("Could not resolve dispatcher type " + type + " for path " + path);
+                    }
+                    dispatcher = (MessageDispatcherConfigurator)Activator.CreateInstance(dispatcherType, cfg, Prerequisites);
+                    break;
+            }
+
+            return new DispatcherConfigurator(dispatcher, cfg.GetString("id"), throughput, throughputDeadlineTime);
         }
 
         /// <summary>
@@ -216,6 +298,37 @@ namespace Akka.Dispatch
                 dispatcher.ThroughputDeadlineTime = null;
             }
 
+            return dispatcher;
+        }
+    }
+
+    /// <summary>
+    /// The cached <see cref="MessageDispatcher"/> factory that gets looked up via configuration
+    /// inside <see cref="Dispatchers"/>
+    /// </summary>
+    class DispatcherConfigurator : MessageDispatcherConfigurator
+    {
+        public string Id { get; private set; }
+
+        private readonly MessageDispatcherConfigurator _configurator;
+
+        public DispatcherConfigurator(MessageDispatcherConfigurator configurator, string id, int throughput, long? throughputDeadlineTime)
+            : base(configurator.Config, configurator.Prerequisites)
+        {
+            _configurator = configurator;
+            ThroughputDeadlineTime = throughputDeadlineTime;
+            Id = id;
+            Throughput = throughput;
+        }
+
+        public int Throughput { get; private set; }
+
+        public long? ThroughputDeadlineTime { get; private set; }
+        public override MessageDispatcher Dispatcher()
+        {
+            var dispatcher = _configurator.Dispatcher();
+            dispatcher.Throughput = Throughput;
+            dispatcher.ThroughputDeadlineTime = ThroughputDeadlineTime > 0 ? ThroughputDeadlineTime : null;
             return dispatcher;
         }
     }
