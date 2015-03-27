@@ -174,6 +174,7 @@
     <Compile Include="Dispatch\CachingConfig.cs" />
     <Compile Include="Dispatch\ConcurrentQueueMailbox.cs" />
     <Compile Include="Dispatch\DequeBasedMailbox.cs" />
+    <Compile Include="Dispatch\DispatcherConfigurator.cs" />
     <Compile Include="Dispatch\GenericMailbox.cs" />
     <Compile Include="Dispatch\Dispatchers.cs" />
     <Compile Include="Actor\Exceptions.cs" />

@@ -43,14 +43,15 @@ namespace Akka.Dispatch
         /// <summary>
         ///     The scheduler
         /// </summary>
-        private readonly TaskScheduler scheduler;
+        private readonly TaskScheduler _scheduler;
 
         /// <summary>
         ///     Initializes a new instance of the <see cref="CurrentSynchronizationContextDispatcher" /> class.
         /// </summary>
-        public CurrentSynchronizationContextDispatcher()
+        public CurrentSynchronizationContextDispatcher(MessageDispatcherConfigurator configurator)
+            : base(configurator)
         {
-            scheduler = TaskScheduler.FromCurrentSynchronizationContext();
+            _scheduler = TaskScheduler.FromCurrentSynchronizationContext();
         }
 
         /// <summary>
@@ -60,7 +61,7 @@ namespace Akka.Dispatch
         public override void Schedule(Action run)
         {
             var t = new Task(run);
-            t.Start(scheduler);
+            t.Start(_scheduler);
         }
     }
 
@@ -82,7 +83,8 @@ namespace Akka.Dispatch
         /// <summary>
         ///     Initializes a new instance of the <see cref="SingleThreadDispatcher" /> class.
         /// </summary>
-        public SingleThreadDispatcher()
+        public SingleThreadDispatcher(MessageDispatcherConfigurator configurator)
+            : base(configurator)
         {
             var thread = new Thread(_ =>
             {
@@ -145,36 +147,85 @@ namespace Akka.Dispatch
         }
 
         /// <summary>
+        /// The <see cref="Configuration.Config"/> for the default dispatcher.
+        /// </summary>
+        public Config DefaultDispatcherConfig
+        {
+            get
+            {
+                return
+                    IdConfig(DefaultDispatcherId)
+                        .WithFallback(Prerequisites.Settings.Config.GetConfig(DefaultDispatcherId));
+            }
+        }
+
+        /// <summary>
         /// The prerequisites required for some <see cref="MessageDispatcherConfigurator"/> instances.
         /// </summary>
         public IDispatcherPrerequisites Prerequisites { get; private set; }
 
         /// <summary>
-        ///     Gets the MessageDispatcher for the current SynchronizationContext.
-        ///     Use this when scheduling actors in a UI thread.
+        /// Returns a dispatcher as specified in configuration. Please note that this method _MAY_
+        /// create and return a new dispatcher on _EVERY_ call.
         /// </summary>
-        /// <returns>MessageDispatcher.</returns>
-        public static MessageDispatcher FromCurrentSynchronizationContext()
-        {
-            return new CurrentSynchronizationContextDispatcher();
-        }
-
-
+        /// <exception cref="ConfigurationException">If the specified dispatcher cannot be found in configuration.</exception>
         public MessageDispatcher Lookup(string dispatcherName)
         {
-            return FromConfig(dispatcherName);
+            return LookupConfigurator(dispatcherName).Dispatcher();
+        }
+
+        /// <summary>
+        /// Checks that configuration provides a sectionfor the given dispatcher.
+        /// This does not gaurantee that no <see cref="ConfigurationException"/> will be thrown
+        /// when using the dispatcher, because the details can only be checked by trying to
+        /// instantiate it, which might be undersirable when just checking.
+        /// </summary>
+        public bool HasDispatcher(string id)
+        {
+            return _dispatcherConfigurators.ContainsKey(id) || _cachingConfig.HasPath(id);
         }
 
         private MessageDispatcherConfigurator LookupConfigurator(string id)
         {
             MessageDispatcherConfigurator configurator;
-            if (_dispatcherConfigurators.TryGetValue(id, out configurator))
+            if (!_dispatcherConfigurators.TryGetValue(id, out configurator))
             {
                 // It doesn't matter if we create a dispatcher configurator that isn't used due to concurrent lookup.
                 // That shouldn't happen often and in case it does the actual ExecutorService isn't
                 // created until used, i.e. cheap.
-                
+                MessageDispatcherConfigurator newConfigurator;
+                if (_cachingConfig.HasPath(id))
+                {
+                    newConfigurator = ConfiguratorFrom(Config(id));
+                }
+                else
+                {
+                    throw new ConfigurationException(string.Format("Dispatcher {0} not configured.", id));
+                }
+
+                return _dispatcherConfigurators.TryAdd(id, newConfigurator) ? newConfigurator : _dispatcherConfigurators[id];
             }
+
+            return configurator;
+        }
+
+        /// <summary>
+        /// INTERNAL API
+        /// 
+        /// Creates a dispatcher from a <see cref="Configuration.Config"/>. Internal test purpose only.
+        /// <code>
+        /// From(Config.GetConfig(id));
+        /// </code>
+        /// 
+        /// The Config must also contain an `id` property, which is the identifier of the dispatcher.
+        /// </summary>
+        /// <param name="cfg">The provided configuration section.</param>
+        /// <returns>An instance of the <see cref="MessageDispatcher"/>, if valid.</returns>
+        /// <exception cref="ConfigurationException">if the `id` property is missing from <see cref="cfg"/></exception>
+        /// <exception cref="NotSupportedException">thrown if the dispatcher path or type cannot be resolved.</exception>
+        internal MessageDispatcher From(Config cfg)
+        {
+            return ConfiguratorFrom(cfg).Dispatcher();
         }
 
         /// <summary>
@@ -191,9 +242,31 @@ namespace Akka.Dispatch
         /// </remarks>
         /// </summary>
         /// <returns>This method returns <c>true</c> if the specified configurator was successfully regisetered.</returns>
-        private bool RegisterConfigurator(string id, MessageDispatcherConfigurator configurator)
+        public bool RegisterConfigurator(string id, MessageDispatcherConfigurator configurator)
         {
             return _dispatcherConfigurators.TryAdd(id, configurator);
+        }
+
+        /// <summary>
+        /// INTERNAL API
+        /// </summary>
+        private Config Config(string id)
+        {
+            return Config(id, Prerequisites.Settings.Config.GetConfig(id));
+        }
+
+        private Config Config(string id, Config appConfig)
+        {
+            var simpleName = id.Substring(id.LastIndexOf('.') + 1);
+            return IdConfig(id)
+                .WithFallback(appConfig)
+                .WithFallback(ConfigurationFactory.ParseString(string.Format("name: {0}", simpleName)))
+                .WithFallback(DefaultDispatcherConfig);
+        }
+
+        private Config IdConfig(string id)
+        {
+            return ConfigurationFactory.ParseString(string.Format("id: {0}", id));
         }
 
         private MessageDispatcherConfigurator ConfiguratorFrom(Config cfg)
@@ -233,72 +306,6 @@ namespace Akka.Dispatch
             }
 
             return new DispatcherConfigurator(dispatcher, cfg.GetString("id"), throughput, throughputDeadlineTime);
-        }
-
-        /// <summary>
-        ///     Froms the configuration.
-        /// </summary>
-        /// <param name="path">The path.</param>
-        /// <returns>MessageDispatcher.</returns>
-        public MessageDispatcher FromConfig(string path)
-        {
-            //TODO: this should not exist, it is only here because we dont serialize dispathcer when doing remote deploy..
-            if (string.IsNullOrEmpty(path))
-            {
-                var disp = new ThreadPoolDispatcher
-                {
-                    Throughput = 100
-                };
-                return disp;
-            }
-
-            Config config = _system.Settings.Config.GetConfig(path);
-            string type = config.GetString("type");
-            int throughput = config.GetInt("throughput");
-            long throughputDeadlineTime = config.GetTimeSpan("throughput-deadline-time").Ticks;
-            //shutdown-timeout
-            //throughput-deadline-time
-            //attempt-teamwork
-            //mailbox-requirement
-
-            MessageDispatcher dispatcher;
-            switch (type)
-            {
-                case "Dispatcher":
-                    dispatcher = new ThreadPoolDispatcher();
-                    break;
-                case "TaskDispatcher":
-                    dispatcher = new TaskDispatcher();
-                    break;
-                case "PinnedDispatcher":
-                    dispatcher = new SingleThreadDispatcher();
-                    break;
-                case "SynchronizedDispatcher":
-                    dispatcher = new CurrentSynchronizationContextDispatcher();
-                    break;
-                case null:
-                    throw new NotSupportedException("Could not resolve dispatcher for path " + path + ". type is null");
-                default:
-                    Type dispatcherType = Type.GetType(type);
-                    if (dispatcherType == null)
-                    {
-                        throw new NotSupportedException("Could not resolve dispatcher type " + type + " for path " + path);
-                    }
-                    dispatcher = (MessageDispatcher)Activator.CreateInstance(dispatcherType);
-                    break;
-            }
-
-            dispatcher.Throughput = throughput;
-            if (throughputDeadlineTime > 0)
-            {
-                dispatcher.ThroughputDeadlineTime = throughputDeadlineTime;
-            }
-            else
-            {
-                dispatcher.ThroughputDeadlineTime = null;
-            }
-
-            return dispatcher;
         }
     }
 
