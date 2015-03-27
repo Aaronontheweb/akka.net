@@ -42,7 +42,9 @@ namespace Akka.Routing
         public virtual bool Equals(RouterConfig other)
         {
             if (other == null) return false;
-            return GetType() == other.GetType() && String.Equals(RouterDispatcher, other.RouterDispatcher);
+            return GetType() == other.GetType() 
+                && (GetType() == typeof(NoRouter) 
+                || String.Equals(RouterDispatcher, other.RouterDispatcher));
         }
 
         public abstract ISurrogate ToSurrogate(ActorSystem system);
