@@ -123,6 +123,11 @@ namespace Akka.Cluster.Routing
             return Local.CreateRouter(system);
         }
 
+        public override Group WithDispatcher(string dispatcher)
+        {
+            return new ClusterRouterGroup(Local.WithDispatcher(dispatcher), Settings);
+        }
+
         internal override RouterActor CreateRouterActor()
         {
             return new ClusterRouterGroupActor(Settings);
@@ -245,6 +250,11 @@ namespace Akka.Cluster.Routing
         public override Pool WithResizer(Resizer resizer)
         {
             return new ClusterRouterPool(Local.WithResizer(resizer), Settings);
+        }
+
+        public override Pool WithDispatcher(string dispatcher)
+        {
+            return new ClusterRouterPool(Local.WithDispatcher(dispatcher), Settings);
         }
 
 
