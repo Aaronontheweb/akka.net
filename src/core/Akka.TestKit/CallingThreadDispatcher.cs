@@ -20,7 +20,6 @@ namespace Akka.TestKit
     public class CallingThreadDispatcher : MessageDispatcher
     {
         public static string Id = "akka.test.calling-thread-dispatcher";
-        //TODO: Implement CallingThreadDispatcher. 
 
         public CallingThreadDispatcher(MessageDispatcherConfigurator configurator) : base(configurator)
         {
