@@ -150,7 +150,7 @@ namespace Akka.Dispatch
     {
         public PinnedDispatcherConfigurator(Config config, IDispatcherPrerequisites prerequisites) : base(config, prerequisites)
         {
-            _dispatcher = new SingleThreadDispatcher();
+            _dispatcher = new SingleThreadDispatcher(this);
         }
 
         private readonly SingleThreadDispatcher _dispatcher;
@@ -176,7 +176,7 @@ namespace Akka.Dispatch
 
         public override MessageDispatcher Dispatcher()
         {
-            return new CurrentSynchronizationContextDispatcher();
+            return new CurrentSynchronizationContextDispatcher(this);
         }
     }
 

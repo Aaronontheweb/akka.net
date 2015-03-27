@@ -137,7 +137,7 @@ namespace Akka.Dispatch
             _system = system;
             Prerequisites = prerequisites;
             _cachingConfig = new CachingConfig(prerequisites.Settings.Config);
-            _defaultGlobalDispatcher = FromConfig(DefaultDispatcherId);
+            _defaultGlobalDispatcher = Lookup(DefaultDispatcherId);
         }
 
         /// <summary>Gets the one and only default dispatcher.</summary>
@@ -273,6 +273,7 @@ namespace Akka.Dispatch
         {
             if(!cfg.HasPath("id")) throw new ConfigurationException(string.Format("Missing dispatcher `id` property in config: {0}", cfg.Root));
 
+            var id = cfg.GetString("id");
             var type = cfg.GetString("type");
             var throughput = cfg.GetInt("throughput");
             var throughputDeadlineTime = cfg.GetTimeSpan("throughput-deadline-time").Ticks;
@@ -294,18 +295,18 @@ namespace Akka.Dispatch
                     dispatcher = new CurrentSynchronizationContextDispatcherConfigurator(cfg, Prerequisites);
                     break;
                 case null:
-                    throw new NotSupportedException("Could not resolve dispatcher for path " + path + ". type is null");
+                    throw new NotSupportedException("Could not resolve dispatcher for path " + id + ". type is null");
                 default:
                     Type dispatcherType = Type.GetType(type);
                     if (dispatcherType == null)
                     {
-                        throw new NotSupportedException("Could not resolve dispatcher type " + type + " for path " + path);
+                        throw new NotSupportedException("Could not resolve dispatcher type " + type + " for path " + id);
                     }
                     dispatcher = (MessageDispatcherConfigurator)Activator.CreateInstance(dispatcherType, cfg, Prerequisites);
                     break;
             }
 
-            return new DispatcherConfigurator(dispatcher, cfg.GetString("id"), throughput, throughputDeadlineTime);
+            return new DispatcherConfigurator(dispatcher, id, throughput, throughputDeadlineTime);
         }
     }
 
