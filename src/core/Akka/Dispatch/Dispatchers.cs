@@ -291,6 +291,9 @@ namespace Akka.Dispatch
                 case "PinnedDispatcher":
                     dispatcher = new PinnedDispatcherConfigurator(cfg, Prerequisites);
                     break;
+                case "ForkJoinDispatcher":
+                    dispatcher = new ForkJoinDispatcherConfigurator(cfg, Prerequisites);
+                    break;
                 case "SynchronizedDispatcher":
                     dispatcher = new CurrentSynchronizationContextDispatcherConfigurator(cfg, Prerequisites);
                     break;
