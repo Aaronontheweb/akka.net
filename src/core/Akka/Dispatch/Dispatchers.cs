@@ -298,12 +298,12 @@ namespace Akka.Dispatch
                     dispatcher = new CurrentSynchronizationContextDispatcherConfigurator(cfg, Prerequisites);
                     break;
                 case null:
-                    throw new NotSupportedException("Could not resolve dispatcher for path " + id + ". type is null");
+                    throw new ConfigurationException("Could not resolve dispatcher for path " + id + ". type is null");
                 default:
                     Type dispatcherType = Type.GetType(type);
                     if (dispatcherType == null)
                     {
-                        throw new NotSupportedException("Could not resolve dispatcher type " + type + " for path " + id);
+                        throw new ConfigurationException("Could not resolve dispatcher type " + type + " for path " + id);
                     }
                     dispatcher = (MessageDispatcherConfigurator)Activator.CreateInstance(dispatcherType, cfg, Prerequisites);
                     break;
@@ -338,6 +338,7 @@ namespace Akka.Dispatch
         public override MessageDispatcher Dispatcher()
         {
             var dispatcher = _configurator.Dispatcher();
+            dispatcher.Id = Id;
             dispatcher.Throughput = Throughput;
             dispatcher.ThroughputDeadlineTime = ThroughputDeadlineTime > 0 ? ThroughputDeadlineTime : null;
             return dispatcher;

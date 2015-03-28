@@ -20,7 +20,7 @@ namespace Akka.Dispatch
 
             var settings = new DedicatedThreadPoolSettings(dtp.GetInt("thread-count"),
                 ConfigureThreadType(dtp.GetString("threadtype", ThreadType.Background.ToString())),
-                dtp.GetTimeSpan("deadlock-timeout"));
+                GetSafeDeadlockTimeout(dtp));
             _instance = new ForkJoinDispatcher(this, settings);
         }
 
@@ -29,6 +29,14 @@ namespace Akka.Dispatch
         public override MessageDispatcher Dispatcher()
         {
             return _instance;
+        }
+
+        private static TimeSpan? GetSafeDeadlockTimeout(Config cfg)
+        {
+            var timespan = cfg.GetTimeSpan("deadlock-timeout", TimeSpan.FromSeconds(-1));
+            if (timespan.TotalSeconds < 0)
+                return null;
+            return timespan;
         }
 
         private static ThreadType ConfigureThreadType(string threadType)

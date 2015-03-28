@@ -223,6 +223,11 @@ namespace Akka.Dispatch
         }
 
         /// <summary>
+        /// The ID for this dispatcher.
+        /// </summary>
+        public string Id { get; set; }
+
+        /// <summary>
         ///     Gets or sets the throughput deadline time.
         /// </summary>
         /// <value>The throughput deadline time.</value>
