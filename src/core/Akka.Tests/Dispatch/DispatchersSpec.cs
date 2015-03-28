@@ -33,6 +33,11 @@ namespace Akka.Tests.Dispatch
                         throughput = 60
                         dedicated-thread-pool.thread-count = 4
                     }
+                    my-other-fork-join-dispatcher{
+                        type = ForkJoinDispatcher
+                        dedicated-thread-pool.thread-count = 3
+                        dedicated-thread-pool.deadlock-timeout = 3s
+                    }
                     my-synchronized-dispather{
                         type = SynchronizedDispatcher
 		                throughput = 10
@@ -48,11 +53,7 @@ namespace Akka.Tests.Dispatch
                     /pool1{
                         router = random-pool
                         nr-of-instances = 3
-                        pool-dispatcher = {
-                            type = ForkJoinDispatcher
-                            throughput = 60
-                            dedicated-thread-pool.thread-count = 4
-                        }
+                        pool-dispatcher = ${myapp.my-fork-join-dispatcher}
                     }
                 }
             "); }
@@ -149,9 +150,19 @@ namespace Akka.Tests.Dispatch
             pool.Tell(new Identify(null));
             var routee = ExpectMsg<ActorIdentity>().Subject;
             routee.Tell("what's the name?");
-            var expected = "myapp.my-fork-join-dispatcher";
+            var expected = "akka.actor.deployment./pool1.pool-dispatcher";
             var actual = ExpectMsg<string>(TimeSpan.FromMilliseconds(50));
             actual.ShouldBe(expected);
+        }
+
+        [Fact]
+        public void Dispatchers_must_return_separate_instances_of_dispatchers_with_different_ids()
+        {
+            var d1 = Lookup("myapp.my-fork-join-dispatcher");
+            var d2 = Lookup("myapp.my-fork-join-dispatcher");
+            var d3 = Lookup("myapp.my-other-fork-join-dispatcher");
+            d1.ShouldBeSame(d2);
+            d1.ShouldNotBeSame(d3);
         }
 
         #endregion

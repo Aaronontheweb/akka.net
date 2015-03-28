@@ -321,7 +321,7 @@ namespace Akka.Routing
             if (UsePoolDispatcher && routeeProps.Dispatcher == Dispatchers.DefaultDispatcherId)
             {
                 return
-                    routeeProps.WithDispatcher("akka.actor.deployment." + context.Self.Path.Elements.Drop(1).Join("/") +
+                    routeeProps.WithDispatcher("akka.actor.deployment." + "/" + context.Self.Path.Elements.Drop(1).Join("/") +
                                                ".pool-dispatcher");
             }
             return routeeProps;
