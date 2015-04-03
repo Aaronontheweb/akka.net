@@ -72,11 +72,7 @@ namespace Akka.Remote.Transport.Helios
             Backlog = Config.GetInt("backlog");
             TcpNoDelay = Config.GetBoolean("tcp-nodelay");
             TcpKeepAlive = Config.GetBoolean("tcp-keepalive");
-			//#if MONO
-			//TcpReuseAddr = false; //not supported outside of Windows
-			//#else
             TcpReuseAddr = Config.GetBoolean("tcp-reuse-addr");
-			//#endif
             var configHost = Config.GetString("hostname");
             var publicConfigHost = Config.GetString("public-hostname");
             Hostname = string.IsNullOrEmpty(configHost) ? IPAddress.Any.ToString() : configHost;
