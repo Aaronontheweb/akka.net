@@ -124,25 +124,28 @@ Target "AzureDocsDeploy" (fun _ ->
     let rec pushToAzure docDir azureUrl container azureAccount azureKey trialsLeft =
         let tracing = enableProcessTracing
         enableProcessTracing <- false
-        let arguments = sprintf "%s\* %s DefaultEndpointsProtocol=https;AccountName=%s;AccountKey=%s" (Path.GetFullPath docDir) (azureUrl @@ container) azureAccount azureKey
+        let arguments = sprintf "%s\* %s DefaultEndpointsProtocol=https;AccountName=%s;AccountKey=%s -Z" (Path.GetFullPath docDir) (azureUrl @@ container) azureAccount azureKey
         tracefn "Pushing docs to %s. Attempts left: %d" (azureUrl) trialsLeft
         try 
             
             let result = ExecProcess(fun info ->
                 info.FileName <- CloudCopyDir @@ "CloudCopy.exe"
-                info.Arguments <- arguments) (TimeSpan.FromMinutes 10.0)
+                info.Arguments <- arguments) (TimeSpan.FromMinutes 100.0)
             if result <> 0 then failwithf "Error during CloudCopy.exe upload to azure."
         with exn -> 
             if (trialsLeft > 0) then (pushToAzure docDir azureUrl container azureAccount azureKey (trialsLeft-1))
             else raise exn
-    let canPush = hasBuildParam "azureKey" && hasBuildParam "azureAccount" && hasBuildParam "containerUrl" && hasBuildParam "azureKey"
+    let canPush = hasBuildParam "azureKey" && hasBuildParam "azureAccount" && hasBuildParam "azureUrl" && hasBuildParam "azureKey"
     if (canPush) then
          printfn "Uploading API docs to Azure..."
+         let azureUrl = getBuildParam "azureUrl"
+         let azureAccount = getBuildParam "azureAccount"
+         let azureKey = (getBuildParam "azureKey") + "==" //hack, because it looks like FAKE arg parsing chops off the "==" that gets tacked onto the end of each Azure storage key
          if(isUnstableDocs) then
-            pushToAzure docDir (getBuildParam "azureUrl") "unstable" (getBuildParam "azureAccount") (getBuildParam "azureKey") 3
+            pushToAzure docDir azureUrl "unstable" azureAccount azureKey 3
          if(not isUnstableDocs) then
-            pushToAzure docDir (getBuildParam "azureUrl") "stable" (getBuildParam "azureAccount") (getBuildParam "azureKey") 3
-            pushToAzure docDir (getBuildParam "azureUrl") release.NugetVersion (getBuildParam "azureAccount") (getBuildParam "azureKey") 3
+            pushToAzure docDir azureUrl "stable" azureAccount azureKey 3
+            pushToAzure docDir azureUrl release.NugetVersion azureAccount azureKey 3
     if(not canPush) then
         printfn "Missing required paraments to push docs to Azure. Run build HelpDocs to find out!"
             
