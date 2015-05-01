@@ -37,7 +37,7 @@ namespace Akka.Remote.Tests
             Assert.Equal(TimeSpan.FromSeconds(2), remoteSettings.FlushWait);
             Assert.Equal(TimeSpan.FromSeconds(10), remoteSettings.StartupTimeout);
             Assert.Equal(TimeSpan.FromSeconds(5), remoteSettings.RetryGateClosedFor);
-            //Assert.Equal("akka.remote.default-remote-dispatcher", remoteSettings.Dispatcher); //TODO: add RemoteDispatcher support
+            Assert.Equal("akka.remote.default-remote-dispatcher", remoteSettings.Dispatcher);
             Assert.True(remoteSettings.UsePassiveConnections);
             Assert.Equal(TimeSpan.FromMilliseconds(50), remoteSettings.BackoffPeriod);
             Assert.Equal(TimeSpan.FromSeconds(0.3d), remoteSettings.SysMsgAckTimeout);

@@ -52,8 +52,8 @@ namespace Akka.Remote.Tests
             var reg = new EndpointRegistry();
             Assert.Null(reg.ReadOnlyEndpointFor(address1));
 
-            Assert.Equal(actorA, reg.RegisterReadOnlyEndpoint(address1, actorA));
-            Assert.Equal(actorA, reg.ReadOnlyEndpointFor(address1));
+            Assert.Equal(actorA, reg.RegisterReadOnlyEndpoint(address1, actorA, 0));
+            Assert.Equal(Tuple.Create(actorA,0), reg.ReadOnlyEndpointFor(address1));
             Assert.Null(reg.WritableEndpointWithPolicyFor(address1));
             Assert.False(reg.IsWritable(actorA));
             Assert.True(reg.IsReadOnly(actorA));
@@ -67,10 +67,10 @@ namespace Akka.Remote.Tests
             Assert.Null(reg.ReadOnlyEndpointFor(address1));
             Assert.Null(reg.WritableEndpointWithPolicyFor(address1));
 
-            Assert.Equal(actorA, reg.RegisterReadOnlyEndpoint(address1, actorA));
+            Assert.Equal(actorA, reg.RegisterReadOnlyEndpoint(address1, actorA, 0));
             Assert.Equal(actorB, reg.RegisterWritableEndpoint(address1, actorB));
 
-            Assert.Equal(actorA, reg.ReadOnlyEndpointFor(address1));
+            Assert.Equal(Tuple.Create(actorA, 0), reg.ReadOnlyEndpointFor(address1));
             Assert.Equal(actorB, reg.WritableEndpointWithPolicyFor(address1).AsInstanceOf<EndpointManager.Pass>().Endpoint);
 
             Assert.False(reg.IsWritable(actorA));
@@ -97,7 +97,7 @@ namespace Akka.Remote.Tests
         public void EndpointRegistry_must_remove_readonly_endpoints_if_marked_as_failed()
         {
             var reg = new EndpointRegistry();
-            reg.RegisterReadOnlyEndpoint(address1, actorA);
+            reg.RegisterReadOnlyEndpoint(address1, actorA, 2);
             reg.MarkAsFailed(actorA, Deadline.Now);
             Assert.Null(reg.ReadOnlyEndpointFor(address1));
         }
