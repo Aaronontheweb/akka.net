@@ -66,12 +66,15 @@ namespace Akka.DI.TestKit
         {
             public class Restart { }
 
+            public class GetHashCode { }
+
             private readonly IDiDisposable _di;
 
             public DisposableActor(IDiDisposable di)
             {
                 _di = di;
 
+                Receive<GetHashCode>(g => Sender.Tell(_di.GetHashCode()));
                 Receive<Restart>(r => ForceRestart());
             }
 
@@ -259,6 +262,18 @@ namespace Akka.DI.TestKit
 
             diActor2.Tell(new GetCallCount());
             Assert.Equal(1, ExpectMsg<int>());
+        }
+
+        [Fact]
+        public async Task DependencyResolver_should_inject_new_instances_on_Restart()
+        {
+            var disposableActorProps = Sys.DI().Props<DisposableActor>();
+            var disposableActor = Sys.ActorOf(disposableActorProps);
+
+            var originalHashCode = await disposableActor.Ask<int>(new DisposableActor.GetHashCode());
+            disposableActor.Tell(new DisposableActor.Restart());
+            var nextHashCode = await disposableActor.Ask<int>(new DisposableActor.GetHashCode());
+            Assert.NotEqual(originalHashCode, nextHashCode);
         }
 
         [Fact]
