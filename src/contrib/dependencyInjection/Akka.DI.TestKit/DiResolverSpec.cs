@@ -275,9 +275,9 @@ namespace Akka.DI.TestKit
             var disposableActorProps = Sys.DI().Props<DisposableActor>();
             var disposableActor = Sys.ActorOf(disposableActorProps);
 
-            var originalHashCode = await disposableActor.Ask<int>(new DisposableActor.GetHashCode());
+            var originalHashCode = await disposableActor.Ask<int>(new DisposableActor.GetHashCode(), TimeSpan.FromSeconds(1));
             disposableActor.Tell(new DisposableActor.Restart());
-            var nextHashCode = await disposableActor.Ask<int>(new DisposableActor.GetHashCode());
+            var nextHashCode = await disposableActor.Ask<int>(new DisposableActor.GetHashCode(), TimeSpan.FromSeconds(1));
             Assert.NotEqual(originalHashCode, nextHashCode);
         }
 
@@ -292,8 +292,7 @@ namespace Akka.DI.TestKit
             diActor1.Tell("increment 2");
             diActor2.Tell("increment 1");
 
-            var tasks = new[]
-            {diActor1.Ask<ActorIdentity>(new Identify(null)), diActor2.Ask<ActorIdentity>(new Identify(null))};
+            var tasks = new[] { diActor1.Ask<ActorIdentity>(new Identify(null), TimeSpan.FromSeconds(1)), diActor2.Ask<ActorIdentity>(new Identify(null), TimeSpan.FromSeconds(1)) };
 
             await Task.WhenAll(tasks);
 
