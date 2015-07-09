@@ -5,16 +5,16 @@
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
-    <ProjectGuid>{D8DB14A5-6147-4512-BF5C-683FDCA6190C}</ProjectGuid>
+    <ProjectGuid>{76895BD2-EFF0-4CF2-8C31-753222B1122F}</ProjectGuid>
     <OutputType>Library</OutputType>
     <AppDesignerFolder>Properties</AppDesignerFolder>
-    <RootNamespace>Akka.DI.TestKit</RootNamespace>
-    <AssemblyName>Akka.DI.TestKit</AssemblyName>
+    <RootNamespace>Akka.DI.Ninject.Tests</RootNamespace>
+    <AssemblyName>Akka.DI.Ninject.Tests</AssemblyName>
     <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <SolutionDir Condition="$(SolutionDir) == '' Or $(SolutionDir) == '*Undefined*'">..\..\..\</SolutionDir>
     <RestorePackages>true</RestorePackages>
-    <NuGetPackageImportStamp>01d6052b</NuGetPackageImportStamp>
+    <NuGetPackageImportStamp>d9b2c407</NuGetPackageImportStamp>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <DebugSymbols>true</DebugSymbols>
@@ -34,6 +34,10 @@
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <ItemGroup>
+    <Reference Include="Ninject">
+      <HintPath>..\..\..\packages\Ninject.3.2.2.0\lib\net45-full\Ninject.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
     <Reference Include="System.Xml.Linq" />
@@ -46,21 +50,19 @@
     </Reference>
     <Reference Include="xunit.assert">
       <HintPath>..\..\..\packages\xunit.assert.2.0.0\lib\portable-net45+win+wpa81+wp80+monotouch+monoandroid+Xamarin.iOS\xunit.assert.dll</HintPath>
+      <Private>True</Private>
     </Reference>
     <Reference Include="xunit.core">
       <HintPath>..\..\..\packages\xunit.extensibility.core.2.0.0\lib\portable-net45+win+wpa81+wp80+monotouch+monoandroid+Xamarin.iOS\xunit.core.dll</HintPath>
     </Reference>
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="..\..\..\SharedAssemblyInfo.cs">
-      <Link>Properties\SharedAssemblyInfo.cs</Link>
-    </Compile>
-    <Compile Include="DiResolverSpec.cs" />
+    <Compile Include="NinjectDiSpec.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\..\core\Akka.TestKit\Akka.TestKit.csproj">
-      <Project>{0d3cbad0-bbdb-43e5-afc4-ed1d3ecdc224}</Project>
+      <Project>{0D3CBAD0-BBDB-43E5-AFC4-ED1D3ECDC224}</Project>
       <Name>Akka.TestKit</Name>
     </ProjectReference>
     <ProjectReference Include="..\..\..\core\Akka\Akka.csproj">
@@ -75,9 +77,16 @@
       <Project>{fdf09d18-b68e-4b95-b1f6-b89d9c6c3ae9}</Project>
       <Name>Akka.DI.Core</Name>
     </ProjectReference>
+    <ProjectReference Include="..\Akka.DI.Ninject\Akka.DI.Ninject.csproj">
+      <Project>{c22a9758-ad7d-4078-bd67-4829bacdfeb6}</Project>
+      <Name>Akka.DI.Ninject</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\Akka.DI.TestKit\Akka.DI.TestKit.csproj">
+      <Project>{d8db14a5-6147-4512-bf5c-683fdca6190c}</Project>
+      <Name>Akka.DI.TestKit</Name>
+    </ProjectReference>
   </ItemGroup>
   <ItemGroup>
-    <None Include="Akka.DI.nuspec" />
     <None Include="packages.config" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

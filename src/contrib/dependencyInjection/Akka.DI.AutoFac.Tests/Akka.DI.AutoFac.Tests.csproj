@@ -5,16 +5,16 @@
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
-    <ProjectGuid>{D8DB14A5-6147-4512-BF5C-683FDCA6190C}</ProjectGuid>
+    <ProjectGuid>{81AADD01-5545-4409-B20C-AA85956E588B}</ProjectGuid>
     <OutputType>Library</OutputType>
     <AppDesignerFolder>Properties</AppDesignerFolder>
-    <RootNamespace>Akka.DI.TestKit</RootNamespace>
-    <AssemblyName>Akka.DI.TestKit</AssemblyName>
+    <RootNamespace>Akka.DI.AutoFac.Tests</RootNamespace>
+    <AssemblyName>Akka.DI.AutoFac.Tests</AssemblyName>
     <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <SolutionDir Condition="$(SolutionDir) == '' Or $(SolutionDir) == '*Undefined*'">..\..\..\</SolutionDir>
     <RestorePackages>true</RestorePackages>
-    <NuGetPackageImportStamp>01d6052b</NuGetPackageImportStamp>
+    <NuGetPackageImportStamp>62541249</NuGetPackageImportStamp>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <DebugSymbols>true</DebugSymbols>
@@ -34,6 +34,9 @@
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <ItemGroup>
+    <Reference Include="Autofac">
+      <HintPath>..\..\..\packages\Autofac.3.5.2\lib\net40\Autofac.dll</HintPath>
+    </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
     <Reference Include="System.Xml.Linq" />
@@ -52,10 +55,7 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="..\..\..\SharedAssemblyInfo.cs">
-      <Link>Properties\SharedAssemblyInfo.cs</Link>
-    </Compile>
-    <Compile Include="DiResolverSpec.cs" />
+    <Compile Include="AutoFacDependencyResolverSpecs.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
@@ -71,13 +71,20 @@
       <Project>{7dbd5c17-5e9d-40c4-9201-d092751532a7}</Project>
       <Name>Akka.TestKit.Xunit2</Name>
     </ProjectReference>
+    <ProjectReference Include="..\Akka.DI.AutoFac\Akka.DI.AutoFac.csproj">
+      <Project>{88854526-09d3-4f15-98f8-060838d958d1}</Project>
+      <Name>Akka.DI.AutoFac</Name>
+    </ProjectReference>
     <ProjectReference Include="..\Akka.DI.Core\Akka.DI.Core.csproj">
       <Project>{fdf09d18-b68e-4b95-b1f6-b89d9c6c3ae9}</Project>
       <Name>Akka.DI.Core</Name>
     </ProjectReference>
+    <ProjectReference Include="..\Akka.DI.TestKit\Akka.DI.TestKit.csproj">
+      <Project>{d8db14a5-6147-4512-bf5c-683fdca6190c}</Project>
+      <Name>Akka.DI.TestKit</Name>
+    </ProjectReference>
   </ItemGroup>
   <ItemGroup>
-    <None Include="Akka.DI.nuspec" />
     <None Include="packages.config" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

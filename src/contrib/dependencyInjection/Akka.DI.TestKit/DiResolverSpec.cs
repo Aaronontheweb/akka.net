@@ -12,7 +12,7 @@ using Xunit;
 
 namespace Akka.DI.TestKit
 {
-    public abstract class DiContainerSpec : TestKitBase, IDisposable
+    public abstract class DiResolverSpec : TestKitBase, IDisposable
     {
         #region DI classes
 
@@ -107,11 +107,12 @@ namespace Akka.DI.TestKit
 
         class ConcreteDiSingleton : IDiSingleton
         {
-            public int CallCount { get; private set; }
+            AtomicCounter _counter = new AtomicCounter(0);
+            public int CallCount { get { return _counter.Current; }}
 
             public void Call()
             {
-                CallCount = CallCount + 1;
+                _counter.GetAndIncrement();
             }
         }
 
@@ -176,27 +177,36 @@ namespace Akka.DI.TestKit
 
         protected int ActorInstanceId = 1;
 
-        protected DiContainerSpec(Config config = null, string actorSystemName = null, string testActorName = null)
+        public string Pid { get { return _pid; } }
+
+        public static bool WasDisposableComponentDisposed { get; private set; }
+
+
+        protected DiResolverSpec(Config config = null, string actorSystemName = null, string testActorName = null)
             : base(new XunitAssertions(), config, actorSystemName, testActorName)
         {
             _pid = "p-" + Counter.IncrementAndGet();
 // ReSharper disable once DoNotCallOverridableMethodsInConstructor
-            var resolver = ConfigureDependencyResolver();
-            Sys.AddDependencyResolver(resolver);
+            var resolver = ConfigureDependencyResolver(Sys);
         }
 
         /// <summary>
         /// Creates and configures a brand new <see cref="IDependencyResolver"/>.
         /// </summary>
         /// <returns>A new <see cref="IDependencyResolver"/> configured using the provided DI generator.</returns>
-        protected IDependencyResolver ConfigureDependencyResolver()
+        protected IDependencyResolver ConfigureDependencyResolver(ActorSystem system)
         {
             var container = NewDiContainer();
             Bind<IDiTest>(container, () => new ConcreteDiTest());
             Bind<IDiSingleton>(container, () => Single);
             Bind<IDiDisposable>(container, () => new ConcreteDiDisposable());
-            return NewDependencyResolver(container);
+            Bind<DisposableActor>(container);
+            Bind<DiPerRequestActor>(container);
+            Bind<DiSingletonActor>(container);
+            return NewDependencyResolver(container, system);
         }
+
+        #region Abstract methods
 
         /// <summary>
         /// Create a new instance of the Dependency Injection container that we're creating.
@@ -209,7 +219,7 @@ namespace Akka.DI.TestKit
         /// in the context of all of our tests.
         /// </summary>
         /// <returns>An <see cref="IDependencyResolver"/> instance.</returns>
-        protected abstract IDependencyResolver NewDependencyResolver(object diContainer);
+        protected abstract IDependencyResolver NewDependencyResolver(object diContainer, ActorSystem system);
 
         /// <summary>
         /// Create a binding for type <typeparam name="T"/> on the provided DI container.
@@ -219,9 +229,19 @@ namespace Akka.DI.TestKit
         /// <param name="generator">A generator function that yields new objects of type <typeparam name="T"/>.</param>
         protected abstract void Bind<T>(object diContainer, Func<T> generator);
 
-        public string Pid { get { return _pid; } }
+        /// <summary>
+        /// Create a binding for type <typeparam name="T"/> on the provided DI container.
+        /// 
+        /// Used for DI frameworks that require the DI target to be registered as well
+        /// as the injected components.
+        /// </summary>
+        /// <typeparam name="T">The type we're binding onto the DI container.</typeparam>
+        /// <param name="diContainer">The DI container.</param>
+        protected abstract void Bind<T>(object diContainer);
 
-        public static bool WasDisposableComponentDisposed { get; private set; }
+        #endregion
+
+        #region Tests
 
         [Fact]
         public void DependencyResolver_should_inject_new_instances_into_DiPerRequestActor()
@@ -242,7 +262,7 @@ namespace Akka.DI.TestKit
         }
 
         [Fact]
-        public void DependencyResolver_should_inject_same_instance_into_DiSingletonActor()
+        public async Task DependencyResolver_should_inject_same_instance_into_DiSingletonActor()
         {
             var diActorProps = Sys.DI().Props<DiSingletonActor>();
             var diActor1 = Sys.ActorOf(diActorProps);
@@ -251,6 +271,11 @@ namespace Akka.DI.TestKit
             diActor1.Tell("increment 1");
             diActor1.Tell("increment 2");
             diActor2.Tell("increment 1");
+
+            var tasks = new[]
+            {diActor1.Ask<ActorIdentity>(new Identify(null)), diActor2.Ask<ActorIdentity>(new Identify(null))};
+
+            await Task.WhenAll(tasks);
 
             diActor1.Tell(new GetCallCount());
             Assert.Equal(3, ExpectMsg<int>());
@@ -303,17 +328,17 @@ namespace Akka.DI.TestKit
 
             var internalRef = (LocalActorRef)stashActor;
 
-            Assert.IsType<UnboundedDequeBasedMailbox>(internalRef.Cell.Mailbox);
+            Assert.IsType<BoundedDequeBasedMailbox>(internalRef.Cell.Mailbox);
         }
 
         [Fact]
-        public void DependencyResolver_should_dispose_IDisposable_instances_on_Actor_Termination()
+        public async Task DependencyResolver_should_dispose_IDisposable_instances_on_Actor_Termination()
         {
             var disposableActorProps = Sys.DI().Props<DisposableActor>();
             var disposableActor = Sys.ActorOf(disposableActorProps);
             
             Assert.False(WasDisposableComponentDisposed);
-            disposableActor.GracefulStop(TimeSpan.FromMilliseconds(50)).Wait();
+            Assert.True(await disposableActor.GracefulStop(TimeSpan.FromSeconds(4)));
             Assert.True(WasDisposableComponentDisposed);
         }
 
@@ -328,6 +353,8 @@ namespace Akka.DI.TestKit
             Task.Delay(TimeSpan.FromMilliseconds(50)).Wait();
             Assert.True(WasDisposableComponentDisposed);
         }
+
+        #endregion
 
         public void Dispose()
         {
