@@ -30,7 +30,7 @@ namespace Akka.DI.CastleWindsor.Tests
         protected override void Bind<T>(object diContainer)
         {
             var windsor = GetContainer(diContainer);
-            windsor.Register(Component.For(typeof(T)));
+            windsor.Register(Component.For(typeof(T)).LifestyleTransient());
         }
 
         private static IWindsorContainer GetContainer(object diContainer)
