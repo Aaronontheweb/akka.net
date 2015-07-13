@@ -23,7 +23,7 @@ namespace Akka.DI.Unity.Tests
         protected override void Bind<T>(object diContainer, Func<T> generator)
         {
             var unityContainer = ToContainer(diContainer);
-            unityContainer.RegisterType<T>(new InjectionFactory(ctx => generator()));
+            unityContainer.RegisterType<T>(new HierarchicalLifetimeManager(), new InjectionFactory(ctx => generator()));
         }
 
         protected override void Bind<T>(object diContainer)
