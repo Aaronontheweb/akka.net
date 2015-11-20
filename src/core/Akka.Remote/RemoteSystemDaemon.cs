@@ -143,6 +143,7 @@ namespace Akka.Remote
             }
             else if (message is TerminationHook)
             {
+                Log.Debug("Received termination hook. Shutting down remoting...");
                 _terminating.SwitchOn(() =>
                 {
                     TerminationHookDoneWhenNoChildren();

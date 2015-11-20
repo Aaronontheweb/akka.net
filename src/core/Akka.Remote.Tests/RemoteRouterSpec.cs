@@ -7,6 +7,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using Akka.Actor;
 using Akka.Configuration;
@@ -62,6 +63,7 @@ namespace Akka.Remote.Tests
 
         public RemoteRouterSpec()
             : base(@"
+            #akka.loglevel = DEBUG
             akka.actor.provider = ""Akka.Remote.RemoteActorRefProvider, Akka.Remote""
             akka.remote.helios.tcp {
                 hostname = 127.0.0.1
@@ -140,11 +142,13 @@ namespace Akka.Remote.Tests
             List<ActorPath> list = new List<ActorPath>();
 
             for (var i = 1; i <= n; i++)
+            //masterActorSystem.Log.Debug("Sending messages");
             {
                 string msg = i.ToString();
                 router.Tell(msg, probe.Ref);
                 probe.ExpectMsg(msg);
                 list.Add(probe.LastSender.Path);
+                //masterActorSystem.Log.Debug("Received {0}", i);
             }
 
             return list;
