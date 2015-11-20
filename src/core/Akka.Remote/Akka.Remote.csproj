@@ -50,24 +50,22 @@
     <Optimize>false</Optimize>
   </PropertyGroup>
   <ItemGroup>
-    <Content Include="CHANGES.txt">
-      <Paket>True</Paket>
-    </Content>
-    <Content Include="licenses\license.txt">
-      <Paket>True</Paket>
-    </Content>
-    <Content Include="licenses\protoc-license.txt">
-      <Paket>True</Paket>
-    </Content>
-    <Content Include="protos\google\protobuf\csharp_options.proto">
-      <Paket>True</Paket>
-    </Content>
-    <Content Include="protos\google\protobuf\descriptor.proto">
-      <Paket>True</Paket>
-    </Content>
-    <Content Include="protos\tutorial\addressbook.proto">
-      <Paket>True</Paket>
-    </Content>
+    <Reference Include="DotNetty.Buffers, Version=0.2.0.0, Culture=neutral, processorArchitecture=MSIL">
+      <HintPath>..\..\packages\DotNetty.Buffers.0.2.0\lib\net45\DotNetty.Buffers.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="DotNetty.Codecs, Version=0.2.0.0, Culture=neutral, processorArchitecture=MSIL">
+      <HintPath>..\..\packages\DotNetty.Codecs.0.2.0\lib\net45\DotNetty.Codecs.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="DotNetty.Common, Version=0.2.0.0, Culture=neutral, processorArchitecture=MSIL">
+      <HintPath>..\..\packages\DotNetty.Common.0.2.0\lib\net45\DotNetty.Common.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="DotNetty.Transport, Version=0.2.0.0, Culture=neutral, processorArchitecture=MSIL">
+      <HintPath>..\..\packages\DotNetty.Transport.0.2.0\lib\net45\DotNetty.Transport.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
     <Reference Include="System.Web" />
@@ -109,6 +107,9 @@
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="RemoteActorRefProvider.cs" />
     <Compile Include="Transport\AkkaPduCodec.cs" />
+    <Compile Include="Transport\DotNetty\DotNettyHelpers.cs" />
+    <Compile Include="Transport\DotNetty\DotNettyTcpTransport.cs" />
+    <Compile Include="Transport\DotNetty\DotNettyTransport.cs" />
     <Compile Include="Transport\FailureInjectorTransportAdapter.cs" />
     <Compile Include="Transport\Helios\HeliosHelpers.cs" />
     <Compile Include="Transport\Helios\HeliosTcpTransport.cs" />
@@ -123,6 +124,7 @@
     <None Include="Akka.Remote.nuspec" />
     <EmbeddedResource Include="Configuration\Remote.conf" />
     <None Include="app.config" />
+    <None Include="packages.config" />
     <None Include="paket.references" />
   </ItemGroup>
   <ItemGroup>
@@ -131,6 +133,7 @@
       <Name>Akka</Name>
     </ProjectReference>
   </ItemGroup>
+  <ItemGroup />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
        Other similar extension points exist, see Microsoft.Common.targets.

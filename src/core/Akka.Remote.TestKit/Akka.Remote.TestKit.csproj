@@ -35,24 +35,6 @@
     <DocumentationFile>bin\Release\Akka.Remote.TestKit.xml</DocumentationFile>
   </PropertyGroup>
   <ItemGroup>
-    <Content Include="CHANGES.txt">
-      <Paket>True</Paket>
-    </Content>
-    <Content Include="licenses\license.txt">
-      <Paket>True</Paket>
-    </Content>
-    <Content Include="licenses\protoc-license.txt">
-      <Paket>True</Paket>
-    </Content>
-    <Content Include="protos\google\protobuf\csharp_options.proto">
-      <Paket>True</Paket>
-    </Content>
-    <Content Include="protos\google\protobuf\descriptor.proto">
-      <Paket>True</Paket>
-    </Content>
-    <Content Include="protos\tutorial\addressbook.proto">
-      <Paket>True</Paket>
-    </Content>
     <Reference Include="System" />
     <Reference Include="System.Configuration" />
     <Reference Include="System.Core" />
@@ -109,6 +91,7 @@
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <ItemGroup>
     <EmbeddedResource Include="Internals\Reference.conf" />
+    <None Include="app.config" />
     <None Include="paket.references" />
   </ItemGroup>
   <Choose>
