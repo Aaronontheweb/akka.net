@@ -7,18 +7,24 @@ using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Configuration;
 using Akka.Dispatch;
+using Akka.Event;
 using Akka.Remote.Transport.Helios;
 using Akka.Util.Internal;
 using DotNetty.Buffers;
 using DotNetty.Codecs;
+using DotNetty.Transport.Bootstrapping;
 using DotNetty.Transport.Channels;
 using DotNetty.Transport.Channels.Groups;
+using DotNetty.Transport.Channels.Sockets;
+using Helios.Net.Bootstrap;
 
 namespace Akka.Remote.Transport.DotNetty
 {
-    abstract class TransportMode { }
+    internal abstract class TransportMode
+    {
+    }
 
-    class Tcp : TransportMode
+    internal class Tcp : TransportMode
     {
         public override string ToString()
         {
@@ -26,7 +32,7 @@ namespace Akka.Remote.Transport.DotNetty
         }
     }
 
-    class Udp : TransportMode
+    internal class Udp : TransportMode
     {
         public override string ToString()
         {
@@ -34,7 +40,7 @@ namespace Akka.Remote.Transport.DotNetty
         }
     }
 
-    class TcpTransportException : RemoteTransportException
+    internal class TcpTransportException : RemoteTransportException
     {
         public TcpTransportException(string message, Exception cause = null) : base(message, cause)
         {
@@ -44,7 +50,7 @@ namespace Akka.Remote.Transport.DotNetty
     /// <summary>
     /// Configuration options for the DotNetty transport
     /// </summary>
-    class DotNettyTransportSettings
+    internal class DotNettyTransportSettings
     {
         internal readonly Config Config;
 
@@ -60,7 +66,9 @@ namespace Akka.Remote.Transport.DotNetty
             var protocolString = Config.GetString("transport-protocol");
             if (protocolString.Equals("tcp")) TransportMode = new Tcp();
             else if (protocolString.Equals("udp")) TransportMode = new Udp();
-            else throw new ConfigurationException(string.Format("Unknown transport transport-protocol='{0}'", protocolString));
+            else
+                throw new ConfigurationException(string.Format("Unknown transport transport-protocol='{0}'",
+                    protocolString));
             EnableSsl = Config.GetBoolean("enable-ssl");
             ConnectTimeout = Config.GetTimeSpan("connection-timeout");
             WriteBufferHighWaterMark = OptionSize("write-buffer-high-water-mark");
@@ -68,8 +76,9 @@ namespace Akka.Remote.Transport.DotNetty
             SendBufferSize = OptionSize("send-buffer-size");
             ReceiveBufferSize = OptionSize("receive-buffer-size");
             var size = OptionSize("maximum-frame-size");
-            if (size == null || size < 32000) throw new ConfigurationException("Setting 'maximum-frame-size' must be at least 32000 bytes");
-            MaxFrameSize = (long)size;
+            if (size == null || size < 32000)
+                throw new ConfigurationException("Setting 'maximum-frame-size' must be at least 32000 bytes");
+            MaxFrameSize = (long) size;
             Backlog = Config.GetInt("backlog");
             TcpNoDelay = Config.GetBoolean("tcp-nodelay");
             TcpKeepAlive = Config.GetBoolean("tcp-keepalive");
@@ -148,7 +157,7 @@ namespace Akka.Remote.Transport.DotNetty
     /// <summary>
     /// INTERNAL API
     /// </summary>
-    class DotNettyTransport : Transport
+    internal class DotNettyTransport : Transport
     {
         #region Static Members
 
@@ -175,13 +184,182 @@ namespace Akka.Remote.Transport.DotNetty
         {
             var ipAddress = socketAddress as IPEndPoint;
             if (ipAddress == null) return null;
-            return new Address(schemeIdentifier, systemName, hostName ?? ipAddress.Address.ToString(), port ?? ipAddress.Port);
+            return new Address(schemeIdentifier, systemName, hostName ?? ipAddress.Address.ToString(),
+                port ?? ipAddress.Port);
         }
 
         #endregion
 
-        public readonly IChannelGroup ChannelGroup;
+        //public readonly IChannelGroup ChannelGroup;
+
+        protected ILoggingAdapter Log;
+
+        private volatile Address LocalAddress;
+        private volatile Address BoundTo;
+        private volatile IChannel ServerChannel;
+
+        private readonly MultithreadEventLoopGroup _serverBossGroup;
+        private readonly MultithreadEventLoopGroup _serverWorkerGroup;
+
+        private readonly MultithreadEventLoopGroup _clientBossGroup;
+        private readonly MultithreadEventLoopGroup _clientWorkerGroup;
+
+        private TaskCompletionSource<IAssociationEventListener> _associationEventListenerPromise =
+            new TaskCompletionSource<IAssociationEventListener>();
+
         public DotNettyTransportSettings Settings { get; }
+
+        protected DotNettyTransport(ActorSystem system, Config config)
+        {
+            Config = config;
+            System = system;
+            Settings = new DotNettyTransportSettings(config);
+            Log = Logging.GetLogger(System, GetType());
+
+            _serverBossGroup = new MultithreadEventLoopGroup(1);
+            _serverWorkerGroup = new MultithreadEventLoopGroup(Settings.ServerSocketWorkerPoolSize);
+
+            _clientBossGroup = new MultithreadEventLoopGroup(1);
+            _clientWorkerGroup = new MultithreadEventLoopGroup(Settings.ClientSocketWorkerPoolSize);
+
+            //ChannelGroup = new DefaultChannelGroup("akka-netty-transport-driver-channelgroup-" + UniqueIdCounter.GetAndIncrement(), );
+        }
+
+        public bool IsDatagram
+        {
+            get { return Settings.TransportMode is Udp; }
+        }
+
+        private ServerBootstrap SetupServerBootstrap(ServerBootstrap b)
+        {
+            var a = b
+                .Group(_serverBossGroup, _clientWorkerGroup)
+                .ChildOption(ChannelOption.SoBacklog, Settings.Backlog)
+                .ChildOption(ChannelOption.TcpNodelay, Settings.TcpNoDelay)
+                .ChildOption(ChannelOption.SoKeepalive, Settings.TcpKeepAlive)
+                .ChildOption(ChannelOption.SoReuseaddr, Settings.TcpReuseAddr)
+                .ChildHandler(new ActionChannelInitializer<IChannel>(channel =>
+                {
+                    IChannelPipeline pipeline = channel.Pipeline;
+                    BindServerPipeline(pipeline);
+                }));
+            ;
+            if (Settings.ReceiveBufferSize.HasValue)
+                a = a.ChildOption(ChannelOption.SoRcvbuf, (int) Settings.ReceiveBufferSize.Value);
+            if (Settings.SendBufferSize.HasValue)
+                a = a.ChildOption(ChannelOption.SoSndbuf, (int) Settings.SendBufferSize.Value);
+            if (Settings.WriteBufferHighWaterMark.HasValue)
+                a = a.ChildOption(ChannelOption.WriteBufferHighWaterMark, (int) Settings.WriteBufferHighWaterMark.Value);
+            if (Settings.WriteBufferLowWaterMark.HasValue)
+                a = a.ChildOption(ChannelOption.WriteBufferLowWaterMark, (int) Settings.WriteBufferLowWaterMark.Value);
+            return a;
+        }
+        
+        private ServerBootstrap InboundBootstrap()
+        {
+            if (IsDatagram) throw new NotImplementedException("UDP not supported");
+            return SetupServerBootstrap(new ServerBootstrap().Channel<TcpServerSocketChannel>());
+        }
+
+        private Bootstrap OutboundBootstrap(Address remoteAddress)
+        {
+            if (IsDatagram) throw new NotImplementedException("UDP not supported");
+           var b = new Bootstrap().Channel<TcpSocketChannel>()
+                .Group(_clientWorkerGroup)
+                .Option(ChannelOption.TcpNodelay, Settings.TcpNoDelay)
+                .Option(ChannelOption.SoKeepalive, Settings.TcpKeepAlive)
+                .Handler(new ActionChannelInitializer<IChannel>(channel =>
+                {
+                    IChannelPipeline pipeline = channel.Pipeline;
+                    BindClientPipeline(pipeline, remoteAddress);
+                }));
+            
+            if (Settings.ReceiveBufferSize.HasValue)
+                b = b.Option(ChannelOption.SoRcvbuf, (int)Settings.ReceiveBufferSize.Value);
+            if (Settings.SendBufferSize.HasValue)
+                b = b.Option(ChannelOption.SoSndbuf, (int)Settings.SendBufferSize.Value);
+            if (Settings.WriteBufferHighWaterMark.HasValue)
+                b = b.Option(ChannelOption.WriteBufferHighWaterMark, (int)Settings.WriteBufferHighWaterMark.Value);
+            if (Settings.WriteBufferLowWaterMark.HasValue)
+                b = b.Option(ChannelOption.WriteBufferLowWaterMark, (int)Settings.WriteBufferLowWaterMark.Value);
+            return b;
+        }
+
+
+        /// <summary>
+        /// Should only be called by <see cref="BindServerPipeline"/>
+        /// or <see cref="BindClientPipeline"/>.
+        /// </summary>
+        /// <param name="pipeline"></param>
+        protected void BindDefaultPipeline(IChannelPipeline pipeline)
+        {
+            if (!IsDatagram)
+            {
+                pipeline.AddLast(new LengthFieldBasedFrameDecoder(
+                    (int) MaximumPayloadBytes,
+                    0,
+                    FrameLengthFieldLength,
+                    0,
+                    FrameLengthFieldLength, // Strip the header
+                    true));
+                pipeline.AddLast(new LengthFieldPrepender(FrameLengthFieldLength));
+            }
+        }
+
+        protected void BindServerPipeline(IChannelPipeline pipeline)
+        {
+            BindDefaultPipeline(pipeline);
+            if (Settings.EnableSsl)
+            {
+                // TODO: SSL support
+            }
+            var handler = CreateServerHandler(this, _associationEventListenerPromise.Task);
+            pipeline.AddLast("ServerHandler", handler);
+        }
+
+        protected void BindClientPipeline(IChannelPipeline pipeline, Address remoteAddress)
+        {
+            BindDefaultPipeline(pipeline);
+            if (Settings.EnableSsl)
+            {
+                // TODO: SSL support
+            }
+            var handler = CreateClientHandler(this, remoteAddress);
+            pipeline.AddLast("ClientHandler", handler);
+        }
+
+        protected IChannelHandler CreateClientHandler(DotNettyTransport transport, Address remoteAddress)
+        {
+            if (IsDatagram)
+                throw new NotImplementedException("UDP support not enabled at this time");
+            return new TcpClientHandler(transport, remoteAddress);
+        }
+
+        protected IChannelHandler CreateServerHandler(DotNettyTransport transport,
+            Task<IAssociationEventListener> associationListenerFuture)
+        {
+            if (IsDatagram)
+                throw new NotImplementedException("UDP support not enabled at this time");
+            return new TcpServerHandler(transport, associationListenerFuture);
+        }
+
+        private ClientBootstrap _clientFactory;
+
+        #region Akka.Remote.Transport Members
+
+        public override string SchemeIdentifier
+        {
+            get
+            {
+                var sslPrefix = (Settings.EnableSsl ? "ssl." : "");
+                return string.Format("{0}{1}", sslPrefix, Settings.TransportMode);
+            }
+        }
+
+        public override long MaximumPayloadBytes
+        {
+            get { return Settings.MaxFrameSize; }
+        }
 
         public override Task<Tuple<Address, TaskCompletionSource<IAssociationEventListener>>> Listen()
         {
@@ -191,6 +369,7 @@ namespace Akka.Remote.Transport.DotNetty
         /*
          * TODO: add configurable subnet filtering
          */
+
         /// <summary>
         /// Determines if this <see cref="DotNettyTransport"/> instance is responsible
         /// for an association with <see cref="remote"/>.
@@ -204,9 +383,15 @@ namespace Akka.Remote.Transport.DotNetty
             return true;
         }
 
+        public override Task<AssociationHandle> Associate(Address remoteAddress)
+        {
+            throw new NotImplementedException();
+        }
+
         /*
          * TODO: might need better error handling
          */
+
         /// <summary>
         /// Create an <see cref="IPEndPoint"/> for DotNetty from an <see cref="Address"/>.
         /// 
@@ -214,9 +399,9 @@ namespace Akka.Remote.Transport.DotNetty
         /// </summary>
         /// <param name="address">The address of the remote system to which we need to connect.</param>
         /// <returns>A <see cref="Task{IPEndPoint}"/> that will resolve to the correct local or remote IP address.</returns>
-        Task<IPEndPoint> AddressToSocketAddress(Address address)
+        private Task<IPEndPoint> AddressToSocketAddress(Address address)
         {
-            if(string.IsNullOrEmpty(address.Host) || address.Port == null)
+            if (string.IsNullOrEmpty(address.Host) || address.Port == null)
                 throw new ArgumentException($"Address {address} does not contain host or port information.");
             return Dns.GetHostEntryAsync(address.Host).ContinueWith(tr =>
             {
@@ -226,17 +411,11 @@ namespace Akka.Remote.Transport.DotNetty
             });
         }
 
-        public override Task<AssociationHandle> Associate(Address remoteAddress)
-        {
-            throw new NotImplementedException();
-        }
-
         public override Task<bool> Shutdown()
         {
             throw new NotImplementedException();
         }
+
+        #endregion
     }
-
-
-
 }

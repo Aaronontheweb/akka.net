@@ -141,7 +141,7 @@ namespace Akka.Remote.Transport.DotNetty
             RemoteAddress = remoteAddress;
         }
 
-        protected void InitOutbound(IChannel channel, IPEndPoint remoteSocketAddress, IByteBuffer msg)
+        protected void InitOutbound(IChannel channel, EndPoint remoteSocketAddress, IByteBuffer msg)
         {
             Init(channel, remoteSocketAddress, RemoteAddress, msg, handle => StatusPromise.SetResult(handle));
         }

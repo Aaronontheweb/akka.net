@@ -100,6 +100,47 @@ namespace Akka.Remote.Transport.DotNetty
         }
     }
 
+    /// <summary>
+    /// INTERNAL API
+    /// </summary>
+    class TcpClientHandler : ClientHandler
+    {
+        public TcpClientHandler(DotNettyTransport transport, Address remoteAddress) : base(transport, remoteAddress)
+        {
+        }
+
+        protected override void OnConnect(IChannelHandlerContext ctx)
+        {
+            InitOutbound(ctx.Channel, ctx.Channel.RemoteAddress, null);
+        }
+
+        protected override void OnDisconnect(IChannelHandlerContext ctx)
+        {
+            ChannelLocalActor.Notify(ctx.Channel, new Disassociated(DisassociateInfo.Unknown));
+        }
+
+        protected override void OnMessage(IChannelHandlerContext ctx, object message)
+        {
+            TcpHelper.PropagateMessage(ctx, message);
+        }
+
+        protected override void OnException(IChannelHandlerContext ctx, Exception ex)
+        {
+            ChannelLocalActor.Notify(ctx.Channel, new Disassociated(DisassociateInfo.Unknown));
+            ctx.CloseAsync(); //no graceful close here
+        }
+
+        protected override AssociationHandle CreateHandle(IChannel channel, Address localAddress, Address remoteAddress)
+        {
+            return new TcpAssociationHandle(localAddress, remoteAddress, Transport, channel);
+        }
+
+        protected override void RegisterListener(IChannel channel, IHandleEventListener listener, IByteBuffer message, EndPoint remoteSocketAddress)
+        {
+            ChannelLocalActor.Set(channel, listener);
+        }
+    }
+
     class DotNettyTcpTransport : Transport
     {
         protected ILoggingAdapter Log;
