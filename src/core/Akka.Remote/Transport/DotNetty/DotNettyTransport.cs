@@ -225,7 +225,7 @@ namespace Akka.Remote.Transport.DotNetty
 
         public DotNettyTransportSettings Settings { get; }
 
-        protected DotNettyTransport(ActorSystem system, Config config)
+        public DotNettyTransport(ActorSystem system, Config config)
         {
             Config = config;
             System = system;
@@ -500,6 +500,19 @@ namespace Akka.Remote.Transport.DotNetty
         {
             if (string.IsNullOrEmpty(address.Host) || address.Port == null)
                 throw new ArgumentException($"Address {address} does not contain host or port information.");
+
+
+            /*
+             * Before we attempt DNS resolution, need to check to make sure that the specified
+             * IP doesn't match any of the "special" reserved addresses which could cause
+             */
+            IPAddress configuredIp;
+            if (IPAddress.TryParse(address.Host, out configuredIp))
+            {
+                if(configuredIp.Equals(IPAddress.Any) || configuredIp.Equals(IPAddress.IPv6Any))
+                    return Task.FromResult(new IPEndPoint(configuredIp, address.Port.Value));
+            }
+
             return Dns.GetHostEntryAsync(address.Host).ContinueWith(tr =>
             {
                 var ipHostEntry = tr.Result;

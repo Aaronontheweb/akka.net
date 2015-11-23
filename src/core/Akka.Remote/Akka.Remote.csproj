@@ -108,7 +108,7 @@
     <Compile Include="RemoteActorRefProvider.cs" />
     <Compile Include="Transport\AkkaPduCodec.cs" />
     <Compile Include="Transport\DotNetty\DotNettyHelpers.cs" />
-    <Compile Include="Transport\DotNetty\DotNettyTcpTransport.cs" />
+    <Compile Include="Transport\DotNetty\DotNettyTcp.cs" />
     <Compile Include="Transport\DotNetty\DotNettyTransport.cs" />
     <Compile Include="Transport\FailureInjectorTransportAdapter.cs" />
     <Compile Include="Transport\Helios\HeliosHelpers.cs" />

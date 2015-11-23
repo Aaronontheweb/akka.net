@@ -141,45 +141,6 @@ namespace Akka.Remote.Transport.DotNetty
         }
     }
 
-    class DotNettyTcpTransport : Transport
-    {
-        protected ILoggingAdapter Log;
-
-        private volatile Address LocalAddress;
-        private volatile Address BoundTo;
-        private volatile IChannel ServerChannel;
-
-        protected DotNettyTcpTransport(ActorSystem system, Config config)
-        {
-            Config = config;
-            System = system;
-            Settings = new DotNettyTransportSettings(config);
-            Log = Logging.GetLogger(System, GetType());
-        }
-
-        public DotNettyTransportSettings Settings { get; private set; }
-
-        public override Task<Tuple<Address, TaskCompletionSource<IAssociationEventListener>>> Listen()
-        {
-            throw new NotImplementedException();
-        }
-
-        public override bool IsResponsibleFor(Address remote)
-        {
-            throw new NotImplementedException();
-        }
-
-        public override Task<AssociationHandle> Associate(Address remoteAddress)
-        {
-            throw new NotImplementedException();
-        }
-
-        public override Task<bool> Shutdown()
-        {
-            throw new NotImplementedException();
-        }
-    }
-
     /// <summary>
     /// INTERNAL API
     /// </summary>
