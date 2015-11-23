@@ -70,8 +70,7 @@ namespace Akka.Remote.Transport.DotNetty
             }
             else
             {
-                // TODO: check if this needs a configurable timeout setting
-                DotNettyTransport.GracefulClose(channel).Wait();
+                DotNettyTransport.GracefulClose(channel);
             }
         }
 
@@ -112,7 +111,7 @@ namespace Akka.Remote.Transport.DotNetty
             _associationListenerFuture = associationListenerFuture;
         }
 
-        protected void InitInbound(IChannel channel, IPEndPoint remoteSocketAddress, IByteBuffer msg)
+        protected void InitInbound(IChannel channel, EndPoint remoteSocketAddress, IByteBuffer msg)
         {
             _associationListenerFuture.ContinueWith(tr =>
             {

@@ -160,13 +160,14 @@ namespace Akka.Remote.Transport.DotNetty
 
         public static readonly AtomicCounter UniqueIdCounter = new AtomicCounter(0);
 
-        public static Task GracefulClose(IChannel channel)
+        public static void GracefulClose(IChannel channel)
         {
-            return channel.WriteAndFlushAsync(Unpooled.Empty)
+            // TODO: check if this needs a configurable timeout setting
+            channel.WriteAndFlushAsync(Unpooled.Empty)
                 .ContinueWith(tr => channel.DisconnectAsync())
                 .Unwrap()
                 .ContinueWith(tc => channel.CloseAsync())
-                .Unwrap();
+                .Unwrap().Wait();
         }
 
         public static Address AddressFromSocketAddress(EndPoint socketAddress, string schemeIdentifier,
