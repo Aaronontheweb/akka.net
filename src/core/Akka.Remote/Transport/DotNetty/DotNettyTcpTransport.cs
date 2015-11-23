@@ -6,12 +6,8 @@ using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Configuration;
 using Akka.Event;
-using Akka.Remote.Transport.Helios;
-using Akka.Util;
 using DotNetty.Transport.Channels;
 using Google.ProtocolBuffers;
-using Helios.Net;
-using Helios.Ops.Executors;
 
 namespace Akka.Remote.Transport.DotNetty
 {

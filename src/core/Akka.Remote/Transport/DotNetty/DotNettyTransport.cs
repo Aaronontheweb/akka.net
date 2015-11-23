@@ -12,6 +12,7 @@ using Akka.Util.Internal;
 using DotNetty.Buffers;
 using DotNetty.Codecs;
 using DotNetty.Transport.Channels;
+using DotNetty.Transport.Channels.Groups;
 
 namespace Akka.Remote.Transport.DotNetty
 {
@@ -147,8 +148,10 @@ namespace Akka.Remote.Transport.DotNetty
     /// <summary>
     /// INTERNAL API
     /// </summary>
-    static class DotNettyTransport
+    class DotNettyTransport : Transport
     {
+        #region Static Members
+
         /// <summary>
         /// We use 4 bytes to represent the frame length. Used by the <see cref="LengthFieldPrepender"/>
         /// and <see cref="LengthFieldBasedFrameDecoder"/>.
@@ -173,6 +176,66 @@ namespace Akka.Remote.Transport.DotNetty
             if (ipAddress == null) return null;
             return new Address(schemeIdentifier, systemName, hostName ?? ipAddress.Address.ToString(), port ?? ipAddress.Port);
         }
+
+        #endregion
+
+        public readonly IChannelGroup ChannelGroup;
+        public DotNettyTransportSettings Settings { get; }
+
+        public override Task<Tuple<Address, TaskCompletionSource<IAssociationEventListener>>> Listen()
+        {
+            throw new NotImplementedException();
+        }
+
+        /*
+         * TODO: add configurable subnet filtering
+         */
+        /// <summary>
+        /// Determines if this <see cref="DotNettyTransport"/> instance is responsible
+        /// for an association with <see cref="remote"/>.
+        /// </summary>
+        /// <param name="remote">The remote <see cref="Address"/> on the other end of the association.</param>
+        /// <returns><c>true</c> if this transport is responsible for an association at this address,<c>false</c> otherwise.
+        /// Always returns <c>true</c> for <see cref="DotNettyTransport"/>.
+        /// </returns>
+        public override bool IsResponsibleFor(Address remote)
+        {
+            return true;
+        }
+
+        /*
+         * TODO: might need better error handling
+         */
+        /// <summary>
+        /// Create an <see cref="IPEndPoint"/> for DotNetty from an <see cref="Address"/>.
+        /// 
+        /// Uses <see cref="Dns"/> internally to perform hostname --> IP resolution.
+        /// </summary>
+        /// <param name="address">The address of the remote system to which we need to connect.</param>
+        /// <returns>A <see cref="Task{IPEndPoint}"/> that will resolve to the correct local or remote IP address.</returns>
+        Task<IPEndPoint> AddressToSocketAddress(Address address)
+        {
+            if(string.IsNullOrEmpty(address.Host) || address.Port == null)
+                throw new ArgumentException($"Address {address} does not contain host or port information.");
+            return Dns.GetHostEntryAsync(address.Host).ContinueWith(tr =>
+            {
+                var ipHostEntry = tr.Result;
+                var ip = ipHostEntry.AddressList[0];
+                return new IPEndPoint(ip, address.Port.Value);
+            });
+        }
+
+        public override Task<AssociationHandle> Associate(Address remoteAddress)
+        {
+            throw new NotImplementedException();
+        }
+
+        public override Task<bool> Shutdown()
+        {
+            throw new NotImplementedException();
+        }
     }
+
+
 
 }
