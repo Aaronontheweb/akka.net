@@ -8,6 +8,10 @@ using Akka.Actor;
 using Akka.Configuration;
 using Akka.Dispatch;
 using Akka.Remote.Transport.Helios;
+using Akka.Util.Internal;
+using DotNetty.Buffers;
+using DotNetty.Codecs;
+using DotNetty.Transport.Channels;
 
 namespace Akka.Remote.Transport.DotNetty
 {
@@ -138,6 +142,37 @@ namespace Akka.Remote.Transport.DotNetty
         }
 
         #endregion
+    }
+
+    /// <summary>
+    /// INTERNAL API
+    /// </summary>
+    static class DotNettyTransport
+    {
+        /// <summary>
+        /// We use 4 bytes to represent the frame length. Used by the <see cref="LengthFieldPrepender"/>
+        /// and <see cref="LengthFieldBasedFrameDecoder"/>.
+        /// </summary>
+        public const int FrameLengthFieldLength = 4;
+
+        public static readonly AtomicCounter UniqueIdCounter = new AtomicCounter(0);
+
+        public static Task GracefulClose(IChannel channel)
+        {
+            return channel.WriteAndFlushAsync(Unpooled.Empty)
+                .ContinueWith(tr => channel.DisconnectAsync())
+                .Unwrap()
+                .ContinueWith(tc => channel.CloseAsync())
+                .Unwrap();
+        }
+
+        public static Address AddressFromSocketAddress(EndPoint socketAddress, string schemeIdentifier,
+            string systemName, string hostName = null, int? port = null)
+        {
+            var ipAddress = socketAddress as IPEndPoint;
+            if (ipAddress == null) return null;
+            return new Address(schemeIdentifier, systemName, hostName ?? ipAddress.Address.ToString(), port ?? ipAddress.Port);
+        }
     }
 
 }
