@@ -30,6 +30,11 @@ namespace Akka.Remote.Transport.DotNetty
             Transport = transport;
         }
 
+        protected void OnOpen(IChannelHandlerContext ctx)
+        {
+            Transport.ChannelGroup.Add(ctx.Channel);
+        }
+
         protected abstract void OnConnect(IChannelHandlerContext ctx);
         protected abstract void OnDisconnect(IChannelHandlerContext ctx);
         protected abstract void OnMessage(IChannelHandlerContext ctx, object message);
@@ -78,6 +83,12 @@ namespace Akka.Remote.Transport.DotNetty
         {
             base.ChannelRead(context, message);
             OnMessage(context, message);
+        }
+
+        public override void ChannelRegistered(IChannelHandlerContext context)
+        {
+            base.ChannelRegistered(context);
+            OnOpen(context);
         }
 
         public override void ChannelActive(IChannelHandlerContext context)
@@ -135,6 +146,8 @@ namespace Akka.Remote.Transport.DotNetty
 
         protected readonly TaskCompletionSource<AssociationHandle> StatusPromise =
             new TaskCompletionSource<AssociationHandle>();
+
+        public Task<AssociationHandle> StatusFuture => StatusPromise.Task;
 
         protected ClientHandler(DotNettyTransport transport, Address remoteAddress) : base(transport)
         {

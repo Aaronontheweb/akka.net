@@ -12,6 +12,7 @@ using Akka.Remote.Transport.Helios;
 using Akka.Util.Internal;
 using DotNetty.Buffers;
 using DotNetty.Codecs;
+using DotNetty.Common.Utilities;
 using DotNetty.Transport.Bootstrapping;
 using DotNetty.Transport.Channels;
 using DotNetty.Transport.Channels.Groups;
@@ -78,7 +79,7 @@ namespace Akka.Remote.Transport.DotNetty
             var size = OptionSize("maximum-frame-size");
             if (size == null || size < 32000)
                 throw new ConfigurationException("Setting 'maximum-frame-size' must be at least 32000 bytes");
-            MaxFrameSize = (long) size;
+            MaxFrameSize = (long)size;
             Backlog = Config.GetInt("backlog");
             TcpNoDelay = Config.GetBoolean("tcp-nodelay");
             TcpKeepAlive = Config.GetBoolean("tcp-keepalive");
@@ -190,21 +191,36 @@ namespace Akka.Remote.Transport.DotNetty
 
         #endregion
 
-        //public readonly IChannelGroup ChannelGroup;
+        /// <summary>
+        /// Used to coordinate shutdown across all <see cref="IChannel"/> instances used
+        /// by this transport.
+        /// </summary>
+        public readonly IChannelGroup ChannelGroup;
 
         protected ILoggingAdapter Log;
 
-        private volatile Address LocalAddress;
-        private volatile Address BoundTo;
-        private volatile IChannel ServerChannel;
+        /// <summary>
+        /// Logical / virtual address
+        /// </summary>
+        private volatile Address _localAddress;
+
+        /// <summary>
+        /// Physical / reachable socket listening address
+        /// </summary>
+        private volatile Address _boundTo;
+
+        /// <summary>
+        /// DotNetty server channel
+        /// </summary>
+        private volatile IChannel _serverChannel;
 
         private readonly MultithreadEventLoopGroup _serverBossGroup;
         private readonly MultithreadEventLoopGroup _serverWorkerGroup;
-
-        private readonly MultithreadEventLoopGroup _clientBossGroup;
         private readonly MultithreadEventLoopGroup _clientWorkerGroup;
 
-        private TaskCompletionSource<IAssociationEventListener> _associationEventListenerPromise =
+        private readonly SingleThreadEventLoop _channelGroupEventLoop = new SingleThreadEventLoop();
+
+        private readonly TaskCompletionSource<IAssociationEventListener> _associationEventListenerPromise =
             new TaskCompletionSource<IAssociationEventListener>();
 
         public DotNettyTransportSettings Settings { get; }
@@ -218,11 +234,9 @@ namespace Akka.Remote.Transport.DotNetty
 
             _serverBossGroup = new MultithreadEventLoopGroup(1);
             _serverWorkerGroup = new MultithreadEventLoopGroup(Settings.ServerSocketWorkerPoolSize);
-
-            _clientBossGroup = new MultithreadEventLoopGroup(1);
             _clientWorkerGroup = new MultithreadEventLoopGroup(Settings.ClientSocketWorkerPoolSize);
 
-            //ChannelGroup = new DefaultChannelGroup("akka-netty-transport-driver-channelgroup-" + UniqueIdCounter.GetAndIncrement(), );
+            ChannelGroup = new DefaultChannelGroup("akka-netty-transport-driver-channelgroup-" + UniqueIdCounter.GetAndIncrement(), _channelGroupEventLoop);
         }
 
         public bool IsDatagram
@@ -233,7 +247,7 @@ namespace Akka.Remote.Transport.DotNetty
         private ServerBootstrap SetupServerBootstrap(ServerBootstrap b)
         {
             var a = b
-                .Group(_serverBossGroup, _clientWorkerGroup)
+                .Group(_serverBossGroup, _serverWorkerGroup)
                 .ChildOption(ChannelOption.SoBacklog, Settings.Backlog)
                 .ChildOption(ChannelOption.TcpNodelay, Settings.TcpNoDelay)
                 .ChildOption(ChannelOption.SoKeepalive, Settings.TcpKeepAlive)
@@ -245,16 +259,16 @@ namespace Akka.Remote.Transport.DotNetty
                 }));
             ;
             if (Settings.ReceiveBufferSize.HasValue)
-                a = a.ChildOption(ChannelOption.SoRcvbuf, (int) Settings.ReceiveBufferSize.Value);
+                a = a.ChildOption(ChannelOption.SoRcvbuf, (int)Settings.ReceiveBufferSize.Value);
             if (Settings.SendBufferSize.HasValue)
-                a = a.ChildOption(ChannelOption.SoSndbuf, (int) Settings.SendBufferSize.Value);
+                a = a.ChildOption(ChannelOption.SoSndbuf, (int)Settings.SendBufferSize.Value);
             if (Settings.WriteBufferHighWaterMark.HasValue)
-                a = a.ChildOption(ChannelOption.WriteBufferHighWaterMark, (int) Settings.WriteBufferHighWaterMark.Value);
+                a = a.ChildOption(ChannelOption.WriteBufferHighWaterMark, (int)Settings.WriteBufferHighWaterMark.Value);
             if (Settings.WriteBufferLowWaterMark.HasValue)
-                a = a.ChildOption(ChannelOption.WriteBufferLowWaterMark, (int) Settings.WriteBufferLowWaterMark.Value);
+                a = a.ChildOption(ChannelOption.WriteBufferLowWaterMark, (int)Settings.WriteBufferLowWaterMark.Value);
             return a;
         }
-        
+
         private ServerBootstrap InboundBootstrap()
         {
             if (IsDatagram) throw new NotImplementedException("UDP not supported");
@@ -264,16 +278,16 @@ namespace Akka.Remote.Transport.DotNetty
         private Bootstrap OutboundBootstrap(Address remoteAddress)
         {
             if (IsDatagram) throw new NotImplementedException("UDP not supported");
-           var b = new Bootstrap().Channel<TcpSocketChannel>()
-                .Group(_clientWorkerGroup)
-                .Option(ChannelOption.TcpNodelay, Settings.TcpNoDelay)
-                .Option(ChannelOption.SoKeepalive, Settings.TcpKeepAlive)
-                .Handler(new ActionChannelInitializer<IChannel>(channel =>
-                {
-                    IChannelPipeline pipeline = channel.Pipeline;
-                    BindClientPipeline(pipeline, remoteAddress);
-                }));
-            
+            var b = new Bootstrap().Channel<TcpSocketChannel>()
+                 .Group(_clientWorkerGroup)
+                 .Option(ChannelOption.TcpNodelay, Settings.TcpNoDelay)
+                 .Option(ChannelOption.SoKeepalive, Settings.TcpKeepAlive)
+                 .Handler(new ActionChannelInitializer<IChannel>(channel =>
+                 {
+                     IChannelPipeline pipeline = channel.Pipeline;
+                     BindClientPipeline(pipeline, remoteAddress);
+                 }));
+
             if (Settings.ReceiveBufferSize.HasValue)
                 b = b.Option(ChannelOption.SoRcvbuf, (int)Settings.ReceiveBufferSize.Value);
             if (Settings.SendBufferSize.HasValue)
@@ -296,7 +310,7 @@ namespace Akka.Remote.Transport.DotNetty
             if (!IsDatagram)
             {
                 pipeline.AddLast(new LengthFieldBasedFrameDecoder(
-                    (int) MaximumPayloadBytes,
+                    (int)MaximumPayloadBytes,
                     0,
                     FrameLengthFieldLength,
                     0,
@@ -343,8 +357,6 @@ namespace Akka.Remote.Transport.DotNetty
             return new TcpServerHandler(transport, associationListenerFuture);
         }
 
-        private ClientBootstrap _clientFactory;
-
         #region Akka.Remote.Transport Members
 
         public override string SchemeIdentifier
@@ -361,9 +373,60 @@ namespace Akka.Remote.Transport.DotNetty
             get { return Settings.MaxFrameSize; }
         }
 
-        public override Task<Tuple<Address, TaskCompletionSource<IAssociationEventListener>>> Listen()
+        public override async Task<Tuple<Address, TaskCompletionSource<IAssociationEventListener>>> Listen()
         {
-            throw new NotImplementedException();
+            var akkaAddress = new Address("", "", Settings.Hostname, Settings.Port);
+            var listenAddress = await AddressToSocketAddress(akkaAddress);
+            try
+            {
+                var newServerChannel = await InboundBootstrap().BindAsync(listenAddress);
+
+                // TODO: make channel not readable
+                ChannelGroup.Add(newServerChannel);
+                _serverChannel = newServerChannel;
+
+                /*
+                 * ServerChannel.LocalAddress gets us the full information provided by the local OS
+                 * as to which port and IP we're bound.
+                 *
+                 * Settings.PublicHostname allows us to specify a different virtual hostname than the one 
+                 * the socket is physically bound to, in the event of using a service like Elastic IP on AWS.
+                 */
+                var addrByConfig = AddressFromSocketAddress(_serverChannel.LocalAddress, SchemeIdentifier, System.Name,
+                    Settings.PublicHostname, Settings.Port == 0 ? null : (int?)Settings.Port);
+                if (addrByConfig == null) throw new DotNettyTransportException($"Unknown local address type ${newServerChannel.LocalAddress}");
+                _localAddress = addrByConfig;
+
+                /*
+                 * Need to validate that the socket was bound correctly, since config values will override
+                 * whatever the underlying socket returns. This code tests to ensure that the socket was bound
+                 * to a reachable IP address and port.
+                 */
+                var addrBySocket = AddressFromSocketAddress(_serverChannel.LocalAddress, SchemeIdentifier, System.Name);
+                if (addrBySocket == null) throw new DotNettyTransportException($"Unknown local address type ${newServerChannel.LocalAddress}");
+                _boundTo = addrByConfig;
+
+
+                //_associationEventListenerPromise.Task.ContinueWith(tr =>
+                //{
+                //    //TODO: make channel readable
+                //});
+
+                return Tuple.Create(_localAddress, _associationEventListenerPromise);
+            }
+            catch (Exception ex)
+            {
+                Log.Error("Failed to bind to {0}, shutting down DotNetty transport", listenAddress);
+                try
+                {
+                    await Shutdown();
+                }
+                catch
+                {
+                    // ignore posible exception during shutdown
+                }
+                throw;
+            }
         }
 
         /*
@@ -383,9 +446,43 @@ namespace Akka.Remote.Transport.DotNetty
             return true;
         }
 
-        public override Task<AssociationHandle> Associate(Address remoteAddress)
+        public override async Task<AssociationHandle> Associate(Address remoteAddress)
         {
-            throw new NotImplementedException();
+            if (!_serverChannel.Active)
+                return await TaskEx.FromException<AssociationHandle>(new DotNettyTransportException("Transport is not bound."));
+            var bootstrap = OutboundBootstrap(remoteAddress);
+
+            try
+            {
+                var socketAddress = await AddressToSocketAddress(remoteAddress);
+                var readyChannel = await bootstrap.ConnectAsync(socketAddress);
+                if (Settings.EnableSsl)
+                {
+                    // TODO: SSL support
+                }
+                if (!IsDatagram)
+                {
+                    // TODO: mark channel as not-readable
+                }
+
+                if (IsDatagram)
+                {
+                    // TODO: UDP support https://github.com/akka/akka/blob/dc12f3bfd339ac1ad4407bdc1f01d6a418f5f339/akka-remote/src/main/scala/akka/remote/transport/netty/NettyTransport.scala#L461
+                    throw new NotImplementedException("UDP not supported");
+                }
+                else
+                {
+                    return await readyChannel.Pipeline.Get<ClientHandler>().StatusFuture;
+                }
+            }
+            catch (TaskCanceledException ex)
+            {
+                throw new DotNettyTransportException($"Connection to {remoteAddress} was cancelled");
+            }
+            catch (Exception ex)
+            {
+                throw new DotNettyTransportException(ex.Message, ex);
+            }
         }
 
         /*
@@ -411,9 +508,20 @@ namespace Akka.Remote.Transport.DotNetty
             });
         }
 
-        public override Task<bool> Shutdown()
+        public override async Task<bool> Shutdown()
         {
-            throw new NotImplementedException();
+            Func<Task, bool> always = task => task.IsCompleted & !task.IsCanceled & !task.IsFaulted;
+
+            var writeStatus = ChannelGroup.WriteAndFlushAsync(Unpooled.Empty).ContinueWith(always);
+            var disconnectStatus = ChannelGroup.DisconnectAsync().ContinueWith(always);
+            var closeStatus = ChannelGroup.CloseAsync().ContinueWith(always);
+
+            return await Task.WhenAll(writeStatus, disconnectStatus, closeStatus).ContinueWith(tr =>
+            {
+                if (tr.IsFaulted || tr.IsCanceled) return false;
+                return tr.Result.All(x => x);
+            });
+
         }
 
         #endregion
