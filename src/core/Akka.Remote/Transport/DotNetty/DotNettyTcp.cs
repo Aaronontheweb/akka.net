@@ -32,7 +32,7 @@ namespace Akka.Remote.Transport.DotNetty
         {
             if (_channel.IsWritable && _channel.Open)
             {
-                _channel.WriteAndFlushAsync(payload.ToByteArray());
+                _channel.WriteAndFlushAsync(Unpooled.WrappedBuffer(payload.ToByteArray()));
                 return true;
             }
             return false;

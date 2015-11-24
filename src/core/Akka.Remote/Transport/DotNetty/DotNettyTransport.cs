@@ -1,23 +1,23 @@
 ﻿using System;
-using System.Collections.Generic;
+using System.Diagnostics.Tracing;
 using System.Linq;
 using System.Net;
-using System.Text;
 using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Configuration;
 using Akka.Dispatch;
 using Akka.Event;
-using Akka.Remote.Transport.Helios;
 using Akka.Util.Internal;
 using DotNetty.Buffers;
 using DotNetty.Codecs;
+using DotNetty.Common.Internal.Logging;
 using DotNetty.Common.Utilities;
+using DotNetty.Handlers.Logging;
 using DotNetty.Transport.Bootstrapping;
 using DotNetty.Transport.Channels;
 using DotNetty.Transport.Channels.Groups;
 using DotNetty.Transport.Channels.Sockets;
-using Helios.Net.Bootstrap;
+using Microsoft.Practices.EnterpriseLibrary.SemanticLogging;
 
 namespace Akka.Remote.Transport.DotNetty
 {
@@ -185,7 +185,7 @@ namespace Akka.Remote.Transport.DotNetty
         {
             var ipAddress = socketAddress as IPEndPoint;
             if (ipAddress == null) return null;
-            return new Address(schemeIdentifier, systemName, hostName ?? ipAddress.Address.ToString(),
+            return new Address(schemeIdentifier, systemName, string.IsNullOrEmpty(hostName) ? ipAddress.Address.ToString() : hostName,
                 port ?? ipAddress.Port);
         }
 
@@ -223,6 +223,8 @@ namespace Akka.Remote.Transport.DotNetty
         private readonly TaskCompletionSource<IAssociationEventListener> _associationEventListenerPromise =
             new TaskCompletionSource<IAssociationEventListener>();
 
+        private readonly ObservableEventListener _eventListener = new ObservableEventListener();
+
         public DotNettyTransportSettings Settings { get; }
 
         public DotNettyTransport(ActorSystem system, Config config)
@@ -235,7 +237,8 @@ namespace Akka.Remote.Transport.DotNetty
             _serverBossGroup = new MultithreadEventLoopGroup(1);
             _serverWorkerGroup = new MultithreadEventLoopGroup(Settings.ServerSocketWorkerPoolSize);
             _clientWorkerGroup = new MultithreadEventLoopGroup(Settings.ClientSocketWorkerPoolSize);
-
+            _eventListener.LogToConsole();
+            _eventListener.EnableEvents(DefaultEventSource.Log, EventLevel.Verbose);
             ChannelGroup = new DefaultChannelGroup("akka-netty-transport-driver-channelgroup-" + UniqueIdCounter.GetAndIncrement(), _channelGroupEventLoop);
         }
 
@@ -248,7 +251,8 @@ namespace Akka.Remote.Transport.DotNetty
         {
             var a = b
                 .Group(_serverBossGroup, _serverWorkerGroup)
-                //.ChildOption(ChannelOption.AutoRead, false) //initially disable reads
+                .Option(ChannelOption.AutoRead, false) //initially disable reads (server)
+                .ChildOption(ChannelOption.AutoRead, false) //initially disable reads (children)
                 .ChildOption(ChannelOption.SoBacklog, Settings.Backlog)
                 .ChildOption(ChannelOption.TcpNodelay, Settings.TcpNoDelay)
                 .ChildOption(ChannelOption.SoKeepalive, Settings.TcpKeepAlive)
@@ -258,7 +262,7 @@ namespace Akka.Remote.Transport.DotNetty
                     IChannelPipeline pipeline = channel.Pipeline;
                     BindServerPipeline(pipeline);
                 }));
-            ;
+
             if (Settings.ReceiveBufferSize.HasValue)
                 a = a.ChildOption(ChannelOption.SoRcvbuf, (int)Settings.ReceiveBufferSize.Value);
             if (Settings.SendBufferSize.HasValue)
@@ -281,7 +285,7 @@ namespace Akka.Remote.Transport.DotNetty
             if (IsDatagram) throw new NotImplementedException("UDP not supported");
             var b = new Bootstrap().Channel<TcpSocketChannel>()
                  .Group(_clientWorkerGroup)
-                 //.Option(ChannelOption.AutoRead, false) //initially disable reads
+                 .Option(ChannelOption.AutoRead, false) //initially disable reads
                  .Option(ChannelOption.TcpNodelay, Settings.TcpNoDelay)
                  .Option(ChannelOption.SoKeepalive, Settings.TcpKeepAlive)
                  .Handler(new ActionChannelInitializer<IChannel>(channel =>
@@ -318,7 +322,7 @@ namespace Akka.Remote.Transport.DotNetty
                     0,
                     FrameLengthFieldLength, // Strip the header
                     true));
-                pipeline.AddLast(new LengthFieldPrepender(FrameLengthFieldLength,0,true));
+                pipeline.AddLast(new LengthFieldPrepender(FrameLengthFieldLength));
             }
         }
 
@@ -331,6 +335,7 @@ namespace Akka.Remote.Transport.DotNetty
             }
             var handler = CreateServerHandler(this, _associationEventListenerPromise.Task);
             pipeline.AddLast("ServerHandler", handler);
+            pipeline.AddFirst(new LoggingHandler());
         }
 
         protected void BindClientPipeline(IChannelPipeline pipeline, Address remoteAddress)
@@ -342,6 +347,7 @@ namespace Akka.Remote.Transport.DotNetty
             }
             var handler = CreateClientHandler(this, remoteAddress);
             pipeline.AddLast("ClientHandler", handler);
+            pipeline.AddFirst(new LoggingHandler());
         }
 
         protected IChannelHandler CreateClientHandler(DotNettyTransport transport, Address remoteAddress)
@@ -394,7 +400,7 @@ namespace Akka.Remote.Transport.DotNetty
                  * Settings.PublicHostname allows us to specify a different virtual hostname than the one 
                  * the socket is physically bound to, in the event of using a service like Elastic IP on AWS.
                  */
-                var addrByConfig = AddressFromSocketAddress(_serverChannel.LocalAddress, SchemeIdentifier, System.Name,
+                var addrByConfig = AddressFromSocketAddress(newServerChannel.LocalAddress, SchemeIdentifier, System.Name,
                     Settings.PublicHostname, Settings.Port == 0 ? null : (int?)Settings.Port);
                 if (addrByConfig == null) throw new DotNettyTransportException($"Unknown local address type ${newServerChannel.LocalAddress}");
                 _localAddress = addrByConfig;
@@ -404,21 +410,20 @@ namespace Akka.Remote.Transport.DotNetty
                  * whatever the underlying socket returns. This code tests to ensure that the socket was bound
                  * to a reachable IP address and port.
                  */
-                var addrBySocket = AddressFromSocketAddress(_serverChannel.LocalAddress, SchemeIdentifier, System.Name);
+                var addrBySocket = AddressFromSocketAddress(newServerChannel.LocalAddress, SchemeIdentifier, System.Name);
                 if (addrBySocket == null) throw new DotNettyTransportException($"Unknown local address type ${newServerChannel.LocalAddress}");
                 _boundTo = addrByConfig;
 
-
+                
                 _associationEventListenerPromise.Task.ContinueWith(tr =>
                 {
                     _serverChannel.Configuration.AutoRead = true;
                 }, TaskContinuationOptions.OnlyOnRanToCompletion);
-
                 return Tuple.Create(_localAddress, _associationEventListenerPromise);
             }
             catch (Exception ex)
             {
-                Log.Error("Failed to bind to {0}, shutting down DotNetty transport", listenAddress);
+                Log.Error(ex, "Failed to bind to {0}, shutting down DotNetty transport.", listenAddress);
                 try
                 {
                     await Shutdown();
@@ -530,12 +535,14 @@ namespace Akka.Remote.Transport.DotNetty
             var writeStatus = ChannelGroup.WriteAndFlushAsync(Unpooled.Empty).ContinueWith(always);
             var disconnectStatus = ChannelGroup.DisconnectAsync().ContinueWith(always);
             var closeStatus = ChannelGroup.CloseAsync().ContinueWith(always);
-
+            _eventListener.Dispose();
             return await Task.WhenAll(writeStatus, disconnectStatus, closeStatus).ContinueWith(tr =>
             {
                 if (tr.IsFaulted || tr.IsCanceled) return false;
                 return tr.Result.All(x => x);
             });
+
+           
 
         }
 

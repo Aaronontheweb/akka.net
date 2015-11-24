@@ -83,25 +83,21 @@ namespace Akka.Remote.Transport.DotNetty
 
         public override void ChannelRead(IChannelHandlerContext context, object message)
         {
-            base.ChannelRead(context, message);
             OnMessage(context, message);
         }
 
         public override void ChannelRegistered(IChannelHandlerContext context)
         {
-            base.ChannelRegistered(context);
             OnOpen(context);
         }
 
         public override void ChannelActive(IChannelHandlerContext context)
         {
-            base.ChannelActive(context);
             OnConnect(context);
         }
 
         public override void ChannelInactive(IChannelHandlerContext context)
         {
-            base.ChannelInactive(context);
             OnDisconnect(context);
         }
 
@@ -126,6 +122,7 @@ namespace Akka.Remote.Transport.DotNetty
 
         protected void InitInbound(IChannel channel, EndPoint remoteSocketAddress, IByteBuffer msg)
         {
+            channel.Configuration.AutoRead = false;
             _associationListenerFuture.ContinueWith(tr =>
             {
                 var listener = tr.Result;
