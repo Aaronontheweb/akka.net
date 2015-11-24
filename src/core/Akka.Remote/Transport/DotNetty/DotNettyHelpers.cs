@@ -70,6 +70,8 @@ namespace Akka.Remote.Transport.DotNetty
                 {
                     var listener = tr.Result;
                     RegisterListener(channel, listener, msg, remoteSocketAddress);
+                    channel.Configuration.AutoRead = true;
+                    
                 }, TaskContinuationOptions.OnlyOnRanToCompletion);
                 op(handle);
             }

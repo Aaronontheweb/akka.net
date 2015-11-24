@@ -248,6 +248,7 @@ namespace Akka.Remote.Transport.DotNetty
         {
             var a = b
                 .Group(_serverBossGroup, _serverWorkerGroup)
+                //.ChildOption(ChannelOption.AutoRead, false) //initially disable reads
                 .ChildOption(ChannelOption.SoBacklog, Settings.Backlog)
                 .ChildOption(ChannelOption.TcpNodelay, Settings.TcpNoDelay)
                 .ChildOption(ChannelOption.SoKeepalive, Settings.TcpKeepAlive)
@@ -280,6 +281,7 @@ namespace Akka.Remote.Transport.DotNetty
             if (IsDatagram) throw new NotImplementedException("UDP not supported");
             var b = new Bootstrap().Channel<TcpSocketChannel>()
                  .Group(_clientWorkerGroup)
+                 //.Option(ChannelOption.AutoRead, false) //initially disable reads
                  .Option(ChannelOption.TcpNodelay, Settings.TcpNoDelay)
                  .Option(ChannelOption.SoKeepalive, Settings.TcpKeepAlive)
                  .Handler(new ActionChannelInitializer<IChannel>(channel =>
@@ -316,7 +318,7 @@ namespace Akka.Remote.Transport.DotNetty
                     0,
                     FrameLengthFieldLength, // Strip the header
                     true));
-                pipeline.AddLast(new LengthFieldPrepender(FrameLengthFieldLength));
+                pipeline.AddLast(new LengthFieldPrepender(FrameLengthFieldLength,0,true));
             }
         }
 
@@ -381,7 +383,7 @@ namespace Akka.Remote.Transport.DotNetty
             {
                 var newServerChannel = await InboundBootstrap().BindAsync(listenAddress);
 
-                // TODO: make channel not readable
+                newServerChannel.Configuration.AutoRead = false;
                 ChannelGroup.Add(newServerChannel);
                 _serverChannel = newServerChannel;
 
@@ -407,10 +409,10 @@ namespace Akka.Remote.Transport.DotNetty
                 _boundTo = addrByConfig;
 
 
-                //_associationEventListenerPromise.Task.ContinueWith(tr =>
-                //{
-                //    //TODO: make channel readable
-                //});
+                _associationEventListenerPromise.Task.ContinueWith(tr =>
+                {
+                    _serverChannel.Configuration.AutoRead = true;
+                }, TaskContinuationOptions.OnlyOnRanToCompletion);
 
                 return Tuple.Create(_localAddress, _associationEventListenerPromise);
             }
