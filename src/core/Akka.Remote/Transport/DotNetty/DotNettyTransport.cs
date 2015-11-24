@@ -1,7 +1,7 @@
 ﻿using System;
-using System.Diagnostics.Tracing;
 using System.Linq;
 using System.Net;
+using System.Net.Sockets;
 using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Configuration;
@@ -10,14 +10,11 @@ using Akka.Event;
 using Akka.Util.Internal;
 using DotNetty.Buffers;
 using DotNetty.Codecs;
-using DotNetty.Common.Internal.Logging;
 using DotNetty.Common.Utilities;
-using DotNetty.Handlers.Logging;
 using DotNetty.Transport.Bootstrapping;
 using DotNetty.Transport.Channels;
 using DotNetty.Transport.Channels.Groups;
 using DotNetty.Transport.Channels.Sockets;
-using Microsoft.Practices.EnterpriseLibrary.SemanticLogging;
 
 namespace Akka.Remote.Transport.DotNetty
 {
@@ -223,7 +220,7 @@ namespace Akka.Remote.Transport.DotNetty
         private readonly TaskCompletionSource<IAssociationEventListener> _associationEventListenerPromise =
             new TaskCompletionSource<IAssociationEventListener>();
 
-        private readonly ObservableEventListener _eventListener = new ObservableEventListener();
+        //private readonly ObservableEventListener _eventListener = new ObservableEventListener();
 
         public DotNettyTransportSettings Settings { get; }
 
@@ -237,8 +234,8 @@ namespace Akka.Remote.Transport.DotNetty
             _serverBossGroup = new MultithreadEventLoopGroup(1);
             _serverWorkerGroup = new MultithreadEventLoopGroup(Settings.ServerSocketWorkerPoolSize);
             _clientWorkerGroup = new MultithreadEventLoopGroup(Settings.ClientSocketWorkerPoolSize);
-            _eventListener.LogToConsole();
-            _eventListener.EnableEvents(DefaultEventSource.Log, EventLevel.Verbose);
+            //_eventListener.LogToConsole();
+            //_eventListener.EnableEvents(DefaultEventSource.Log, EventLevel.Verbose);
             ChannelGroup = new DefaultChannelGroup("akka-netty-transport-driver-channelgroup-" + UniqueIdCounter.GetAndIncrement(), _channelGroupEventLoop);
         }
 
@@ -335,7 +332,6 @@ namespace Akka.Remote.Transport.DotNetty
             }
             var handler = CreateServerHandler(this, _associationEventListenerPromise.Task);
             pipeline.AddLast("ServerHandler", handler);
-            pipeline.AddFirst(new LoggingHandler());
         }
 
         protected void BindClientPipeline(IChannelPipeline pipeline, Address remoteAddress)
@@ -347,7 +343,6 @@ namespace Akka.Remote.Transport.DotNetty
             }
             var handler = CreateClientHandler(this, remoteAddress);
             pipeline.AddLast("ClientHandler", handler);
-            pipeline.AddFirst(new LoggingHandler());
         }
 
         protected IChannelHandler CreateClientHandler(DotNettyTransport transport, Address remoteAddress)
@@ -518,12 +513,13 @@ namespace Akka.Remote.Transport.DotNetty
             {
                 if(configuredIp.Equals(IPAddress.Any) || configuredIp.Equals(IPAddress.IPv6Any))
                     return Task.FromResult(new IPEndPoint(configuredIp, address.Port.Value));
+               
             }
 
             return Dns.GetHostEntryAsync(address.Host).ContinueWith(tr =>
             {
                 var ipHostEntry = tr.Result;
-                var ip = ipHostEntry.AddressList[0];
+                var ip = ipHostEntry.AddressList.First(x => x.AddressFamily == AddressFamily.InterNetwork);
                 return new IPEndPoint(ip, address.Port.Value);
             });
         }
@@ -535,7 +531,7 @@ namespace Akka.Remote.Transport.DotNetty
             var writeStatus = ChannelGroup.WriteAndFlushAsync(Unpooled.Empty).ContinueWith(always);
             var disconnectStatus = ChannelGroup.DisconnectAsync().ContinueWith(always);
             var closeStatus = ChannelGroup.CloseAsync().ContinueWith(always);
-            _eventListener.Dispose();
+            //_eventListener.Dispose();
             return await Task.WhenAll(writeStatus, disconnectStatus, closeStatus).ContinueWith(tr =>
             {
                 if (tr.IsFaulted || tr.IsCanceled) return false;

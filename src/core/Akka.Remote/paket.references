@@ -1,2 +1,4 @@
 Google.ProtocolBuffers
+DotNetty.Transport
+DotNetty.Codecs
 Helios

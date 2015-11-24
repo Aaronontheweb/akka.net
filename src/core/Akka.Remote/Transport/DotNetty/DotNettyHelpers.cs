@@ -91,6 +91,11 @@ namespace Akka.Remote.Transport.DotNetty
             OnOpen(context);
         }
 
+        public override void ChannelUnregistered(IChannelHandlerContext context)
+        {
+            OnDisconnect(context);
+        }
+
         public override void ChannelActive(IChannelHandlerContext context)
         {
             OnConnect(context);
@@ -98,7 +103,7 @@ namespace Akka.Remote.Transport.DotNetty
 
         public override void ChannelInactive(IChannelHandlerContext context)
         {
-            OnDisconnect(context);
+            
         }
 
         public override void ExceptionCaught(IChannelHandlerContext context, Exception exception)

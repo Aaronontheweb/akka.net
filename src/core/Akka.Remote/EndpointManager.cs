@@ -463,9 +463,14 @@ namespace Akka.Remote
                 .With<InboundAssociation>(ia => Context.System.Scheduler.ScheduleTellOnce(TimeSpan.FromMilliseconds(10), Self, ia, Self))
                 .With<ManagementCommand>(mc => Sender.Tell(new ManagementCommandAck(status:false)))
                 // transports are all started. Ready to start accepting inbound associations.
-                .With<StartupFinished>(sf => Context.Become(Accepting))
+                .With<StartupFinished>(sf =>
+                {
+                    log.Debug("Remoting startup finished. TRANSITION: [Receive] --> [Accepting].");
+                    Context.Become(Accepting);
+                })
                 .With<ShutdownAndFlush>(sf =>
                 {
+                    log.Debug("Received ShutdownAndFlush while in behavior [Receive]. Shutting down all endpoints...");
                     Sender.Tell(true);
                     Context.Stop(Self);
                 });
@@ -568,6 +573,8 @@ namespace Akka.Remote
                 .With<Prune>(prune => endpoints.Prune())
                 .With<ShutdownAndFlush>(shutdown =>
                 {
+                    log.Debug("Received ShutdownAndFlush while in behavior [Accepting]. Shutting down all endpoints...");
+
                     //Shutdown all endpoints and signal to Sender when ready (and whether all endpoints were shutdown gracefully)
                     var sender = Sender;
 
@@ -606,6 +613,8 @@ namespace Akka.Remote
                     
                     //Ignore all other writes
                     _normalShutdown = true;
+
+                    log.Debug("TRANSITION: [Accepting] --> [Flushing].");
                     Context.Become(Flushing);
                 });
         }
@@ -615,7 +624,11 @@ namespace Akka.Remote
             message.Match()
                 .With<Send>(send => Context.System.DeadLetters.Tell(send))
                 .With<InboundAssociation>(
-                    ia => ia.Association.AsInstanceOf<AkkaProtocolHandle>().Disassociate(DisassociateInfo.Shutdown))
+                    ia =>
+                    {
+                        log.Info("Received inbound association from {0} while in state [Flushing]. Shutting down association.", ia.Association.RemoteAddress);
+                        ia.Association.AsInstanceOf<AkkaProtocolHandle>().Disassociate(DisassociateInfo.Shutdown);
+                    })
                 .With<Terminated>(terminated => { });
         }
 
