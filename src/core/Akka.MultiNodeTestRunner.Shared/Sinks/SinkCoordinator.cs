@@ -22,6 +22,11 @@ namespace Akka.MultiNodeTestRunner.Shared.Sinks
         #region Message classes
 
         /// <summary>
+        /// Marker interface for all control messages for the <see cref="SinkCoordinator"/>
+        /// </summary>
+        public interface ISinkCoordinatorMessage { }
+
+        /// <summary>
         /// Used to signal that we need to enable a given <see cref="MessageSink"/> instance
         /// </summary>
         public class EnableSink

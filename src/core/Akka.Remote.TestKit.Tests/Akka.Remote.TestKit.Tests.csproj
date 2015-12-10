@@ -61,6 +61,7 @@
   <ItemGroup>
     <Compile Include="BarrierSpec.cs" />
     <Compile Include="ControllerSpec.cs" />
+    <Compile Include="Logging\ByteStringSerializationTests.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>

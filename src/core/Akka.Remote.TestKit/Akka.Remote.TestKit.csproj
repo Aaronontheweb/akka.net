@@ -81,6 +81,8 @@
     <Compile Include="DataTypes.cs" />
     <Compile Include="Extension.cs" />
     <Compile Include="Internals\TestConductorConfigFactory.cs" />
+    <Compile Include="Logging\ByteStringSerializer.cs" />
+    <Compile Include="Logging\UdpLogger.cs" />
     <Compile Include="MsgDecoder.cs" />
     <Compile Include="MsgEncoder.cs" />
     <Compile Include="MultiNodeFact.cs" />
@@ -130,14 +132,6 @@
   <ItemGroup>
     <None Include="app.config" />
     <None Include="packages.config" />
-    <None Include="protos\google\protobuf\csharp_options.proto" />
-    <None Include="protos\google\protobuf\descriptor.proto" />
-    <None Include="protos\tutorial\addressbook.proto" />
-  </ItemGroup>
-  <ItemGroup>
-    <Content Include="CHANGES.txt" />
-    <Content Include="licenses\license.txt" />
-    <Content Include="licenses\protoc-license.txt" />
   </ItemGroup>
   <Choose>
     <When Condition="'$(VisualStudioVersion)' == '10.0' And '$(IsCodedUITest)' == 'True'">

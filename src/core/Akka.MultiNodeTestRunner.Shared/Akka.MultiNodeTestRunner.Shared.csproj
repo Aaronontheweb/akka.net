@@ -43,10 +43,8 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="ExitCodeContainer.cs" />
-    <Compile Include="Logging\ByteStringSerializer.cs" />
     <Compile Include="Logging\SpecMessages.cs" />
     <Compile Include="Logging\UdpLogCollector.cs" />
-    <Compile Include="Logging\UdpLogger.cs" />
     <Compile Include="NodeTest.cs" />
     <Compile Include="Persistence\EnumerableExtensions.cs" />
     <Compile Include="Persistence\FileNameGenerator.cs" />
@@ -78,6 +76,10 @@
     <Compile Include="Reporting\TestRunCoordinator.cs" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\Akka.Remote.TestKit\Akka.Remote.TestKit.csproj">
+      <Project>{e5957c3e-2b1e-469f-a680-7953b4dea31b}</Project>
+      <Name>Akka.Remote.TestKit</Name>
+    </ProjectReference>
     <ProjectReference Include="..\Akka\Akka.csproj">
       <Project>{5DEDDF90-37F0-48D3-A0B0-A5CBD8A7E377}</Project>
       <Name>Akka</Name>

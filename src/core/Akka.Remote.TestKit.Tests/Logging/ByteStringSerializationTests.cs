@@ -12,7 +12,7 @@ namespace Akka.MultiNodeTestRunner.Shared.Tests.Logging
     /// </summary>
     public class ByteStringSerializationTests : AkkaSpec
     {
-        private Serializer InternalSerializer => Sys.Serialization.FindSerializerFor(typeof (SpecPass));
+        private Serializer InternalSerializer => Sys.Serialization.FindSerializerFor(typeof (string));
 
         private ByteStringSerializer _serializer;
 
@@ -21,12 +21,11 @@ namespace Akka.MultiNodeTestRunner.Shared.Tests.Logging
         [Fact]
         public void Should_serialize_POCO_in_ByteString()
         {
-            var specPass = new SpecPass(1, "SomeTest");
-            var serialized = Serializer.ToByteString(specPass);
-            var deserialized = Serializer.FromByteString(serialized) as SpecPass;
+            var testData = "SomeTest";
+            var serialized = Serializer.ToByteString(testData);
+            var deserialized = Serializer.FromByteString(serialized) as string;
             Assert.NotNull(deserialized);
-            Assert.Equal(specPass.NodeIndex, deserialized.NodeIndex);
-            Assert.Equal(specPass.TestDisplayName, deserialized.TestDisplayName);
+            Assert.Equal(testData, deserialized);
         }
     }
 }

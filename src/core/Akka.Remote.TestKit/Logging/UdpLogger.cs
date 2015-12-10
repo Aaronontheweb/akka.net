@@ -44,7 +44,7 @@ namespace Akka.MultiNodeTestRunner.Shared.Logging
         {
             _remoteDestination = remoteDestination;
             _connectAutomatically = connectAutomatically;
-            _serializer = new ByteStringSerializer(Context.System.Serialization.FindSerializerForType(typeof (SpecPass)));
+            _serializer = new ByteStringSerializer(Context.System.Serialization.FindSerializerForType(typeof (string)));
             
             Disconnected();
         }
