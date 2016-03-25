@@ -1,5 +1,7 @@
 # Akka.NET
 
+[![Join the chat at https://gitter.im/Aaronontheweb/akka.net](https://badges.gitter.im/Aaronontheweb/akka.net.svg)](https://gitter.im/Aaronontheweb/akka.net?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
+
 ![Akka.NET logo](documentation/icons/AkkaNetLogo.Normal.png)
 
 [![Gitter](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/akkadotnet/akka.net?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge) <br/>
