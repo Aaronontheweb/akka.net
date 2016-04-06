@@ -133,7 +133,7 @@ namespace Akka.Remote.Tests.MultiNode
             RunOn(() => { EnterBarrier("start", "broadcast-end", "end"); },
                 _config.First, _config.Second, _config.Third);
 
-            var runOnFourth = new Action(() =>
+            RunOn(() =>
             {
                 EnterBarrier("start");
                 var actor = Sys.ActorOf(new RoundRobinPool(nrOfInstances: 0)
@@ -152,7 +152,7 @@ namespace Akka.Remote.Tests.MultiNode
                 {
                     if (x is IActorRef) return x.AsInstanceOf<IActorRef>().Path.Address;
                     return null;
-                }, connectionCount*iterationCount)
+                }, connectionCount * iterationCount)
                     .Aggregate(ImmutableDictionary<Address, int>.Empty
                         .Add(Node(_config.First).Address, 0)
                         .Add(Node(_config.Second).Address, 0)
@@ -173,10 +173,10 @@ namespace Akka.Remote.Tests.MultiNode
                 replies.Values.ForEach(x => Assert.Equal(x, iterationCount));
                 Assert.False(replies.ContainsKey(Node(_config.Fourth).Address));
 
+                // shut down the actor before we let the other node(s) shut down so we don't try to send
+                // "Terminate" to a shut down node
                 Sys.Stop(actor);
-            });
-
-            RunOn(runOnFourth, _config.Fourth);
+            }, _config.Fourth);
             EnterBarrier("done");
         }
 
@@ -243,7 +243,8 @@ namespace Akka.Remote.Tests.MultiNode
                 EnterBarrier("start", "end");
             }, _config.First, _config.Second, _config.Third);
 
-            var runOnFourth = new Action(() =>
+
+            RunOn(() =>
             {
                 EnterBarrier("start");
                 var actor = Sys.ActorOf(Props.Empty.WithRouter(FromConfig.Instance), "service-hello3");
@@ -261,7 +262,7 @@ namespace Akka.Remote.Tests.MultiNode
                 {
                     if (x is IActorRef) return x.AsInstanceOf<IActorRef>().Path.Address;
                     return null;
-                }, connectionCount*iterationCount)
+                }, connectionCount * iterationCount)
                     .Aggregate(ImmutableDictionary<Address, int>.Empty
                         .Add(Node(_config.First).Address, 0)
                         .Add(Node(_config.Second).Address, 0)
@@ -277,9 +278,7 @@ namespace Akka.Remote.Tests.MultiNode
                     replies[Node(_config.Second).Address], replies[Node(_config.Third).Address]);
                 replies.Values.ForEach(x => Assert.Equal(x, iterationCount));
                 Assert.False(replies.ContainsKey(Node(_config.Fourth).Address));
-            });
-
-            RunOn(runOnFourth, _config.Fourth);
+            }, _config.Fourth);
             EnterBarrier("done");
         }
     }
