@@ -1,6 +1,6 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ActorSystemImpl.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2016 Typesafe Inc. <http://www.typesafe.com>
+//     Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
 //     Copyright (C) 2013-2016 Akka.NET project <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
@@ -87,13 +87,13 @@ namespace Akka.Actor.Internal
         /// <summary>Creates a new system actor.</summary>
         public override IActorRef SystemActorOf(Props props, string name = null)
         {
-            return _provider.SystemGuardian.Cell.ActorOf(props, name: name);
+            return _provider.SystemGuardian.Cell.AttachChild(props, true, name);
         }
 
         /// <summary>Creates a new system actor.</summary>
         public override IActorRef SystemActorOf<TActor>(string name = null)
         {
-            return _provider.SystemGuardian.Cell.ActorOf<TActor>(name);
+            return _provider.SystemGuardian.Cell.AttachChild(Props.Create<TActor>(), true, name);
         }
 
         /// <summary>Starts this system</summary>
@@ -133,7 +133,7 @@ namespace Akka.Actor.Internal
 
         public override IActorRef ActorOf(Props props, string name = null)
         {
-            return _provider.Guardian.Cell.ActorOf(props, name: name);
+            return _provider.Guardian.Cell.AttachChild(props, false, name);
         }
 
 

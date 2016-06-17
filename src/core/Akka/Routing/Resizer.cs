@@ -1,6 +1,6 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="Resizer.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2016 Typesafe Inc. <http://www.typesafe.com>
+//     Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
 //     Copyright (C) 2013-2016 Akka.NET project <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
@@ -243,10 +243,10 @@ namespace Akka.Routing
                             if (cell != null)
                             {
                                 if (PressureThreshold == 1)
-                                    return cell.Mailbox.Status == Mailbox.MailboxStatus.Busy &&
+                                    return cell.Mailbox.IsScheduled()  &&
                                     cell.Mailbox.HasMessages;
                                 if (PressureThreshold < 1)
-                                    return cell.Mailbox.Status == Mailbox.MailboxStatus.Busy &&
+                                    return cell.Mailbox.IsScheduled() &&
                                            cell.CurrentMessage != null;
                                 return cell.Mailbox.NumberOfMessages >= PressureThreshold;
                             }

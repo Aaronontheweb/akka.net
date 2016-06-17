@@ -1,6 +1,6 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ClusterHeartbeat.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2016 Typesafe Inc. <http://www.typesafe.com>
+//     Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
 //     Copyright (C) 2013-2016 Akka.NET project <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
@@ -100,9 +100,8 @@ namespace Akka.Cluster
         {
             Receive<HeartbeatTick>(tick => DoHeartbeat());
             Receive<HeartbeatRsp>(rsp => DoHeartbeatRsp(rsp.From));
-            Receive<ClusterEvent.MemberUp>(up => AddMember(up.Member));
             Receive<ClusterEvent.MemberRemoved>(removed => RemoveMember(removed.Member));
-            Receive<ClusterEvent.IMemberEvent>(@event => { }); //we don't care about other member events
+            Receive<ClusterEvent.IMemberEvent>(evt => AddMember(evt.Member));
             Receive<ExpectedFirstHeartbeat>(heartbeat => TriggerFirstHeart(heartbeat.From));
         }
 
@@ -116,13 +115,13 @@ namespace Akka.Cluster
 
         private void Init(ClusterEvent.CurrentClusterState snapshot)
         {
-            var nodes = snapshot.Members.Where(x => x.Status == MemberStatus.Up).Select(x => x.UniqueAddress).ToImmutableHashSet();
+            var nodes = snapshot.Members.Select(x => x.UniqueAddress).ToImmutableHashSet();
             _state = _state.Init(nodes);
         }
 
         private void AddMember(Member m)
         {
-            if (m.UniqueAddress != _cluster.SelfUniqueAddress)
+            if (m.UniqueAddress != _cluster.SelfUniqueAddress && !_state.Contains(m.UniqueAddress))
                 _state = _state.AddMember(m.UniqueAddress);
         }
 
@@ -145,13 +144,22 @@ namespace Akka.Cluster
             foreach (var to in _state.ActiveReceivers)
             {
                 if (FailureDetector.IsMonitoring(to.Address))
-                    _log.Debug("Cluster Node [{0}] - Heartbeat to [{1}]", _cluster.SelfAddress, to.Address);
+                {
+                    if (_cluster.Settings.VerboseHeartbeatLogging)
+                    {
+                        _log.Debug("Cluster Node [{0}] - Heartbeat to [{1}]", _cluster.SelfAddress, to.Address);
+                    }
+                }
                 else
                 {
-                    _log.Debug("Cluster Node [{0}] - First Heartbeat to [{1}]", _cluster.SelfAddress, to.Address);
+                    if (_cluster.Settings.VerboseHeartbeatLogging)
+                    {
+                        _log.Debug("Cluster Node [{0}] - First Heartbeat to [{1}]", _cluster.SelfAddress, to.Address);
+                    }
+
                     // schedule the expected first heartbeat for later, which will give the
                     // other side a chance to reply, and also trigger some resends if needed
-                    Context.System.Scheduler.ScheduleTellOnce(_cluster.Settings.HeartbeatExpectedResponseAfter, Self, 
+                    Context.System.Scheduler.ScheduleTellOnce(_cluster.Settings.HeartbeatExpectedResponseAfter, Self,
                         new ExpectedFirstHeartbeat(to), Self);
                 }
                 HeartbeatReceiver(to.Address).Tell(_selfHeartbeat);
@@ -160,7 +168,10 @@ namespace Akka.Cluster
 
         private void DoHeartbeatRsp(UniqueAddress from)
         {
-            _log.Debug("Cluster Node [{0}] - Heartbeat response from [{1}]", _cluster.SelfAddress, from.Address);
+            if (_cluster.Settings.VerboseHeartbeatLogging)
+            {
+                _log.Debug("Cluster Node [{0}] - Heartbeat response from [{1}]", _cluster.SelfAddress, from.Address);
+            }
             _state = _state.HeartbeatRsp(from);
         }
 
@@ -168,7 +179,10 @@ namespace Akka.Cluster
         {
             if (_state.ActiveReceivers.Contains(from) && !FailureDetector.IsMonitoring(from.Address))
             {
-                _log.Debug("Cluster Node [{0}] - Trigger extra expected heartbeat from [{1}]", _cluster.SelfAddress, from.Address);
+                if (_cluster.Settings.VerboseHeartbeatLogging)
+                {
+                    _log.Debug("Cluster Node [{0}] - Trigger extra expected heartbeat from [{1}]", _cluster.SelfAddress, from.Address);
+                }
                 FailureDetector.Heartbeat(from.Address);
             }
         }
@@ -282,6 +296,11 @@ namespace Akka.Cluster
         public ClusterHeartbeatSenderState Init(ImmutableHashSet<UniqueAddress> nodes)
         {
             return Copy(ring: Ring.Copy(nodes: nodes.Add(SelfAddress)));
+        }
+
+        public bool Contains(UniqueAddress node)
+        {
+            return Ring.NodeRing.Contains(node);
         }
 
         public ClusterHeartbeatSenderState AddMember(UniqueAddress node)

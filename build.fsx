@@ -215,10 +215,14 @@ Target "CopyOutput" <| fun _ ->
       "core/Akka.Remote"
       "core/Akka.Remote.TestKit"
       "core/Akka.Cluster"
+      "core/Akka.Cluster.TestKit"
       "core/Akka.MultiNodeTestRunner"
       "core/Akka.Persistence"
       "core/Akka.Persistence.FSharp"
       "core/Akka.Persistence.TestKit"
+      "core/Akka.Persistence.Query"
+      "core/Akka.Streams"
+      "core/Akka.Streams.TestKit"
       "contrib/dependencyinjection/Akka.DI.Core"
       "contrib/dependencyinjection/Akka.DI.TestKit"
       "contrib/testkits/Akka.TestKit.Xunit" 
@@ -247,7 +251,11 @@ Target "CleanTests" <| fun _ ->
 
 open Fake.Testing
 Target "RunTests" <| fun _ ->  
-    let xunitTestAssemblies = !! "src/**/bin/Release/*.Tests.dll"
+    let xunitTestAssemblies = !! "src/**/bin/Release/*.Tests.dll" -- 
+                                 // Akka.Streams.Tests is referencing Akka.Streams.TestKit.Tests
+                                 "src/**/Akka.Streams.Tests/bin/Release/Akka.Streams.TestKit.Tests.dll" --
+                                 // Akka.Streams.Tests.Performance is referencing Akka.Streams.Tests and Akka.Streams.TestKit.Tests
+                                 "src/**/Akka.Streams.Tests.Performance/bin/Release/*.Tests.dll"
 
     mkdir testOutput
    
@@ -333,6 +341,8 @@ Target "NBench" <| fun _ ->
         let args = new StringBuilder()
                 |> append assembly
                 |> append (sprintf "output-directory=\"%s\"" perfOutput)
+                |> append (sprintf "concurrent=\"%b\"" true)
+                |> append (sprintf "trace=\"%b\"" true)
                 |> toText
 
         let result = ExecProcess(fun info -> 
@@ -359,22 +369,28 @@ module Nuget =
         match project with
         | "Akka" -> []
         | "Akka.Cluster" -> ["Akka.Remote", release.NugetVersion]
+        | "Akka.Cluster.TestKit" -> ["Akka.Remote.TestKit", release.NugetVersion; "Akka.Cluster", release.NugetVersion]
         | "Akka.Cluster.Sharding" -> ["Akka.Cluster.Tools", preReleaseVersion; "Akka.Persistence", preReleaseVersion]
-        | "Akka.Cluster.Tools" -> ["Akka.Cluster", preReleaseVersion]
+        | "Akka.Cluster.Tools" -> ["Akka.Cluster", release.NugetVersion]
+        | "Akka.MultiNodeTestRunner" -> [] // all binaries for the multinodetest runner have to be included locally
         | "Akka.Persistence.TestKit" -> ["Akka.Persistence", preReleaseVersion; "Akka.TestKit.Xunit2", release.NugetVersion]
+        | "Akka.Persistence.Query" -> ["Akka.Persistence", preReleaseVersion; "Akka.Streams", preReleaseVersion]
         | persistence when (persistence.Contains("Sql") && not (persistence.Equals("Akka.Persistence.Sql.Common"))) -> ["Akka.Persistence.Sql.Common", preReleaseVersion]
         | persistence when (persistence.StartsWith("Akka.Persistence.")) -> ["Akka.Persistence", preReleaseVersion]
         | "Akka.DI.TestKit" -> ["Akka.DI.Core", release.NugetVersion; "Akka.TestKit.Xunit2", release.NugetVersion]
         | testkit when testkit.StartsWith("Akka.TestKit.") -> ["Akka.TestKit", release.NugetVersion]
+        | "Akka.Remote.TestKit" -> ["Akka.Remote", release.NugetVersion; "Akka.TestKit.Xunit2", release.NugetVersion;]
+        | "Akka.Streams" -> ["Akka", release.NugetVersion]
+        | "Akka.Streams.TestKit" -> ["Akka.Streams", preReleaseVersion; "Akka.TestKit", release.NugetVersion]
         | _ -> ["Akka", release.NugetVersion]
 
     // used to add -pre suffix to pre-release packages
     let getProjectVersion project =
       match project with
-      | "Akka.Cluster" -> preReleaseVersion
-      | cluster when cluster.StartsWith("Akka.Cluster.") -> preReleaseVersion
-      | persistence when persistence.StartsWith("Akka.Persistence") -> preReleaseVersion
       | "Akka.Serialization.Wire" -> preReleaseVersion
+      | cluster when (cluster.StartsWith("Akka.Cluster.") && not (cluster.EndsWith("TestKit"))) -> preReleaseVersion
+      | persistence when persistence.StartsWith("Akka.Persistence") -> preReleaseVersion
+      | streams when streams.StartsWith("Akka.Streams") -> preReleaseVersion
       | _ -> release.NugetVersion
 
 open Nuget
@@ -396,6 +412,24 @@ let createNugetPackages _ =
             not (directoryExists dir)
         runWithRetries del 3 |> ignore
 
+    let getReleaseFiles project releaseDir =
+        match project with
+        | "Akka.MultiNodeTestRunner" -> // because the MNTR is an exe, all of its dlls have to be available in the same working directory when it executes
+            !! (releaseDir @@ "*.dll")
+            ++ (releaseDir @@ "*.exe")
+            ++ (releaseDir @@ "*.pdb")
+            ++ (releaseDir @@ "*.xml")
+        | _ ->
+            !! (releaseDir @@ project + ".dll")
+            ++ (releaseDir @@ project + ".exe")
+            ++ (releaseDir @@ project + ".pdb")
+            ++ (releaseDir @@ project + ".xml")
+
+    let getExternalPackages project packagesFile =
+        match project with
+        | "Akka.MultiNodeTestRunner" -> [] // because the MNTR is an exe, all of its dlls have to be available in the same working directory when it executes
+        | _ -> if (fileExists packagesFile) then (getDependencies packagesFile) else []
+
     ensureDirectory nugetDir
     for nuspec in !! "src/**/*.nuspec" do
         printfn "Creating nuget packages for %s" nuspec
@@ -407,7 +441,7 @@ let createNugetPackages _ =
         let projectFile = (!! (projectDir @@ project + ".*sproj")) |> Seq.head
         let releaseDir = projectDir @@ @"bin\Release"
         let packages = projectDir @@ "packages.config"
-        let packageDependencies = if (fileExists packages) then (getDependencies packages) else []
+        let packageDependencies = getExternalPackages project packages
         let dependencies = packageDependencies @ getAkkaDependency project
         let releaseVersion = getProjectVersion project
 
@@ -431,10 +465,7 @@ let createNugetPackages _ =
 
         // Copy dll, pdb and xml to libdir = workingDir/lib/net45/
         ensureDirectory libDir
-        !! (releaseDir @@ project + ".dll")
-        ++ (releaseDir @@ project + ".pdb")
-        ++ (releaseDir @@ project + ".xml")
-        ++ (releaseDir @@ project + ".ExternalAnnotations.xml")
+        getReleaseFiles project releaseDir
         |> CopyFiles libDir
 
         // Copy all src-files (.cs and .fs files) to workingDir/src

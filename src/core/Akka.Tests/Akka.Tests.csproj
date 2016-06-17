@@ -153,10 +153,12 @@
     <Compile Include="Dispatch\AsyncAwaitSpec.cs" />
     <Compile Include="Dispatch\DispatchersSpec.cs" />
     <Compile Include="Dispatch\MailboxesSpec.cs" />
+    <Compile Include="Dispatch\SysMsg\SystemMessageListSpec.cs" />
     <Compile Include="Dispatch\XUnitAsyncTestsSanityCheck.cs" />
     <Compile Include="Event\EventBusSpec.cs" />
     <Compile Include="Event\EventStreamSpec.cs" />
     <Compile Include="Event\LoggerMailboxSpec.cs" />
+    <Compile Include="Event\LoggerSpec.cs" />
     <Compile Include="IO\SimpleDnsCacheSpec.cs" />
     <Compile Include="IO\TcpConnectionSpec.cs" />
     <Compile Include="IO\TcpIntegrationSpec.cs" />
@@ -189,7 +191,9 @@
     <Compile Include="Util\ByteStringSpec.cs" />
     <Compile Include="Util\CollectionExtensionsSpec.cs" />
     <Compile Include="Util\ContinuousEnumeratorSpec.cs" />
+    <Compile Include="Util\IndexSpec.cs" />
     <Compile Include="Util\Internal\Collections\IteratorTests.cs" />
+    <Compile Include="Util\Internal\ExtensionsTests.cs" />
     <Compile Include="Util\Internal\InterlockedSpinTests.cs" />
     <Compile Include="Util\PatternSpec.cs" />
     <Compile Include="Util\SwitchTests.cs" />
@@ -215,7 +219,7 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include="App.config">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
   <ItemGroup>

@@ -1,6 +1,6 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="SerializationSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2016 Typesafe Inc. <http://www.typesafe.com>
+//     Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
 //     Copyright (C) 2013-2016 Akka.NET project <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
@@ -453,11 +453,11 @@ namespace Akka.Tests.Serialization
         [Fact]
         public void Can_serialize_singleton_messages()
         {
-            var message = Terminate.Instance;
+            var message = PoisonPill.Instance;
 
             var serializer = Sys.Serialization.FindSerializerFor(message);
             var serialized = serializer.ToBinary(message);
-            var deserialized = (Terminate)serializer.FromBinary(serialized, typeof(Terminate));
+            var deserialized = (PoisonPill)serializer.FromBinary(serialized, typeof(PoisonPill));
 
             Assert.NotNull(deserialized);
         }

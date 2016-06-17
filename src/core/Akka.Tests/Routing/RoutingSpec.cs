@@ -1,6 +1,6 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="RoutingSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2016 Typesafe Inc. <http://www.typesafe.com>
+//     Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
 //     Copyright (C) 2013-2016 Akka.NET project <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
@@ -247,7 +247,7 @@ namespace Akka.Tests.Routing
                 Sys.ActorOf(
                     Props.Create<BlackHoleActor>()
                         .WithRouter(new RoundRobinPool(0, resizer, SupervisorStrategy.DefaultStrategy, null)));
-            latch.Open();
+
             router.Tell(new GetRoutees(),TestActor);
             ExpectMsg<Routees>().Members.Count().ShouldBe(2);
             Sys.Stop(router);

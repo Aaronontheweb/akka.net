@@ -1,13 +1,15 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ClusterSpec.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2016 Typesafe Inc. <http://www.typesafe.com>
+//     Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
 //     Copyright (C) 2013-2016 Akka.NET project <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
+using System;
 using System.Collections.Immutable;
 using System.Linq;
 using Akka.Actor;
+using Akka.Configuration;
 using Akka.TestKit;
 using Akka.Util.Internal;
 using Xunit;
@@ -29,7 +31,7 @@ namespace Akka.Cluster.Tests
 
         readonly Address _selfAddress;
         readonly Cluster _cluster;
-        
+
         public ClusterReadView ClusterView { get { return _cluster.ReadView; } }
 
         public ClusterSpec()
@@ -67,7 +69,7 @@ namespace Akka.Cluster.Tests
         {
             try
             {
-                _cluster.Subscribe(TestActor, ClusterEvent.InitialStateAsSnapshot, new []{typeof(ClusterEvent.IMemberEvent)});
+                _cluster.Subscribe(TestActor, ClusterEvent.InitialStateAsSnapshot, new[] { typeof(ClusterEvent.IMemberEvent) });
                 ExpectMsg<ClusterEvent.CurrentClusterState>();
             }
             finally
@@ -105,13 +107,69 @@ namespace Akka.Cluster.Tests
         {
             _cluster.Join(_selfAddress);
             LeaderActions(); // Joining -> Up
-            _cluster.Subscribe(TestActor, new []{typeof(ClusterEvent.MemberRemoved)});
+
+            var callbackProbe = CreateTestProbe();
+            _cluster.RegisterOnMemberRemoved(() =>
+            {
+                callbackProbe.Tell("OnMemberRemoved");
+            });
+
+            _cluster.Subscribe(TestActor, new[] { typeof(ClusterEvent.MemberRemoved) });
             // first, is in response to the subscription
             ExpectMsg<ClusterEvent.CurrentClusterState>();
 
             _cluster.Shutdown();
             var memberRemoved = ExpectMsg<ClusterEvent.MemberRemoved>();
             Assert.Equal(_selfAddress, memberRemoved.Member.Address);
+
+            callbackProbe.ExpectMsg("OnMemberRemoved");
+        }
+
+        [Fact]
+        public void A_ActorSystem_with_Cluster_must_be_able_to_terminate()
+        {
+            _cluster.Join(_selfAddress);
+            LeaderActions(); // Joining -> Up
+            AwaitCondition(() => ClusterView.IsSingletonCluster);
+
+            var remainingTime = RemainingOrDefault;
+            Assert.True(Sys.Terminate().Wait(RemainingOrDefault), $"Expected actor system to terminate in {RemainingOrDefault}, but did not");
+        }
+
+        // TODO: https://github.com/akkadotnet/akka.net/issues/1983
+        [Fact(Skip = "fails for now - will need to implement https://github.com/akkadotnet/akka.net/issues/1983")]
+        public void A_cluster_must_be_allowed_to_join_and_leave_with_local_address()
+        {
+            var sys2 = ActorSystem.Create("ClusterSpec2", ConfigurationFactory.ParseString(@"akka.actor.provider = ""Akka.Cluster.ClusterActorRefProvider, Akka.Cluster""
+        akka.remote.helios.tcp.port = 0"));
+
+            try
+            {
+                var ref2 = sys2.ActorOf(Props.Empty);
+                Cluster.Get(sys2).Join(ref2.Path.Address); // address doesn't contain full address information
+                Within(TimeSpan.FromSeconds(5), () =>
+                {
+                    AwaitAssert(() =>
+                    {
+                        Cluster.Get(sys2).State.Members.Count.ShouldBe(1);
+                        Cluster.Get(sys2).State.Members.First().Status.ShouldBe(MemberStatus.Up);
+                    });
+                });
+
+                Cluster.Get(sys2).Leave(ref2.Path.Address);
+
+                Within(TimeSpan.FromSeconds(5), () =>
+                {
+                    AwaitAssert(() =>
+                    {
+                        Cluster.Get(sys2).IsTerminated.ShouldBe(true);
+                    });
+                });
+            }
+            finally
+            {
+                Shutdown(sys2);
+            }
         }
     }
 }

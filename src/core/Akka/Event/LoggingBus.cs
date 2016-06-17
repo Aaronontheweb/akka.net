@@ -1,6 +1,6 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="LoggingBus.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2016 Typesafe Inc. <http://www.typesafe.com>
+//     Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
 //     Copyright (C) 2013-2016 Akka.NET project <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
@@ -130,13 +130,33 @@ namespace Akka.Event
 
         internal void StopDefaultLoggers(ActorSystem system)
         {
-            //TODO: Implement stopping loggers
+            var level = LogLevel; // volatile access before reading loggers
+            if (!_loggers.Any(c => c is StandardOutLogger))
+            {
+                SetUpStdoutLogger(system.Settings);
+                Publish(new Debug(SimpleName(this), GetType(), "Shutting down: StandardOutLogger started"));
+            }
+
+            foreach (var logger in _loggers)
+            {
+                if (!(logger is StandardOutLogger))
+                {
+                    Unsubscribe(logger);
+                    var internalActorRef = logger as IInternalActorRef;
+                    if (internalActorRef != null)
+                    {
+                        internalActorRef.Stop();
+                    }
+                }
+            }
+
+            Publish(new Debug(SimpleName(this), GetType(), "All default loggers stopped"));
         }
 
         private void AddLogger(ActorSystemImpl system, Type loggerType, LogLevel logLevel, string loggingBusName, TimeSpan timeout)
         {
             var loggerName = CreateLoggerName(loggerType);
-            var logger = system.SystemActorOf(Props.Create(loggerType), loggerName);
+            var logger = system.SystemActorOf(Props.Create(loggerType).WithDispatcher(system.Settings.LoggersDispatcher), loggerName);
             var askTask = logger.Ask(new InitializeLogger(this));
 
             if (!askTask.Wait(timeout))

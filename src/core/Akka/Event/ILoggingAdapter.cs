@@ -1,6 +1,6 @@
 ﻿//-----------------------------------------------------------------------
 // <copyright file="ILoggingAdapter.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2016 Typesafe Inc. <http://www.typesafe.com>
+//     Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
 //     Copyright (C) 2013-2016 Akka.NET project <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
@@ -66,6 +66,29 @@ namespace Akka.Event
         /// <param name="format">The format.</param>
         /// <param name="args">The arguments.</param>
         void Log(LogLevel logLevel, string format, params object[] args);
+    }
+
+    public sealed class NoLogger : ILoggingAdapter
+    {
+        public static readonly ILoggingAdapter Instance = new NoLogger();
+        private NoLogger() { }
+
+        public bool IsDebugEnabled { get { return false; } }
+        public bool IsInfoEnabled { get { return false; } }
+        public bool IsWarningEnabled { get { return false; } }
+        public bool IsErrorEnabled { get { return false; } }
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return false;
+        }
+
+        public void Debug(string format, params object[] args) { }
+        public void Info(string format, params object[] args) { }
+        public void Warn(string format, params object[] args) { }
+        public void Warning(string format, params object[] args) { }
+        public void Error(string format, params object[] args) { }
+        public void Error(Exception cause, string format, params object[] args) { }
+        public void Log(LogLevel logLevel, string format, params object[] args) { }
     }
 }
 
