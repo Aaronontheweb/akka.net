@@ -11,8 +11,10 @@ using Akka.Actor;
 using Akka.Configuration;
 using Akka.Remote.Transport.Helios;
 using Akka.TestKit;
+using Akka.Util.Internal;
 using FsCheck;
 using FsCheck.Xunit;
+using Microsoft.FSharp.Core;
 using Config = Akka.Configuration.Config;
 // ReSharper disable EmptyGeneralCatchClause
 
@@ -26,9 +28,14 @@ namespace Akka.Remote.Tests.Transport
     {
         public static Arbitrary<EndPoint> Endpoints()
         {
-            return Arb.From(Gen.Elements<EndPoint>(new IPEndPoint(IPAddress.Loopback, 0),
+            return Arb.From(Underlying());
+        }
+
+        private static Gen<EndPoint> Underlying()
+        {
+            return Gen.Elements<EndPoint>(new IPEndPoint(IPAddress.Loopback, 0),
                 new IPEndPoint(IPAddress.IPv6Loopback, 0),
-                new DnsEndPoint("localhost", 0)));
+                new DnsEndPoint("localhost", 0), new IPEndPoint(IPAddress.Any.MapToIPv6(), 1337));
         }
 
         public static Arbitrary<IPEndPoint> IpEndPoints()
@@ -37,7 +44,7 @@ namespace Akka.Remote.Tests.Transport
                new IPEndPoint(IPAddress.IPv6Loopback, 1337),
                new IPEndPoint(IPAddress.Any, 1337), new IPEndPoint(IPAddress.IPv6Any, 1337),
                new IPEndPoint(IPAddress.Any.MapToIPv6(), 1337)));
-        } 
+        }
 
         /// <summary>
         /// Includes IPV4 / IPV6 "any" addresses
@@ -96,8 +103,8 @@ namespace Akka.Remote.Tests.Transport
             _inbound.ActorOf(Props.Create(() => new AssociationAcker()), "ack");
             _outbound.ActorOf(Props.Create(() => new AssociationAcker()), "ack");
 
-            var addrInbound = RARP.For(_inbound).Provider.DefaultAddress; 
-            var addrOutbound = RARP.For(_outbound).Provider.DefaultAddress; 
+            var addrInbound = RARP.For(_inbound).Provider.DefaultAddress;
+            var addrOutbound = RARP.For(_outbound).Provider.DefaultAddress;
 
             _inboundAck = new RootActorPath(addrInbound) / "user" / "ack";
             _outboundAck = new RootActorPath(addrOutbound) / "user" / "ack";
@@ -137,7 +144,7 @@ namespace Akka.Remote.Tests.Transport
                 {
                     outboundReceivedAck = false;
                 }
-                
+
                 _inbound.ActorSelection(_outboundAck).Tell("ping", _inboundProbe.Ref);
                 try
                 {
@@ -147,7 +154,7 @@ namespace Akka.Remote.Tests.Transport
                 {
                     inboundReceivedAck = false;
                 }
-                
+
 
                 return outboundReceivedAck.Label($"Expected (outbound: {RARP.For(_outbound).Provider.DefaultAddress}) to be able to successfully message and receive reply from (inbound: {RARP.For(_inbound).Provider.DefaultAddress})")
                     .And(inboundReceivedAck.Label($"Expected (inbound: {RARP.For(_inbound).Provider.DefaultAddress}) to be able to successfully message and receive reply from (outbound: {RARP.For(_outbound).Provider.DefaultAddress})"));
@@ -156,6 +163,64 @@ namespace Akka.Remote.Tests.Transport
             {
                 Cleanup();
             }
+        }
+
+        [Property(MaxTest = 100)]
+        public Property HeliosTransport_Should_Resolve_DNS_with_PublicHostname(EndPoint inbound, EndPoint publicInbound,
+            EndPoint outbound, EndPoint publicOutbound)
+        {
+            if (IsAnyIp(publicInbound) || IsAnyIp(publicOutbound)) return true.When(false);
+           
+            try
+            {
+                Setup(EndpointGenerators.ParseAddress(inbound),
+                    EndpointGenerators.ParseAddress(outbound), 
+                    EndpointGenerators.ParseAddress(publicInbound), 
+                    EndpointGenerators.ParseAddress(publicOutbound));
+                var outboundReceivedAck = true;
+                var inboundReceivedAck = true;
+                _outbound.ActorSelection(_inboundAck).Tell("ping", _outboundProbe.Ref);
+                try
+                {
+                    _outboundProbe.ExpectMsg("ack");
+
+                }
+                catch
+                {
+                    outboundReceivedAck = false;
+                }
+
+                _inbound.ActorSelection(_outboundAck).Tell("ping", _inboundProbe.Ref);
+                try
+                {
+                    _inboundProbe.ExpectMsg("ack");
+                }
+                catch
+                {
+                    inboundReceivedAck = false;
+                }
+
+
+                return outboundReceivedAck.Label($"Expected (outbound: {RARP.For(_outbound).Provider.DefaultAddress}) to be able to successfully message and receive reply from (inbound: {RARP.For(_inbound).Provider.DefaultAddress})")
+                    .And(inboundReceivedAck.Label($"Expected (inbound: {RARP.For(_inbound).Provider.DefaultAddress}) to be able to successfully message and receive reply from (outbound: {RARP.For(_outbound).Provider.DefaultAddress})"));
+            }
+            finally
+            {
+                Cleanup();
+            }
+        }
+
+        private static bool IsAnyIp(EndPoint publicInbound)
+        {
+            if (publicInbound is IPEndPoint
+                && (publicInbound.AsInstanceOf<IPEndPoint>().Address.Equals(IPAddress.Any)
+                || publicInbound.AsInstanceOf<IPEndPoint>().Address.Equals(IPAddress.IPv6Any)))
+            {
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /// <summary>
