@@ -823,6 +823,10 @@ namespace Akka.IO
         {
             return Iterator().CopyToBuffer(buffer);
         }
+        public int CopyTo(byte[] buffer, int offset, int count)
+        {
+            return Iterator().CopyTo(buffer, offset, count);
+        }
 
         /// <summary>
         /// TBD

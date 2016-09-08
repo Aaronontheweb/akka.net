@@ -58,7 +58,7 @@ namespace Akka.IO
         /// <summary>
         /// TBD
         /// </summary>
-        public class Command : Message, SelectionHandler.IHasFailureMessage
+        public class Command : Message
         {
             private readonly CommandFailed _failureMessage;
 
@@ -74,11 +74,6 @@ namespace Akka.IO
             /// TBD
             /// </summary>
             public CommandFailed FailureMessage
-            {
-                get { return _failureMessage; }
-            }
-
-            object SelectionHandler.IHasFailureMessage.FailureMessage
             {
                 get { return _failureMessage; }
             }
@@ -997,6 +992,28 @@ namespace Akka.IO
                 return _cause;
             }
         }
+
+        private class ConnectionSupervisorStrategyImp : OneForOneStrategy
+        {
+            public ConnectionSupervisorStrategyImp()
+                : base(StoppingStrategy.Decider)
+            { }
+
+            protected override void LogFailure(IActorContext context, IActorRef child, Exception cause, Directive directive)
+            {
+                if (cause is DeathPactException)
+                {
+                    try
+                    {
+                        context.System.EventStream.Publish(new Debug(child.Path.ToString(), GetType(), "Closed after handler termination"));
+                    }
+                    catch (Exception _) { }
+                }
+                else base.LogFailure(context, child, cause, directive);
+            }
+        }
+        public static readonly SupervisorStrategy ConnectionSupervisorStrategy = new ConnectionSupervisorStrategyImp();
+
     }
 
     /// <summary>
@@ -1006,23 +1023,22 @@ namespace Akka.IO
     {
         private readonly TcpSettings _settings;
         private readonly IActorRef _manager;
-        private readonly IBufferPool _bufferPool;
+        private readonly ISocketEventArgsPool _socketEventArgsPool;
         private readonly MessageDispatcher _fileIoDispatcher;
-
+        
         /// <summary>
         /// TBD
         /// </summary>
-        public class TcpSettings : SelectionHandlerSettings
+        public class TcpSettings 
         {
             /// <summary>
             /// TBD
             /// </summary>
             /// <param name="config">TBD</param>
             public TcpSettings(Config config)
-                : base(config)
             {
                 //TODO: requiring, check defaults
-                NrOfSelectors = config.GetInt("nr-of-selectors", 1);
+                TraceLogging = config.GetBoolean("trace-logging");
                 BatchAcceptLimit = config.GetInt("batch-accept-limit");
                 DirectBufferSize = config.GetInt("direct-buffer-size");
                 MaxDirectBufferPoolSize = config.GetInt("direct-buffer-pool-limit");
@@ -1035,17 +1051,19 @@ namespace Akka.IO
                 TransferToLimit = config.GetString("file-io-transferTo-limit") == "unlimited"
                     ? int.MaxValue
                     : config.GetInt("file-io-transferTo-limit");
-                MaxChannelsPerSelector = MaxChannels == -1 ? -1 : Math.Max(MaxChannels/NrOfSelectors, 1);
                 FinishConnectRetries = config.GetInt("finish-connect-retries", 3);
             }
-
+            
             /// <summary>
             /// TBD
             /// </summary>
             public int NrOfSelectors { get; private set; }
+
             /// <summary>
             /// TBD
             /// </summary>
+            public bool TraceLogging { get; private set; }
+
             public int BatchAcceptLimit { get; private set; }
             /// <summary>
             /// TBD
@@ -1088,7 +1106,7 @@ namespace Akka.IO
         public TcpExt(ExtendedActorSystem system)
         {
             _settings = new TcpSettings(system.Settings.Config.GetConfig("akka.io.tcp"));
-            _bufferPool = new DirectByteBufferPool(_settings.DirectBufferSize, _settings.MaxDirectBufferPoolSize);
+            _socketEventArgsPool = new PreallocatedSocketEventAgrsPool(_settings.DirectBufferSize, _settings.MaxDirectBufferPoolSize);
             //_fileIoDispatcher = system.Dispatchers.Lookup(_settings.FileIODispatcher);
             _manager = system.SystemActorOf(
                 props: Props.Create(() => new TcpManager(this))
@@ -1121,13 +1139,13 @@ namespace Akka.IO
         {
             get { return _settings; }
         }
-
+        
         /// <summary>
         /// TBD
         /// </summary>
-        internal IBufferPool BufferPool
+        internal ISocketEventArgsPool SocketEventArgsPool
         {
-            get { return _bufferPool; }
+            get { return _socketEventArgsPool; }
         }
 
         /// <summary>

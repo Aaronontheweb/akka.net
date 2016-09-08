@@ -228,6 +228,15 @@ namespace Akka.Util
                 }
                 return copyLength;
             }
+            public override int CopyTo(byte[] buffer, int offset, int count)
+            {
+                var copyLength = Math.Min(Len, count);
+                if(copyLength > 0)
+                {
+                    Array.Copy(_array, _from, buffer, offset, copyLength);
+                }
+                return copyLength;
+            }
         }
 
         /// <summary>
@@ -489,6 +498,12 @@ namespace Akka.Util
                 Normalize();
                 return n;
             }
+            public override int CopyTo(byte[] buffer, int offset, int count)
+            {
+                var n = _iterators.Aggregate(0, (a, x) => a + x.CopyTo(buffer, offset + a, count - a));
+                Normalize();
+                return n;
+            }
         }
 
         /// <summary>
@@ -738,13 +753,9 @@ namespace Akka.Util
             GetBytes(bytes, 0, n);
             return bytes;
         }
-
-        /// <summary>
-        /// TBD
-        /// </summary>
-        /// <param name="buffer">TBD</param>
-        /// <returns>TBD</returns>
-        public abstract int CopyToBuffer(ByteBuffer buffer);
+        
+      public abstract int CopyToBuffer(ByteBuffer buffer);
+      public abstract int CopyTo(byte[] buffer, int offset, int count);
     }
 
 

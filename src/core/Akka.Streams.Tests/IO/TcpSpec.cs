@@ -29,7 +29,7 @@ namespace Akka.Streams.Tests.IO
         {
         }
 
-        [Fact(Skip="Fix me")]
+        [Fact]
         public void Outgoing_TCP_stream_must_work_in_the_happy_case()
         {
             this.AssertAllStagesStopped(() =>
@@ -54,7 +54,7 @@ namespace Akka.Streams.Tests.IO
             }, Materializer);
         }
 
-        [Fact(Skip = "Fix me")]
+        [Fact]
         public void Outgoing_TCP_stream_must_be_able_to_write_a_sequence_of_ByteStrings()
         {
             var server = new Server(this);
@@ -71,7 +71,7 @@ namespace Akka.Streams.Tests.IO
             serverConnection.WaitRead().ShouldBeEquivalentTo(expectedOutput);
         }
         
-        [Fact(Skip = "Fix me")]
+        [Fact]
         public void Outgoing_TCP_stream_must_be_able_to_read_a_sequence_of_ByteStrings()
         {
             var server = new Server(this);
@@ -153,7 +153,7 @@ namespace Akka.Streams.Tests.IO
             }, Materializer);
         }
 
-        [Fact(Skip = "Fix me")]
+        [Fact]
         public void Outgoing_TCP_stream_must_work_when_remote_closes_write_then_client_closes_write()
         {
             this.AssertAllStagesStopped(() =>
@@ -189,7 +189,7 @@ namespace Akka.Streams.Tests.IO
             }, Materializer);
         }
 
-        [Fact(Skip = "Fix me")]
+        [Fact(Skip = "Not sure why this test expect an errorclosed and not a peerclose")]
         public void Outgoing_TCP_stream_must_work_when_client_closes_read_then_client_closes_write()
         {
             this.AssertAllStagesStopped(() =>
@@ -231,7 +231,7 @@ namespace Akka.Streams.Tests.IO
             }, Materializer);
         }
 
-        [Fact(Skip = "Fix me")]
+        [Fact]
         public void Outgoing_TCP_stream_must_work_when_client_closes_read_then_server_closes_write_then_client_closes_write()
         {
             this.AssertAllStagesStopped(() =>
@@ -268,7 +268,7 @@ namespace Akka.Streams.Tests.IO
             }, Materializer);
         }
 
-        [Fact(Skip = "Fix me")]
+        [Fact]
         public void Outgoing_TCP_stream_must_shut_everything_down_if_client_signals_error()
         {
             this.AssertAllStagesStopped(() =>
@@ -302,7 +302,7 @@ namespace Akka.Streams.Tests.IO
             }, Materializer);
         }
 
-        [Fact(Skip = "Fix me")]
+        [Fact]
         public void Outgoing_TCP_stream_must_shut_everything_down_if_client_signals_error_after_remote_has_closed_write()
         {
             this.AssertAllStagesStopped(() =>
@@ -337,7 +337,7 @@ namespace Akka.Streams.Tests.IO
             }, Materializer);
         }
 
-        [Fact(Skip = "Fix me")]
+        [Fact]
         public void Outgoing_TCP_stream_must_shut_down_both_streams_when_connection_is_aborted_remotely()
         {
             this.AssertAllStagesStopped(() =>
@@ -362,7 +362,7 @@ namespace Akka.Streams.Tests.IO
             }, Materializer);
         }
 
-        [Fact(Skip = "Fix me")]
+        [Fact]
         public void Outgoing_TCP_stream_must_materialize_correctly_when_used_in_multiple_flows()
         {
             var testData = ByteString.Create(new byte[] { 1, 2, 3, 4, 5 });
@@ -404,7 +404,7 @@ namespace Akka.Streams.Tests.IO
             server.Close();
         }
 
-        [Fact(Skip = "Fix me")]
+        [Fact]
         public void Outgoing_TCP_stream_must_properly_full_close_if_requested()
         {
             this.AssertAllStagesStopped(() =>
@@ -439,7 +439,7 @@ namespace Akka.Streams.Tests.IO
             }, Materializer);
         }
 
-        [Fact(Skip = "Fix me")]
+        [Fact]
         public void Outgoing_TCP_stream_must_Echo_should_work_even_if_server_is_in_full_close_mode()
         {
             var serverAddress = TestUtils.TemporaryServerAddress();
@@ -447,7 +447,7 @@ namespace Akka.Streams.Tests.IO
             var task = Sys.TcpStream()
                     .Bind(serverAddress.Address.ToString(), serverAddress.Port)
                     .ToMaterialized(
-                        Sink.ForEach<Tcp.IncomingConnection>(conn => conn.Flow.Join(Flow.Create<ByteString>())),
+                        Sink.ForEach<Tcp.IncomingConnection>(conn => conn.Flow.Join(Flow.Create<ByteString>()).Run(Materializer)),
                         Keep.Left)
                     .Run(Materializer);
             task.Wait(TimeSpan.FromSeconds(3)).Should().BeTrue();
@@ -464,7 +464,7 @@ namespace Akka.Streams.Tests.IO
             binding.Unbind();
         }
 
-        [Fact(Skip = "Fix me")]
+        [Fact]
         public void Outgoing_TCP_stream_must_handle_when_connection_actor_terminates_unexpectedly()
         {
             var system2 = ActorSystem.Create("system2");
@@ -479,7 +479,7 @@ namespace Akka.Streams.Tests.IO
                 .RunAggregate(0, (i, s) => i + s.Count, mat2);
 
             // Getting rid of existing connection actors by using a blunt instrument
-            system2.ActorSelection(system2.Tcp().Path/"selectors"/"$b"/"*").Tell(Kill.Instance);
+            system2.ActorSelection(system2.Tcp().Path/"$a"/"*").Tell(Kill.Instance);
             result.Invoking(r => r.Wait(TimeSpan.FromSeconds(3))).ShouldThrow<StreamTcpException>();
 
             binding.Result.Unbind().Wait();
@@ -529,7 +529,7 @@ namespace Akka.Streams.Tests.IO
         private Sink<Tcp.IncomingConnection, Task> EchoHandler() =>
             Sink.ForEach<Tcp.IncomingConnection>(c => c.Flow.Join(Flow.Create<ByteString>()).Run(Materializer));
 
-        [Fact(Skip = "Fix me")]
+        [Fact]
         public void Tcp_listen_stream_must_be_able_to_implement_echo()
         {
             var serverAddress = TestUtils.TemporaryServerAddress();
@@ -557,7 +557,7 @@ namespace Akka.Streams.Tests.IO
             echoServerFinish.Wait(TimeSpan.FromSeconds(1)).Should().BeTrue();
         }
 
-        [Fact(Skip = "Fix me")]
+        [Fact]
         public void Tcp_listen_stream_must_work_with_a_chain_of_echoes()
         {
             var serverAddress = TestUtils.TemporaryServerAddress();
@@ -590,7 +590,7 @@ namespace Akka.Streams.Tests.IO
             echoServerFinish.Wait(TimeSpan.FromSeconds(1)).Should().BeTrue();
         }
 
-        [Fact(Skip = "On Windows unbinding is not immediate")]
+        [Fact(Skip ="the test is commented out")]
         public void Tcp_listen_stream_must_bind_and_unbind_correctly()
         {
             EventFilter.Exception<BindFailedException>().Expect(2, () =>
@@ -632,7 +632,7 @@ namespace Akka.Streams.Tests.IO
             });
         }
 
-        [Fact(Skip = "Fix me")]
+        [Fact]
         public void Tcp_listen_stream_must_not_shut_down_connections_after_the_connection_stream_cacelled()
         {
             this.AssertAllStagesStopped(() =>
@@ -656,7 +656,7 @@ namespace Akka.Streams.Tests.IO
             }, Materializer);
         }
 
-        [Fact(Skip = "Fix me")]
+        [Fact]
         public void Tcp_listen_stream_must_shut_down_properly_even_if_some_accepted_connection_Flows_have_not_been_subscribed_to ()
         {
             this.AssertAllStagesStopped(() =>
@@ -687,8 +687,7 @@ namespace Akka.Streams.Tests.IO
                 total.Wait(TimeSpan.FromSeconds(10)).Should().BeTrue();
                 total.Result.Should().Be(100);
 
-                rejected.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
-                rejected.Exception.Flatten().InnerExceptions.Any(e => e is StreamTcpException).Should().BeTrue();
+                rejected.Invoking(x => x.Wait(5.Seconds())).ShouldThrow<StreamTcpException>();
             }, Materializer);
         }
     }

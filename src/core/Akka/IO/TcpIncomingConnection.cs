@@ -8,6 +8,7 @@
 using System.Collections.Generic;
 using System.Net.Sockets;
 using Akka.Actor;
+using System;
 
 namespace Akka.IO
 {
@@ -35,19 +36,21 @@ namespace Akka.IO
         /// <param name="options">TBD</param>
         /// <param name="readThrottling">TBD</param>
         public TcpIncomingConnection(TcpExt tcp, 
-                                     SocketChannel channel, 
-                                     IChannelRegistry registry, 
+                                     Socket socket, 
                                      IActorRef bindHandler,
                                      IEnumerable<Inet.SocketOption> options, 
                                      bool readThrottling)
-            : base(tcp, channel, readThrottling)
+            : base(tcp, socket, readThrottling)
         {
             _bindHandler = bindHandler;
             _options = options;
 
             Context.Watch(bindHandler); // sign death pact
+        }
 
-            registry.Register(channel, SocketAsyncOperation.None, Self);
+        protected override void PreStart()
+        {
+            CompleteConnect(_bindHandler, _options);
         }
 
         /// <summary>
@@ -57,13 +60,7 @@ namespace Akka.IO
         /// <returns>TBD</returns>
         protected override bool Receive(object message)
         {
-            var registration = message as ChannelRegistration;
-            if (registration != null)
-            {
-                CompleteConnect(registration, _bindHandler, _options);
-                return true;
-            }
-            return false;
+            throw new NotSupportedException();
         }
     }
 }
