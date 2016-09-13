@@ -261,7 +261,7 @@ Target "RunTests" <| fun _ ->
                                  // Akka.Streams.Tests is referencing Akka.Streams.TestKit.Tests
                                  "src/**/Akka.Streams.Tests/bin/Release/Akka.Streams.TestKit.Tests.dll" --
                                  // Akka.Streams.Tests.Performance is referencing Akka.Streams.Tests and Akka.Streams.TestKit.Tests
-                                 "src/**/Akka.Streams.Tests.Performance/bin/Release/*.Tests.dll"
+                                 "src/**/Akka.Streams.Tests.Performance/bin/Release/*.Tests.dll")
 
     let nunitTestAssemblies = Seq.filter filterPlatformSpecificAssemblies (!! "src/**/bin/Release/Akka.Streams.Tests.TCK.dll")
 
