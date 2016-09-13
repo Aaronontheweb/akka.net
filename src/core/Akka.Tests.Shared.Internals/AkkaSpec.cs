@@ -24,6 +24,11 @@ namespace Akka.TestKit
 {
     public abstract class AkkaSpec : Xunit2.TestKit    //AkkaSpec is not part of TestKit
     {
+        /// <summary>
+        /// Some tests need to be skipped if we're running on Mono due to Mono-specific bugs / incompatibility
+        /// </summary>
+        internal static bool IsMono = Type.GetType("Mono.Runtime") != null;
+
         private static Regex _nameReplaceRegex = new Regex("[^a-zA-Z0-9]", RegexOptions.Compiled);
         private static readonly Config _akkaSpecConfig = ConfigurationFactory.ParseString(@"
           akka {
