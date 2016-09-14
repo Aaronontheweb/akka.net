@@ -285,7 +285,7 @@ Target "RunTests" <| fun _ ->
     let runNunitSingleAssembly assembly = 
         let assemblyName = Path.GetFileNameWithoutExtension(assembly)
         NUnit3
-             (fun p -> { p with ToolPath = nunitToolPath; WorkingDir = testOutput})
+             (fun p -> { p with ToolPath = nunitToolPath; WorkingDir = testOutput; TeamCity = true;})
              (Seq.singleton assembly)
         
     printfn "Using NUnit runner: %s" nunitToolPath
