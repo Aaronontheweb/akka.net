@@ -9,6 +9,7 @@ using System;
 using System.Net;
 using System.Net.Sockets;
 using Akka.Actor;
+using Akka.Util;
 
 namespace Akka.IO
 {
@@ -25,8 +26,6 @@ namespace Akka.IO
         private bool _connected;
         private IAsyncResult _connectResult;
 
-        private static bool IsMono = Type.GetType("Mono.Runtime") != null;
-
         public SocketChannel(Socket socket) 
         {
             _socket = socket;
@@ -35,7 +34,7 @@ namespace Akka.IO
         public static SocketChannel Open()
         {
             // TODO: Mono does not support IPV6 Uris correctly https://bugzilla.xamarin.com/show_bug.cgi?id=43649 (Aaronontheweb 9/13/2016)
-            if (IsMono)
+            if (RuntimeDetector.IsMono)
                 return new SocketChannel(new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp));
             return new SocketChannel(new Socket(SocketType.Stream, ProtocolType.Tcp));
         }

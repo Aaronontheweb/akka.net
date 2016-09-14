@@ -13,6 +13,7 @@ using Akka.TestKit;
 using Akka.Util.Internal;
 using Xunit;
 using System.Net;
+using static Akka.Util.RuntimeDetector;
 
 namespace Akka.Remote.Tests
 {
@@ -103,7 +104,7 @@ namespace Akka.Remote.Tests
         [Fact]
         public void When_remoting_works_in_Mono_ip_enforcement_should_be_defaulted_to_true()
         {
-            HeliosTransportSettings.IsMono = true;
+            if (!IsMono) return; // skip if not using Mono
             var c = ((RemoteActorRefProvider)((ActorSystemImpl)Sys).Provider).RemoteSettings.Config.GetConfig("akka.remote.helios.tcp");
             var s = new HeliosTransportSettings(c);
             
@@ -113,7 +114,7 @@ namespace Akka.Remote.Tests
         [Fact]
         public void When_remoting_works_not_in_Mono_ip_enforcement_should_be_defaulted_to_false()
         {
-            HeliosTransportSettings.IsMono = false;
+            if (!IsMono) return; // skip if not using Mono
             var c = ((RemoteActorRefProvider)((ActorSystemImpl)Sys).Provider).RemoteSettings.Config.GetConfig("akka.remote.helios.tcp");
             var s = new HeliosTransportSettings(c);
 

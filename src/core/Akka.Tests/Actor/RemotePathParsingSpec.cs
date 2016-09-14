@@ -11,6 +11,7 @@ using Akka.Actor;
 using Akka.TestKit;
 using FsCheck;
 using FsCheck.Xunit;
+using static Akka.Util.RuntimeDetector;
 
 namespace Akka.Tests.Actor
 {
@@ -22,7 +23,7 @@ namespace Akka.Tests.Actor
         public static Arbitrary<IPEndPoint> IpEndPoints()
         {
             // TODO: Mono does not support IPV6 Uris correctly https://bugzilla.xamarin.com/show_bug.cgi?id=43649 (Aaronontheweb 9/13/2016)
-            if (AkkaSpec.IsMono)
+            if (IsMono)
                 return Arb.From(Gen.Elements<IPEndPoint>(new IPEndPoint(IPAddress.Loopback, 1337),
                new IPEndPoint(IPAddress.Any, 1337)));
             return Arb.From(Gen.Elements<IPEndPoint>(new IPEndPoint(IPAddress.Loopback, 1337),
@@ -37,7 +38,7 @@ namespace Akka.Tests.Actor
         public static Arbitrary<EndPoint> AllEndpoints()
         {
             // TODO: Mono does not support IPV6 Uris correctly https://bugzilla.xamarin.com/show_bug.cgi?id=43649 (Aaronontheweb 9/13/2016)
-            if (AkkaSpec.IsMono)
+            if (IsMono)
                 return Arb.From(Gen.Elements<EndPoint>(new IPEndPoint(IPAddress.Loopback, 1337),
                new DnsEndPoint("localhost", 1337), new IPEndPoint(IPAddress.Any, 1337)));
             return Arb.From(Gen.Elements<EndPoint>(new IPEndPoint(IPAddress.Loopback, 1337),

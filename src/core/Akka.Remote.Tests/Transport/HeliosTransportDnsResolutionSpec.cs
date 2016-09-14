@@ -16,6 +16,7 @@ using FsCheck;
 using FsCheck.Xunit;
 using Xunit;
 using Config = Akka.Configuration.Config;
+using static Akka.Util.RuntimeDetector;
 // ReSharper disable EmptyGeneralCatchClause
 
 namespace Akka.Remote.Tests.Transport
@@ -131,7 +132,7 @@ namespace Akka.Remote.Tests.Transport
         public Property HeliosTransport_Should_Resolve_DNS(EndPoint inbound, EndPoint outbound, bool dnsIpv6, bool enforceIpFamily)
         {
             // TODO: Mono does not support IPV6 Uris correctly https://bugzilla.xamarin.com/show_bug.cgi?id=43649 (Aaronontheweb 8/22/2016)
-            if (HeliosTransportSettings.IsMono)
+            if (IsMono)
             {
                 enforceIpFamily = true;
                 dnsIpv6 = false;
@@ -213,10 +214,10 @@ namespace Akka.Remote.Tests.Transport
             IPEndPoint outbound, DnsEndPoint publicOutbound, bool dnsUseIpv6, bool enforceIpFamily)
         {
             // TODO: Mono does not support IPV6 Uris correctly https://bugzilla.xamarin.com/show_bug.cgi?id=43649 (Aaronontheweb 8/22/2016)
-            if (HeliosTransportSettings.IsMono)
+            if (IsMono)
                 enforceIpFamily = true;
-            if(HeliosTransportSettings.IsMono && dnsUseIpv6) return true.Label("Mono DNS does not support IPV6 as of 4.4*");
-            if (HeliosTransportSettings.IsMono &&
+            if(IsMono && dnsUseIpv6) return true.Label("Mono DNS does not support IPV6 as of 4.4*");
+            if (IsMono &&
                 (inbound.AddressFamily == AddressFamily.InterNetworkV6 ||
                 (outbound.AddressFamily == AddressFamily.InterNetworkV6))) return true.Label("Mono DNS does not support IPV6 as of 4.4*");
 
@@ -302,7 +303,7 @@ namespace Akka.Remote.Tests.Transport
         public Property HeliosTransport_should_map_valid_IPEndpoints_to_ActorPath(IPEndPoint endpoint)
         {
             // TODO: remove this once Mono Uris support IPV6 https://bugzilla.xamarin.com/show_bug.cgi?id=43649 (8/22/2016 Aaronontheweb)
-            if (HeliosTransportSettings.IsMono && endpoint.AddressFamily == AddressFamily.InterNetworkV6)
+            if (IsMono && endpoint.AddressFamily == AddressFamily.InterNetworkV6)
                 return true.Label("Mono does not currently support Uri.TryParse for IPV6");
             var addr = HeliosTransport.MapSocketToAddress(endpoint, "akka.tcp", "foo");
             var actorPath = new RootActorPath(addr) / "user" / "foo";
