@@ -71,8 +71,7 @@ namespace Akka.Remote.Tests
         public void Remoting_should_be_able_to_parse_AkkaProtocol_related_config_elements()
         {
             var settings = new AkkaProtocolSettings(((RemoteActorRefProvider)((ExtendedActorSystem)Sys).Provider).RemoteSettings.Config);
-
-            //TODO fill this in when we add secure cookie support
+            
             Assert.Equal(typeof(DeadlineFailureDetector), Type.GetType(settings.TransportFailureDetectorImplementationClass));
             Assert.Equal(TimeSpan.FromSeconds(4), settings.TransportHeartBeatInterval);
             Assert.Equal(TimeSpan.FromSeconds(20), settings.TransportFailureDetectorConfig.GetTimeSpan("acceptable-heartbeat-pause"));
@@ -104,7 +103,7 @@ namespace Akka.Remote.Tests
         [Fact]
         public void When_remoting_works_in_Mono_ip_enforcement_should_be_defaulted_to_true()
         {
-            if (!IsMono) return; // skip if not using Mono
+            if (!IsMono) return; // skip IF NOT using Mono
             var c = ((RemoteActorRefProvider)((ActorSystemImpl)Sys).Provider).RemoteSettings.Config.GetConfig("akka.remote.helios.tcp");
             var s = new HeliosTransportSettings(c);
             
@@ -114,7 +113,7 @@ namespace Akka.Remote.Tests
         [Fact]
         public void When_remoting_works_not_in_Mono_ip_enforcement_should_be_defaulted_to_false()
         {
-            if (!IsMono) return; // skip if not using Mono
+            if (IsMono) return; // skip IF using Mono
             var c = ((RemoteActorRefProvider)((ActorSystemImpl)Sys).Provider).RemoteSettings.Config.GetConfig("akka.remote.helios.tcp");
             var s = new HeliosTransportSettings(c);
 
