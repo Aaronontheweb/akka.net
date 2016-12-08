@@ -118,7 +118,7 @@ namespace Akka.Streams.Tests.IO
             }, Materializer);
         }
 
-        [Fact(Skip = "Fix me")]
+        [Fact]
         public void Outgoing_TCP_stream_must_work_when_client_closes_write_then_remote_closes_write()
         {
             this.AssertAllStagesStopped(() =>
@@ -601,7 +601,7 @@ namespace Akka.Streams.Tests.IO
             EventFilter.Exception<SocketException>().Expect(2, () =>
             {
                 var address = TestUtils.TemporaryServerAddress();
-                var probe1 = this.CreateProbe<Tcp.IncomingConnection>();
+                var probe1 = this.CreateSubscriberProbe<Tcp.IncomingConnection>();
                 var bind = Sys.TcpStream().Bind(address.Address.ToString(), address.Port);
 
                 // bind suceed, we have local address
@@ -609,11 +609,11 @@ namespace Akka.Streams.Tests.IO
 
                 probe1.ExpectSubscription();
 
-                var probe2 = this.CreateManualProbe<Tcp.IncomingConnection>();
+                var probe2 = this.CreateManualSubscriberProbe<Tcp.IncomingConnection>();
                 var binding2F = bind.To(Sink.FromSubscriber(probe2)).Run(Materializer);
                 probe2.ExpectSubscriptionAndError().Should().BeOfType<BindFailedException>();
 
-                var probe3 = this.CreateManualProbe<Tcp.IncomingConnection>();
+                var probe3 = this.CreateManualSubscriberProbe<Tcp.IncomingConnection>();
                 var binding3F = bind.To(Sink.FromSubscriber(probe3)).Run(Materializer);
                 probe3.ExpectSubscriptionAndError().Should().BeOfType<BindFailedException>();
                 
@@ -624,7 +624,7 @@ namespace Akka.Streams.Tests.IO
                 binding1.Unbind().Wait(TimeSpan.FromSeconds(3)).Should().BeTrue();
                 probe1.ExpectComplete();
 
-                var probe4 = this.CreateManualProbe<Tcp.IncomingConnection>();
+                var probe4 = this.CreateManualSubscriberProbe<Tcp.IncomingConnection>();
                 // bind succeeded, we have local address
                 var binding4Task = bind.To(Sink.FromSubscriber(probe4)).Run(Materializer);
                 binding4Task.Wait(TimeSpan.FromSeconds(3));
