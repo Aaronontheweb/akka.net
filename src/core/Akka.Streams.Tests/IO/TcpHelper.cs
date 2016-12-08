@@ -274,7 +274,7 @@ namespace Akka.Streams.Tests.IO
                 max = max ?? TimeSpan.FromSeconds(3);
 
                 _connectionActor.Tell(new PingClose(_connectionProbe.Ref));
-                _connectionProbe.FishForMessage(isMessage, max);
+                _connectionProbe.FishForMessage((c) => c is Tcp.ConnectionClosed && isMessage((Tcp.ConnectionClosed)c), max);
             }
 
             public void ExpectTerminated()

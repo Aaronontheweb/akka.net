@@ -86,7 +86,7 @@ namespace Akka.IO
                 {
                     // up to this point we've been watching the commander,
                     // but since registration is now complete we only need to watch the handler from here on
-                    if (register.Handler != commander)
+                    if (!Equals(register.Handler, commander))
                     {
                         Context.Unwatch(commander);
                         Context.Watch(register.Handler);
@@ -692,8 +692,6 @@ namespace Akka.IO
                 {
                     if (!_connection.Socket.SendAsync(_saea))
                         _self.Tell(new SocketSent(_saea, _connection.Tcp.SocketEventArgsPool));
-
-
                     if (_connection._tcp.Settings.TraceLogging) _connection._log.Debug("Wrote [{0}] bytes to channel", _saea.Count);
 
                     if (_remainingData.NonEmpty)

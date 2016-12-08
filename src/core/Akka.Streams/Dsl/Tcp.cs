@@ -260,7 +260,15 @@ namespace Akka.Streams.Dsl
         /// <param name="port">TBD</param>
         /// <returns>TBD</returns>
         public Flow<ByteString, ByteString, Task<Tcp.OutgoingConnection>> OutgoingConnection(string host, int port)
-            => OutgoingConnection(new DnsEndPoint(host, port));
+            => OutgoingConnection(CreateEndpoint(host, port));
+
+        public static EndPoint CreateEndpoint(string host, int port)
+        {
+            IPAddress address;
+            return IPAddress.TryParse(host, out address)
+                ? (EndPoint) new IPEndPoint(address, port)
+                : new DnsEndPoint(host, port);
+        }
     }
 
     /// <summary>

@@ -107,11 +107,11 @@ namespace Akka.IO
                 saea.SetBuffer(saea.Offset, 0);
                 if (!Socket.ConnectAsync(saea))
                     Self.Tell(new SocketConnected(saea, Tcp.SocketEventArgsPool));
-                Become(Connecting(Tcp.Settings.FinishConnectRetries));
+                Become(Connecting(saea, Tcp.Settings.FinishConnectRetries));
             });
         }
 
-        private Receive Connecting(int remainingFinishConnectRetries)
+        private Receive Connecting(SocketAsyncEventArgs socketAsyncEventArgs, int remainingFinishConnectRetries)
         {
             return message =>
             {
@@ -123,6 +123,16 @@ namespace Akka.IO
                         if (_connect.Timeout.HasValue) Context.SetReceiveTimeout(null);
                         Log.Debug("Connection established to [{0}]", _connect.RemoteAddress);
                         CompleteConnect(_commander, _connect.Options);
+                    }
+                    else if (remainingFinishConnectRetries > 0)
+                    {
+                        var self = Self;
+                        Context.System.Scheduler.Advanced.ScheduleOnce(TimeSpan.FromMilliseconds(1), () =>
+                        {
+                            if (!Socket.ConnectAsync(socketAsyncEventArgs))
+                                self.Tell(new SocketConnected(socketAsyncEventArgs, Tcp.SocketEventArgsPool));
+                        });
+                        Context.Become(Connecting(socketAsyncEventArgs, remainingFinishConnectRetries - 1));
                     }
                     else
                     {

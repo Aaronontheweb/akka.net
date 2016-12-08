@@ -8,6 +8,7 @@
 using System;
 using System.Linq;
 using System.Net;
+using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using Akka.Actor;
@@ -25,7 +26,9 @@ namespace Akka.Streams.Tests.IO
 {
     public class TcpSpec : TcpHelper
     {
-        public TcpSpec(ITestOutputHelper helper) : base("akka.stream.materializer.subscription-timeout.timeout = 2s", helper)
+        public TcpSpec(ITestOutputHelper helper) : base(@"
+            akka.loglevel = DEBUG
+            akka.stream.materializer.subscription-timeout.timeout = 2s", helper)
         {
         }
 
@@ -189,7 +192,7 @@ namespace Akka.Streams.Tests.IO
             }, Materializer);
         }
 
-        [Fact(Skip = "Not sure why this test expect an errorclosed and not a peerclose")]
+        [Fact]
         public void Outgoing_TCP_stream_must_work_when_client_closes_read_then_client_closes_write()
         {
             this.AssertAllStagesStopped(() =>
@@ -224,7 +227,7 @@ namespace Akka.Streams.Tests.IO
                 AwaitAssert(() =>
                 {
                     serverConnection.Write(testData);
-                    serverConnection.ExpectClosed(c=>c.IsErrorClosed, TimeSpan.FromMilliseconds(500));
+                    serverConnection.ExpectClosed(c => c.IsErrorClosed, TimeSpan.FromMilliseconds(500));
                 }, TimeSpan.FromSeconds(5));
 
                 serverConnection.ExpectTerminated();
@@ -405,7 +408,7 @@ namespace Akka.Streams.Tests.IO
             server.Close();
         }
 
-        [Fact(Skip = "Fix me")]
+        [Fact]
         public void Outgoing_TCP_stream_must_properly_full_close_if_requested()
         {
             this.AssertAllStagesStopped(() =>
@@ -591,67 +594,80 @@ namespace Akka.Streams.Tests.IO
             echoServerFinish.Wait(TimeSpan.FromSeconds(1)).Should().BeTrue();
         }
 
-        [Fact(Skip = "On Windows unbinding is not immediate")]
+        [Fact]
         public void Tcp_listen_stream_must_bind_and_unbind_correctly()
         {
-            EventFilter.Exception<BindFailedException>().Expect(2, () =>
+            // in JVM we filter for BindException, on .NET it's SocketException
+            EventFilter.Exception<SocketException>().Expect(2, () =>
             {
-                  // if (Helpers.isWindows) {
-                  //  info("On Windows unbinding is not immediate")
-                  //  pending
-                  //}
-                  //val address = temporaryServerAddress()
-                  //val probe1 = TestSubscriber.manualProbe[Tcp.IncomingConnection]()
-                  //val bind = Tcp(system).bind(address.getHostName, address.getPort) // TODO getHostString in Java7
-                  //// Bind succeeded, we have a local address
-                  //val binding1 = Await.result(bind.to(Sink.fromSubscriber(probe1)).run(), 3.second)
+                var address = TestUtils.TemporaryServerAddress();
+                var probe1 = this.CreateProbe<Tcp.IncomingConnection>();
+                var bind = Sys.TcpStream().Bind(address.Address.ToString(), address.Port);
 
-                  //probe1.expectSubscription()
+                // bind suceed, we have local address
+                var binding1 = bind.To(Sink.FromSubscriber(probe1)).Run(Materializer).Result;
 
-                  //val probe2 = TestSubscriber.manualProbe[Tcp.IncomingConnection]()
-                  //val binding2F = bind.to(Sink.fromSubscriber(probe2)).run()
-                  //probe2.expectSubscriptionAndError(BindFailedException)
+                probe1.ExpectSubscription();
 
-                  //val probe3 = TestSubscriber.manualProbe[Tcp.IncomingConnection]()
-                  //val binding3F = bind.to(Sink.fromSubscriber(probe3)).run()
-                  //probe3.expectSubscriptionAndError()
+                var probe2 = this.CreateManualProbe<Tcp.IncomingConnection>();
+                var binding2F = bind.To(Sink.FromSubscriber(probe2)).Run(Materializer);
+                probe2.ExpectSubscriptionAndError().Should().BeOfType<BindFailedException>();
 
-                  //a[BindFailedException] shouldBe thrownBy { Await.result(binding2F, 1.second) }
-                  //a[BindFailedException] shouldBe thrownBy { Await.result(binding3F, 1.second) }
+                var probe3 = this.CreateManualProbe<Tcp.IncomingConnection>();
+                var binding3F = bind.To(Sink.FromSubscriber(probe3)).Run(Materializer);
+                probe3.ExpectSubscriptionAndError().Should().BeOfType<BindFailedException>();
+                
+                binding2F.Invoking(x => x.Wait(TimeSpan.FromSeconds(3))).ShouldThrow<BindFailedException>();
+                binding3F.Invoking(x => x.Wait(TimeSpan.FromSeconds(3))).ShouldThrow<BindFailedException>();
+                
+                // Now unbind first
+                binding1.Unbind().Wait(TimeSpan.FromSeconds(3)).Should().BeTrue();
+                probe1.ExpectComplete();
 
-                  //// Now unbind first
-                  //Await.result(binding1.unbind(), 1.second)
-                  //probe1.expectComplete()
+                var probe4 = this.CreateManualProbe<Tcp.IncomingConnection>();
+                // bind succeeded, we have local address
+                var binding4Task = bind.To(Sink.FromSubscriber(probe4)).Run(Materializer);
+                binding4Task.Wait(TimeSpan.FromSeconds(3));
+                var binding4 = binding4Task.Result;
+                probe4.ExpectSubscription();
 
-                  //val probe4 = TestSubscriber.manualProbe[Tcp.IncomingConnection]()
-                  //// Bind succeeded, we have a local address
-                  //val binding4 = Await.result(bind.to(Sink.fromSubscriber(probe4)).run(), 3.second)
-                  //probe4.expectSubscription()
-
-                  //// clean up
-                  //Await.result(binding4.unbind(), 1.second)
+                // clean up
+                binding4.Unbind().Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
             });
         }
 
-        [Fact(Skip = "Racy, only works in a single run")]
-        public void Tcp_listen_stream_must_not_shut_down_connections_after_the_connection_stream_cacelled()
+        [Fact]
+        public void Tcp_listen_stream_must_not_shut_down_connections_after_the_connection_stream_cancelled()
         {
             this.AssertAllStagesStopped(() =>
             {
-                var serverAddress = TestUtils.TemporaryServerAddress();
-                Sys.TcpStream()
-                    .Bind(serverAddress.Address.ToString(), serverAddress.Port)
-                    .Take(1).RunForeach(c =>
-                    {
-                        Thread.Sleep(1000);
-                        c.Flow.Join(Flow.Create<ByteString>()).Run(Materializer);
-                    }, Materializer);
+                var thousandByteStrings = Enumerable.Range(0, 1000)
+                    .Select(_ => ByteString.Create(new byte[] { 0 }))
+                    .ToArray();
 
-                var total = Source.From(Enumerable.Range(0, 1000).Select(_ => ByteString.Create(new byte[] {0})))
+                var serverAddress = TestUtils.TemporaryServerAddress();
+                var t = Sys.TcpStream()
+                    .Bind(serverAddress.Address.ToString(), serverAddress.Port)
+                    .Take(1)
+                    .ToMaterialized(Sink.ForEach<Tcp.IncomingConnection>(tcp =>
+                    {
+                        Thread.Sleep(1000); // we're testing here to see if it survives such race
+                        tcp.Flow.Join(Flow.Create<ByteString>()).Run(Materializer);
+                    }), Keep.Both)
+                    .Run(Materializer);
+
+                var bindingTask = t.Item1;
+
+                // make sure server is running first
+                bindingTask.Wait(TimeSpan.FromSeconds(3)).Should().BeTrue();
+                var result = bindingTask.Result;
+
+                // then connect, should trigger a block and then
+                var total = Source.From(thousandByteStrings)
                     .Via(Sys.TcpStream().OutgoingConnection(serverAddress))
                     .RunAggregate(0, (i, s) => i + s.Count, Materializer);
 
-                total.Wait(TimeSpan.FromSeconds(3)).Should().BeTrue();
+                total.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
                 total.Result.Should().Be(1000);
             }, Materializer);
         }
