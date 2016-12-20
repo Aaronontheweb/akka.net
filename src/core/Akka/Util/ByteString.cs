@@ -218,6 +218,16 @@ namespace Akka.IO
                 return IsEmpty ? string.Empty : charset.GetString(_bytes);
 
             }
+
+            public string ToString(Encoding encoding)
+            {
+                return encoding.GetString(ToArray());
+            }
+
+            public sealed override string ToString()
+            {
+                return ToString(Encoding.UTF8);
+            }
         }
 
         /// <summary>

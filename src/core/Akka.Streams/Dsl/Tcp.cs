@@ -262,7 +262,7 @@ namespace Akka.Streams.Dsl
         public Flow<ByteString, ByteString, Task<Tcp.OutgoingConnection>> OutgoingConnection(string host, int port)
             => OutgoingConnection(CreateEndpoint(host, port));
 
-        public static EndPoint CreateEndpoint(string host, int port)
+        internal static EndPoint CreateEndpoint(string host, int port)
         {
             IPAddress address;
             return IPAddress.TryParse(host, out address)
