@@ -1,10 +1,8 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
-using System.Threading.Tasks;
+using static Akka.IO.IpExtensions;
 
 namespace Akka.Tests.IO
 {
@@ -30,7 +28,7 @@ namespace Akka.Tests.IO
         {
             var ip1 = ep1 as IPEndPoint;
             var ip2 = ep2 as IPEndPoint;
-            return ip1 != null && ip2 != null && ip1.Port == ip2.Port && ip1.Address.MapToIPv4().Equals(ip2.Address.MapToIPv4());
+            return ip1 != null && ip2 != null && ip1.Port == ip2.Port && MapToIPv4(ip1.Address).Equals(MapToIPv4(ip2.Address));
         }
     }
 }

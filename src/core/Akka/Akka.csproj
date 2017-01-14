@@ -244,6 +244,7 @@
     <Compile Include="IO\InetAddressDnsResolver.cs" />
     <Compile Include="IO\SimpleDnsCache.cs" />
     <Compile Include="IO\SimpleDnsManager.cs" />
+    <Compile Include="IO\IPExtensions.cs" />
     <Compile Include="IO\Udp.cs" />
     <Compile Include="IO\UdpConnected.cs" />
     <Compile Include="IO\UdpConnectedManager.cs" />

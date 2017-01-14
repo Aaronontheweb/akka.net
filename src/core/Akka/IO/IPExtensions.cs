@@ -1,16 +1,19 @@
-﻿//-----------------------------------------------------------------------
-// <copyright file="IPExtensions.cs" company="Akka.NET Project">
-//     Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
-//     Copyright (C) 2013-2016 Akka.NET project <https://github.com/akkadotnet/akka.net>
-// </copyright>
-//-----------------------------------------------------------------------
+﻿#region copyright
+// -----------------------------------------------------------------------
+//  <copyright file="IPExtensions.cs" company="Akka.NET project">
+//      Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+//      Copyright (C) 2013-2017 Akka.NET project <https://github.com/akkadotnet>
+//  </copyright>
+// -----------------------------------------------------------------------
+#endregion
 
 using System;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 
-namespace Akka.Remote
+namespace Akka.IO
 {
     /// <summary>
     /// Used primarily for Mono support for IP type mapping
@@ -19,13 +22,21 @@ namespace Akka.Remote
     /// </summary>
     internal static class IpExtensions
     {
-        /// <summary>
-        /// TBD
-        /// </summary>
-        /// <param name="type">TBD</param>
-        /// <param name="instance">TBD</param>
-        /// <param name="fieldName">TBD</param>
-        /// <returns>TBD</returns>
+#if !MONO
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static IPAddress MapToIPv4(IPAddress ipa) => ipa.MapToIPv4();
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static IPAddress MapToIPv6(IPAddress ipa) => ipa.MapToIPv6();
+#else
+/// <summary>
+/// TBD
+/// </summary>
+/// <param name="type">TBD</param>
+/// <param name="instance">TBD</param>
+/// <param name="fieldName">TBD</param>
+/// <returns>TBD</returns>
         internal static object GetInstanceField(Type type, object instance, string fieldName)
         {
             BindingFlags bindFlags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
@@ -39,7 +50,7 @@ namespace Akka.Remote
         /// </summary>
         /// <param name="ipa">TBD</param>
         /// <returns>TBD</returns>
-        public static IPAddress MapToIPv4(this IPAddress ipa)
+        public static IPAddress MapToIPv4(IPAddress ipa)
         {
             ushort[] m_Numbers = GetInstanceField(typeof(IPAddress), ipa, "m_Numbers") as ushort[];
 
@@ -66,7 +77,7 @@ namespace Akka.Remote
         /// </summary>
         /// <param name="ipa">TBD</param>
         /// <returns>TBD</returns>
-        public static IPAddress MapToIPv6(this IPAddress ipa)
+        public static IPAddress MapToIPv6(IPAddress ipa)
         {
             if (ipa.AddressFamily == AddressFamily.InterNetworkV6)
                 return ipa;
@@ -80,6 +91,7 @@ namespace Akka.Remote
             };
             return new IPAddress(ipv6Bytes);
         }
+#endif
     }
 }
 
