@@ -1057,11 +1057,6 @@ namespace Akka.IO
             /// <summary>
             /// TBD
             /// </summary>
-            public int NrOfSelectors { get; private set; }
-
-            /// <summary>
-            /// TBD
-            /// </summary>
             public bool TraceLogging { get; private set; }
 
             public int BatchAcceptLimit { get; private set; }
