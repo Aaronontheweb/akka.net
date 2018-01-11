@@ -45,12 +45,14 @@ namespace Akka.Cluster
         }
 
         /// <summary>
-        /// TBD
+        /// The address of the member.
         /// </summary>
         public UniqueAddress UniqueAddress { get; }
 
         /// <summary>
-        /// TBD
+        /// The UpNumber of the current member. Used to determine the age of the member.
+        /// 
+        /// The lower the number, the older the node.
         /// </summary>
         internal int UpNumber { get; }
 

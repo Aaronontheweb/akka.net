@@ -94,35 +94,37 @@ namespace Akka.Cluster
         /// The current members of the cluster
         /// </summary>
         public ImmutableSortedSet<Member> Members { get { return _members; } }
+
         /// <summary>
-        /// TBD
+        /// The current gossip overview.
         /// </summary>
         public GossipOverview Overview { get { return _overview; } }
+
         /// <summary>
-        /// TBD
+        /// The current version for this gossip.
         /// </summary>
         public VectorClock Version { get { return _version; } }
 
         /// <summary>
-        /// TBD
+        /// Creates a new Gossip instance.
         /// </summary>
-        /// <param name="members">TBD</param>
+        /// <param name="members">The set of members available in this cluster.</param>
         public Gossip(ImmutableSortedSet<Member> members) : this(members, new GossipOverview(), VectorClock.Create()) { }
 
         /// <summary>
-        /// TBD
+        /// Creates a new Gossip instance.
         /// </summary>
-        /// <param name="members">TBD</param>
-        /// <param name="overview">TBD</param>
+        /// <param name="members">The set of members available in this cluster.</param>
+        /// <param name="overview">The current gossip overview.</param>
         public Gossip(ImmutableSortedSet<Member> members, GossipOverview overview) : this(members, overview, VectorClock.Create()) { }
 
         /// <summary>
-        /// TBD
+        /// Creates a new Gossip instance.
         /// </summary>
-        /// <param name="members">TBD</param>
-        /// <param name="overview">TBD</param>
-        /// <param name="version">TBD</param>
-        /// <exception cref="ArgumentException">TBD</exception>
+        /// <param name="members">The set of members available in this cluster.</param>
+        /// <param name="overview">The current gossip overview.</param>
+        /// <param name="version">The current gossip version.</param>
+        /// <exception cref="ArgumentException">Thrown if <see cref="AssertInvariants"/> fails.</exception>
         public Gossip(ImmutableSortedSet<Member> members, GossipOverview overview, VectorClock version)
         {
             _members = members;
@@ -142,12 +144,12 @@ namespace Akka.Cluster
         }
 
         /// <summary>
-        /// TBD
+        /// Copies the current gossip instance with the provided values.
         /// </summary>
-        /// <param name="members">TBD</param>
-        /// <param name="overview">TBD</param>
-        /// <param name="version">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="members">The set of members available in this cluster.</param>
+        /// <param name="overview">The current gossip overview.</param>
+        /// <param name="version">The current gossip version.</param>
+        /// <returns>A new gossip instance.</returns>
         public Gossip Copy(ImmutableSortedSet<Member> members = null, GossipOverview overview = null,
             VectorClock version = null)
         {
@@ -183,8 +185,8 @@ namespace Akka.Cluster
         /// <summary>
         /// Increments the version for this 'Node'.
         /// </summary>
-        /// <param name="node">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="node">The vectorclock node.</param>
+        /// <returns>An updated gossip instance.</returns>
         public Gossip Increment(VectorClock.Node node)
         {
             return Copy(version: _version.Increment(node));
@@ -193,8 +195,8 @@ namespace Akka.Cluster
         /// <summary>
         /// Adds a member to the member node ring.
         /// </summary>
-        /// <param name="member">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="member">The member to add.</param>
+        /// <returns>An updated gossip instance.</returns>
         public Gossip AddMember(Member member)
         {
             if (_members.Contains(member)) return this;
@@ -204,8 +206,8 @@ namespace Akka.Cluster
         /// <summary>
         /// Marks the gossip as seen by this node (address) by updating the address entry in the 'gossip.overview.seen'
         /// </summary>
-        /// <param name="node">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="node">The <see cref="UniqueAddress"/> of the seen node.</param>
+        /// <returns>An updated gossip instance.</returns>
         public Gossip Seen(UniqueAddress node)
         {
             if (SeenByNode(node)) return this;
