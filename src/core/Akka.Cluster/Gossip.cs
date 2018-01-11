@@ -388,10 +388,11 @@ namespace Akka.Cluster
         }
 
         /// <summary>
-        /// TBD
+        /// Retrieves a <see cref="Member"/> by its address
         /// </summary>
-        /// <param name="node">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="node">The address of the member we wish to look up.</param>
+        /// <returns>The current member according to the gossip 
+        /// or a tombstone for a "removed" member if one could not be found.</returns>
         public Member GetMember(UniqueAddress node)
         {
             return _membersMap.Value.GetOrElse(node,
@@ -399,10 +400,10 @@ namespace Akka.Cluster
         }
 
         /// <summary>
-        /// TBD
+        /// Checks to see if a given <see cref="Member"/> exists inside this gossip.
         /// </summary>
-        /// <param name="node">TBD</param>
-        /// <returns>TBD</returns>
+        /// <param name="node">The address of the member we wish to check.</param>
+        /// <returns><c>true</c> if the member is included in this gossip; <c>false</c> otherwise.</returns>
         public bool HasMember(UniqueAddress node)
         {
             return _membersMap.Value.ContainsKey(node);
@@ -410,7 +411,7 @@ namespace Akka.Cluster
 
 
         /// <summary>
-        /// TBD
+        /// The current youngest <see cref="Member"/> of the cluster.
         /// </summary>
         /// <exception cref="Exception">
         /// This exception is thrown when there are no members in the cluster.
