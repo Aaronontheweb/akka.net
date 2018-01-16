@@ -136,5 +136,7 @@ namespace Akka.Cluster
         }
 
         public double ReduceGossipDifferentViewProbability { get; }
+
+
     }
 }
