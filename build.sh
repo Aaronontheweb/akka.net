@@ -13,7 +13,7 @@ FAKE_EXE=$TOOLS_DIR/FAKE/tools/FAKE.exe
 DOTNET_VERSION=2.0.0
 DOTNET_CHANNEL=LTS;
 DOTNET_INSTALLER_URL=https://raw.githubusercontent.com/dotnet/cli/v2.0.0/scripts/obtain/dotnet-install.sh
-PROTOBUF_VERSION = 3.4.0
+PROTOBUF_VERSION=3.4.0
 
 # Define default arguments.
 TARGET="Default"
@@ -43,7 +43,7 @@ fi
 ###########################################################################
 # INSTALL .NET CORE CLI
 ###########################################################################
-
+echo "$SCRIPT_DIR is"
 echo "Installing .NET CLI..."
 if [ ! -d "$SCRIPT_DIR/.dotnet" ]; then
   mkdir "$SCRIPT_DIR/.dotnet"
