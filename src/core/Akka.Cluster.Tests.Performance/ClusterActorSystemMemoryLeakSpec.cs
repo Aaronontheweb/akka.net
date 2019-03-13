@@ -5,6 +5,7 @@
 // // </copyright>
 // //-----------------------------------------------------------------------
 
+using System;
 using Akka.Actor;
 using Akka.Configuration;
 using NBench;
@@ -16,7 +17,7 @@ namespace Akka.Cluster.Tests.Performance
     /// </summary>
     public class ClusterActorSystemMemoryLeakSpec
     {
-        private const int IterationCount = 100;
+        private const int IterationCount = 10;
 
         private const string ConfigStringCluster = @"
 akka {   
@@ -41,7 +42,7 @@ akka {
         [MemoryAssertion(MemoryMetric.TotalBytesAllocated, MustBe.LessThanOrEqualTo, ByteConstants.SixtyFourKb * 512)]
         public void ActorSystem_should_not_leak_memory()
         {
-            for (var i = 0; i < 1; i++)
+            for(var i = 0; i < IterationCount; i++)
                 CreateAndDisposeActorSystem(ConfigStringCluster);
         }
 
@@ -68,6 +69,7 @@ akka {
             });
 
             system.WhenTerminated.Wait();
+            GC.Collect();
         }
 
         private class MyActor : ReceiveActor
