@@ -378,60 +378,62 @@ Target "NBench" <| fun _ ->
 //--------------------------------------------------------------------------------
 
 Target "CreateNuget" (fun _ ->    
-    let projects = !! "src/**/*.*sproj"
-                   -- "src/**/*.Tests*.*sproj"
-                   -- "src/benchmark/**/*.*sproj"
-                   -- "src/examples/**/*.*sproj"
-                   -- "src/**/*.MultiNodeTestRunner.csproj"
-                   -- "src/**/*.MultiNodeTestRunner.Shared.csproj"
-                   -- "src/**/*.NodeTestRunner.csproj"
+    if not skipBuild.Value then
+        let projects = !! "src/**/*.*sproj"
+                       -- "src/**/*.Tests*.*sproj"
+                       -- "src/benchmark/**/*.*sproj"
+                       -- "src/examples/**/*.*sproj"
+                       -- "src/**/*.MultiNodeTestRunner.csproj"
+                       -- "src/**/*.MultiNodeTestRunner.Shared.csproj"
+                       -- "src/**/*.NodeTestRunner.csproj"
 
-    let runSingleProject project =
-        DotNetCli.Pack
-            (fun p -> 
-                { p with
-                    Project = project
-                    Configuration = configuration
-                    AdditionalArgs = ["--include-symbols"]
-                    VersionSuffix = versionSuffix
-                    OutputPath = outputNuGet })
+        let runSingleProject project =
+            DotNetCli.Pack
+                (fun p -> 
+                    { p with
+                        Project = project
+                        Configuration = configuration
+                        AdditionalArgs = ["--include-symbols"]
+                        VersionSuffix = versionSuffix
+                        OutputPath = outputNuGet })
 
-    projects |> Seq.iter (runSingleProject)
+        projects |> Seq.iter (runSingleProject)
 )
-open Fake.TemplateHelper
+
 Target "PublishMntr" (fun _ ->
-    let executableProjects = !! "./src/**/Akka.MultiNodeTestRunner.csproj"
+    if not skipBuild.Value then
+        let executableProjects = !! "./src/**/Akka.MultiNodeTestRunner.csproj"
 
-    // Windows .NET 4.5.2
-    executableProjects |> Seq.iter (fun project ->
-        DotNetCli.Restore
-            (fun p -> 
-                { p with
-                    Project = project                  
-                    AdditionalArgs = ["-r win7-x64"; sprintf "/p:VersionSuffix=%s" versionSuffix] })
-    )
+        // Windows .NET 4.5.2
+        executableProjects |> Seq.iter (fun project ->
+            DotNetCli.Restore
+                (fun p -> 
+                    { p with
+                        Project = project                  
+                        AdditionalArgs = ["-r win7-x64"; sprintf "/p:VersionSuffix=%s" versionSuffix] })
+        )
 
-    // Windows .NET 4.5.2
-    executableProjects |> Seq.iter (fun project ->  
-        DotNetCli.Publish
-            (fun p ->
-                { p with
-                    Project = project
-                    Configuration = configuration
-                    Runtime = "win7-x64"
-                    Framework = testNetFrameworkVersion
-                    VersionSuffix = versionSuffix }))
+        // Windows .NET 4.5.2
+        executableProjects |> Seq.iter (fun project ->  
+            DotNetCli.Publish
+                (fun p ->
+                    { p with
+                        Project = project
+                        Configuration = configuration
+                        Runtime = "win7-x64"
+                        Framework = testNetFrameworkVersion
+                        VersionSuffix = versionSuffix }))
 
-    // Windows .NET Core
-    executableProjects |> Seq.iter (fun project ->  
-        DotNetCli.Publish
-            (fun p ->
-                { p with
-                    Project = project
-                    Configuration = configuration
-                    Runtime = "win7-x64"
-                    Framework = testNetCoreVersion
-                    VersionSuffix = versionSuffix }))
+        // Windows .NET Core
+        executableProjects |> Seq.iter (fun project ->  
+            DotNetCli.Publish
+                (fun p ->
+                    { p with
+                        Project = project
+                        Configuration = configuration
+                        Runtime = "win7-x64"
+                        Framework = testNetCoreVersion
+                        VersionSuffix = versionSuffix }))
 )
 
 Target "CreateMntrNuget" (fun _ -> 
