@@ -36,6 +36,17 @@ jobs:
         inputs:
           artifactName: 'akkaBuild'
           targetPath:
+      - task: CopyFiles@2
+        displayName: 'Copy Build Output'
+        inputs:
+          sourceFolder: bin/*
+          contents: '*'
+          targetFolder: $(Build.ArtifactStagingDirectory)
+          continueOnError: boolean  # 'true' if future steps should run even if this step fails; defaults to 'false'
+      - task: PublishBuildArtifacts@1
+        inputs:
+          pathtoPublish: $(Build.ArtifactStagingDirectory)
+          artifactName: incrementalistOutput
       - script: 'echo 1>&2'
         failOnStderr: true
         displayName: 'If above is partially succeeded, then fail'
