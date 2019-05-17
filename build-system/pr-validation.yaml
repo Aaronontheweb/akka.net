@@ -42,7 +42,7 @@ jobs:
 
   - template: azure-pipeline.template.yaml
     parameters:
-      name: '.NET Framework Unit Tests (Windows)'
+      name: 'netfx-tests-windows'
       vmImage: 'vs2017-win2016'
       scriptFileName: build.cmd
       scriptArgs: runTests incremental
@@ -50,7 +50,7 @@ jobs:
 
   - template: azure-pipeline.template.yaml
     parameters:
-      name: '.NET Core Unit Tests (Windows)'
+      name: 'net-core-tests-windows'
       vmImage: 'vs2017-win2016'
       scriptFileName: build.cmd
       scriptArgs: runTestsNetCore incremental
@@ -58,7 +58,7 @@ jobs:
 
   - template: azure-pipeline.template.yaml
     parameters:
-      name: '.NET Core Unit Tests (Linux)'
+      name: 'net-core-tests-linux'
       vmImage: 'ubuntu-16.04'
       scriptFileName: './build.sh'
       scriptArgs: runTestsNetCore incremental
