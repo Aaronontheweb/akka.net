@@ -165,7 +165,7 @@ Target "Build" (fun _ ->
         DotNetCli.Build
             (fun p -> 
                 { p with
-                    Project = headProject.Value
+                    Project = solution
                     Configuration = configuration
                     AdditionalArgs = additionalArgs })
 )
