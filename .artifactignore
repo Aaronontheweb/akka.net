@@ -1,5 +1,4 @@
 **/*
-**/project.assets.json
 !build.*
 !build-.*
 !**/bin/Release/**
