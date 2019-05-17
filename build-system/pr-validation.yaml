@@ -55,7 +55,7 @@ jobs:
       name: 'net_core_tests_windows'
       displayName: '.NET Core Unit Tests (Windows)'
       vmImage: 'vs2017-win2016'
-      scriptFileName: build.cmd
+      scriptFileName: build-fakeonly.ps1
       scriptArgs: runTestsNetCore incremental
       outputDirectory: 'TestResults'
 
@@ -64,6 +64,6 @@ jobs:
       name: 'net_core_tests_linux'
       displayName: '.NET Core Unit Tests (Linux)'
       vmImage: 'ubuntu-16.04'
-      scriptFileName: './build.sh'
+      scriptFileName: './build-fakeonly.sh'
       scriptArgs: runTestsNetCore incremental
       outputDirectory: 'TestResults'
