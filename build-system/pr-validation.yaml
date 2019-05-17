@@ -67,3 +67,12 @@ jobs:
       scriptFileName: './build.sh'
       scriptArgs: runTestsNetCore incremental
       outputDirectory: 'TestResults'
+
+  - template: azure-pipeline.template.yaml
+    parameters:
+      name: 'nuget_pack'
+      displayName: 'NuGet Pack'
+      vmImage: 'vs2017-win2016'
+      scriptFileName: build.cmd
+      scriptArgs: CreateNuget nugetprerelease=dev incremental
+      outputDirectory: 'bin/nuget'

@@ -387,13 +387,15 @@ Target "NBench" <| fun _ ->
 
 Target "CreateNuget" (fun _ ->    
     if not skipBuild.Value then
-        let projects = !! "src/**/*.*sproj"
-                       -- "src/**/*.Tests*.*sproj"
-                       -- "src/benchmark/**/*.*sproj"
-                       -- "src/examples/**/*.*sproj"
-                       -- "src/**/*.MultiNodeTestRunner.csproj"
-                       -- "src/**/*.MultiNodeTestRunner.Shared.csproj"
-                       -- "src/**/*.NodeTestRunner.csproj"
+        let projects = 
+            let rawProjects = !! "src/**/*.*sproj"
+                            -- "src/**/*.Tests*.*sproj"
+                            -- "src/benchmark/**/*.*sproj"
+                            -- "src/examples/**/*.*sproj"
+                            -- "src/**/*.MultiNodeTestRunner.csproj"
+                            -- "src/**/*.MultiNodeTestRunner.Shared.csproj"
+                            -- "src/**/*.NodeTestRunner.csproj"
+            rawProjects |> Seq.choose filterProjects
 
         let runSingleProject project =
             DotNetCli.Pack
@@ -401,7 +403,7 @@ Target "CreateNuget" (fun _ ->
                     { p with
                         Project = project
                         Configuration = configuration
-                        AdditionalArgs = ["--include-symbols"]
+                        AdditionalArgs = ["--include-symbols --no-build"]
                         VersionSuffix = versionSuffix
                         OutputPath = outputNuGet })
 
