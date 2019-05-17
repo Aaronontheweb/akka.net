@@ -68,7 +68,7 @@ Target "Clean" (fun _ ->
 // Incrementalist targets 
 //--------------------------------------------------------------------------------
 // Pulls the set of all affected projects detected by Incrementalist from the cached file
-let getAffectedProjects = 
+let getAffectedProjectsTopology = 
     lazy(
         log (sprintf "Checking inside %s for changes" incrementalistReport)
 
@@ -77,7 +77,18 @@ let getAffectedProjects =
         log (sprintf "Found changes via Incrementalist? %b - searched inside %s" incrementalistFoundChanges incrementalistReport)
         if not incrementalistFoundChanges then None
         else
-            Some ((File.ReadAllText incrementalistReport).Split ',')
+            let sortedItems = (File.ReadAllLines incrementalistReport) |> Seq.map (fun x -> (x.Split ','))
+                              |> Seq.map (fun items -> (items.[0], items))
+            let d = dict sortedItems
+            Some(d)
+    )
+
+let getAffectedProjects = 
+    lazy(
+        let finalProjects = getAffectedProjectsTopology.Value
+        match finalProjects with
+        | None -> None
+        | Some p -> Some (p.Values |> Seq.concat)
     )
 
 Target "ComputeIncrementalChanges" (fun _ ->
@@ -145,12 +156,12 @@ let skipBuild =
         | _ -> false
     )
 
-let headProject =
+let headProjects =
     lazy(
-        match getAffectedProjects.Value with
-        | None when runIncrementally -> String.Empty
-        | None -> solution
-        | Some p -> (p |> Seq.head)
+        match getAffectedProjectsTopology.Value with
+        | None when runIncrementally -> [||]
+        | None -> [|solution|]
+        | Some p -> p.Keys |> Seq.toArray
     )
 
 Target "AssemblyInfo" (fun _ ->
@@ -161,13 +172,15 @@ Target "AssemblyInfo" (fun _ ->
 Target "Build" (fun _ ->   
     if not skipBuild.Value then
         let additionalArgs = if versionSuffix.Length > 0 then [sprintf "/p:VersionSuffix=%s" versionSuffix] else []  
+        let buildProject proj =
+            DotNetCli.Build
+                (fun p -> 
+                    { p with
+                        Project = proj
+                        Configuration = configuration
+                        AdditionalArgs = additionalArgs })
 
-        DotNetCli.Build
-            (fun p -> 
-                { p with
-                    Project = solution
-                    Configuration = configuration
-                    AdditionalArgs = additionalArgs })
+        getAffectedProjects.Value |> Seq.iter buildProject
 )
 
 //--------------------------------------------------------------------------------
