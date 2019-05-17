@@ -641,11 +641,6 @@ Target "RunTestsNetCoreFull" DoNothing
 "Build" ==> "PublishMntr" ==> "BuildRelease"
 "ComputeIncrementalChanges" ==> "BuildRelease" // compute incremental changes
 
-// tests dependencies
-// "RunTests" and "RunTestsNetCore" don't use clean / build so they can be run multiple times, successively, without rebuilding
-"BuildRelease" ==> "RunTests" ==> "RunTestsFull"
-"BuildRelease" ==> "RunTestsNetCore" ==> "RunTestsNetCoreFull"
-
 // nuget dependencies
 "BuildRelease" ==> "CreateMntrNuget" ==> "CreateNuget" ==> "PublishNuget" ==> "Nuget"
 
