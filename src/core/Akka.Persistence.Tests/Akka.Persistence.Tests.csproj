@@ -4,6 +4,7 @@
   <PropertyGroup>
     <AssemblyTitle>Akka.Persistence.Tests</AssemblyTitle>
    <TargetFrameworks>$(NetFrameworkTestVersion);$(NetCoreTestVersion)</TargetFrameworks>
+   <IsTestProject>true</IsTestProject>
   </PropertyGroup>
 
   <ItemGroup>

@@ -145,6 +145,14 @@ let skipBuild =
         | _ -> false
     )
 
+let headProject =
+    lazy(
+        match getAffectedProjects.Value with
+        | None when runIncrementally -> String.Empty
+        | None -> solution
+        | Some p -> (p |> Seq.head)
+    )
+
 Target "AssemblyInfo" (fun _ ->
     XmlPokeInnerText "./src/common.props" "//Project/PropertyGroup/VersionPrefix" releaseNotes.AssemblyVersion    
     XmlPokeInnerText "./src/common.props" "//Project/PropertyGroup/PackageReleaseNotes" (releaseNotes.Notes |> String.concat "\n")
@@ -157,7 +165,7 @@ Target "Build" (fun _ ->
         DotNetCli.Build
             (fun p -> 
                 { p with
-                    Project = solution
+                    Project = headProject.Value
                     Configuration = configuration
                     AdditionalArgs = additionalArgs })
 )
