@@ -1,5 +1,6 @@
 parameters:
   name: ''
+  displayName: ''
   vmImage: ''
   dependsOn: 'WindowsBuild'
   artifactName: 'akkaBuild'
@@ -10,6 +11,7 @@ parameters:
 
 jobs:
   - job: ${{ parameters.name }}
+    displayName: ${{ parameters.displayName }}
     dependsOn:  ${{ parameters.dependsOn }}
     timeoutInMinutes: ${{ parameters.timeoutInMinutes }}
     pool:

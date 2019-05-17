@@ -16,6 +16,7 @@ name: $(Year:yyyy).$(Month).$(DayOfMonth)$(Rev:.r)
 
 jobs:
   - job: WindowsBuild
+    displayName: Windows Build
     pool:
       vmImage: vs2017-win2016
       demands: Cmd
@@ -42,7 +43,8 @@ jobs:
 
   - template: azure-pipeline.template.yaml
     parameters:
-      name: 'netfx-tests-windows'
+      name: 'netfx_tests_windows'
+      displayName: '.NET Framework Unit Tests (Windows)'
       vmImage: 'vs2017-win2016'
       scriptFileName: build.cmd
       scriptArgs: runTests incremental
@@ -50,7 +52,8 @@ jobs:
 
   - template: azure-pipeline.template.yaml
     parameters:
-      name: 'net-core-tests-windows'
+      name: 'net_core_tests_windows'
+      displayName: '.NET Core Unit Tests (Windows)'
       vmImage: 'vs2017-win2016'
       scriptFileName: build.cmd
       scriptArgs: runTestsNetCore incremental
@@ -58,7 +61,8 @@ jobs:
 
   - template: azure-pipeline.template.yaml
     parameters:
-      name: 'net-core-tests-linux'
+      name: 'net_core_tests_linux'
+      displayName: '.NET Core Unit Tests (Linux)'
       vmImage: 'ubuntu-16.04'
       scriptFileName: './build.sh'
       scriptArgs: runTestsNetCore incremental
