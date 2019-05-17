@@ -122,10 +122,6 @@ namespace Akka.Cluster.Routing
         /// <summary>
         /// Obsolete. This constructor is no longer applicable.
         /// </summary>
-        /// <param name="totalInstances">N/A</param>
-        /// <param name="allowLocalRoutees">N/A</param>
-        /// <param name="useRole">N/A</param>
-        /// <param name="maxInstancesPerNode">N/A</param>
         [Obsolete("This method is deprecated [1.1.0]")]
         public ClusterRouterPoolSettings(int totalInstances, bool allowLocalRoutees, string useRole, int maxInstancesPerNode) 
             : this(totalInstances, maxInstancesPerNode, allowLocalRoutees, useRole)
