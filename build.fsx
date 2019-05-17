@@ -182,13 +182,6 @@ Target "Build" (fun _ ->
         getAffectedProjects.Value.Value|> Seq.iter buildProject
 )
 
-let restorePackages project =
-    DotNetCli.Restore
-        (fun r ->
-            { r with
-                Project = project
-            })
-
 //--------------------------------------------------------------------------------
 // Tests targets 
 //--------------------------------------------------------------------------------
@@ -256,10 +249,6 @@ Target "RunTestsNetCore" (fun _ ->
                                 | _ -> !! "./src/**/*.Tests.csproj" // if you need to filter specs for Linux vs. Windows, do it here
             rawProjects |> Seq.choose filterProjects
      
-        if runIncrementally then
-            log "Restoring NuGet packages for .NET Core projects"
-            projects |> Seq.iter restorePackages
-
         let runSingleProject project =
             let arguments =
                 match (hasTeamCity) with
@@ -321,10 +310,6 @@ Target "MultiNodeTestsNetCore" (fun _ ->
                                 | true -> !! "./src/**/*.Tests.MultiNode.csproj"
                                 | _ -> !! "./src/**/*.Tests.MulitNode.csproj" // if you need to filter specs for Linux vs. Windows, do it here
             rawProjects |> Seq.choose filterProjects
-        
-        if runIncrementally then
-            log "Restoring NuGet packages for .NET Core projects"
-            projects |> Seq.iter restorePackages
 
         let multiNodeTestAssemblies = 
             projects |> Seq.choose (getTestAssembly Runtime.NetCore)
