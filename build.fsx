@@ -235,7 +235,7 @@ Target "RunTests" (fun _ ->
             info.WorkingDirectory <- (Directory.GetParent project).FullName
             info.Arguments <- arguments) (TimeSpan.FromMinutes 30.0) 
         
-        ResultHandling.failBuildIfXUnitReportedError TestRunnerErrorLevel.DontFailBuild result
+        ResultHandling.failBuildIfXUnitReportedError TestRunnerErrorLevel.Error result
 
     CreateDir outputTests
     projects |> Seq.iter (runSingleProject)
@@ -260,7 +260,7 @@ Target "RunTestsNetCore" (fun _ ->
                 info.WorkingDirectory <- (Directory.GetParent project).FullName
                 info.Arguments <- arguments) (TimeSpan.FromMinutes 30.0) 
         
-            ResultHandling.failBuildIfXUnitReportedError TestRunnerErrorLevel.DontFailBuild result
+            ResultHandling.failBuildIfXUnitReportedError TestRunnerErrorLevel.Error result
 
         CreateDir outputTests
         projects |> Seq.iter (runSingleProject)
@@ -415,7 +415,7 @@ Target "CreateNuget" (fun _ ->
                     { p with
                         Project = project
                         Configuration = configuration
-                        AdditionalArgs = ["--include-symbols"]
+                        AdditionalArgs = ["--include-symbols --no-build"]
                         VersionSuffix = versionSuffix
                         OutputPath = outputNuGet })
 
@@ -669,6 +669,9 @@ Target "RunTestsNetCoreFull" DoNothing
 "Build" ==> "RunTests"
 "Build" ==> "RunTestsNetCore"
 
+"BuildRelease" ==> "MultiNodeTestsNetCore"
+"BuildRelease" ==> "MultiNodeTests"
+
 // nuget dependencies
 "BuildRelease" ==> "CreateMntrNuget" ==> "CreateNuget" ==> "PublishNuget" ==> "Nuget"
 
@@ -680,6 +683,7 @@ Target "RunTestsNetCoreFull" DoNothing
 "RunTests" ==> "All"
 "RunTestsNetCore" ==> "All"
 "MultiNodeTests" ==> "All"
+"MultiNodeTestsNetCore" ==> "All"
 "NBench" ==> "All"
 
 RunTargetOrDefault "Help"
