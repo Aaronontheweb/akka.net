@@ -20,7 +20,7 @@ jobs:
       - task: DownloadPipelineArtifact@0
         inputs:
           artifactName: ${{ parameters.artifactName }}
-          targetPath: $(System.DefaultWorkingDirectory)
+          targetPath: $(Agent.BuildDirectory)
       - task: Bash@3 
         displayName: Linux / OSX Build
         inputs:
