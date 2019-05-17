@@ -39,7 +39,7 @@ jobs:
       - task: CopyFiles@2
         displayName: 'Copy Build Output'
         inputs:
-          sourceFolder: bin/*
+          sourceFolder: bin
           contents: '*'
           targetFolder: $(Build.ArtifactStagingDirectory)
           continueOnError: boolean  # 'true' if future steps should run even if this step fails; defaults to 'false'
