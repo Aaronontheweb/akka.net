@@ -1,7 +1,3 @@
 **/*
-!build.*
-!build-.*
-!**/bin/Release/**
 !TestResults/*
 !bin/incrementalist.txt
-!src/**/*.csproj

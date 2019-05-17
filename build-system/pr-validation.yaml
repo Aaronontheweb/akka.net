@@ -32,10 +32,6 @@ jobs:
           arguments: 'buildRelease incremental' # Run an incremental build
         continueOnError: true
         condition: eq( variables['Agent.OS'], 'Windows_NT' )
-      - task: PublishPipelineArtifact@0
-        inputs:
-          artifactName: 'akkaBuild'
-          targetPath:
       - task: CopyFiles@2
         displayName: 'Copy Build Output'
         inputs:

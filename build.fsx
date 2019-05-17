@@ -665,6 +665,10 @@ Target "RunTestsNetCoreFull" DoNothing
 "Build" ==> "PublishMntr" ==> "BuildRelease"
 "ComputeIncrementalChanges" ==> "Build" // compute incremental changes
 
+// tests dependencies
+"Build" ==> "RunTests"
+"Build" ==> "RunTestsNetCore"
+
 // nuget dependencies
 "BuildRelease" ==> "CreateMntrNuget" ==> "CreateNuget" ==> "PublishNuget" ==> "Nuget"
 
