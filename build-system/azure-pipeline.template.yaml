@@ -43,7 +43,7 @@ jobs:
           testRunTitle: ${{ parameters.name }}
           mergeTestResults: true
       - task: CopyFiles@2
-        displayName: 'Copy TestResults'
+        displayName: 'Copy Build Output'
         inputs:
           sourceFolder: ${{ parameters.outputDirectory }}
           contents: '*'
