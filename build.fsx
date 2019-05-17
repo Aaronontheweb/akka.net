@@ -637,9 +637,9 @@ Target "RunTestsFull" DoNothing
 Target "RunTestsNetCoreFull" DoNothing
 
 // build dependencies
-"Clean" ==> "AssemblyInfo" ==> "BuildRelease"
+"Clean" ==> "AssemblyInfo" ==> "Build"
 "Build" ==> "PublishMntr" ==> "BuildRelease"
-"ComputeIncrementalChanges" ==> "BuildRelease" // compute incremental changes
+"ComputeIncrementalChanges" ==> "Build" // compute incremental changes
 
 // nuget dependencies
 "BuildRelease" ==> "CreateMntrNuget" ==> "CreateNuget" ==> "PublishNuget" ==> "Nuget"
