@@ -1,22 +1,24 @@
 parameters:
   name: ''
   vmImage: ''
+  dependsOn: 'WindowsBuild'
+  artifactName: 'akkaBuild'
   scriptFileName: ''
   scriptArgs: 'all'
+  outputDirectory: ''
   timeoutInMinutes: 120
-  dockerBuildArgs: 'Docker remoteRegistry=petabridge'
 
 jobs:
   - job: ${{ parameters.name }}
+    dependsOn:  ${{ parameters.dependsOn }}
     timeoutInMinutes: ${{ parameters.timeoutInMinutes }}
     pool:
       vmImage: ${{ parameters.vmImage }}
     steps:
-      - checkout: self  # self represents the repo where the initial Pipelines YAML file was found
-        clean: false  # whether to fetch clean each time
-        submodules: recursive  # set to 'true' for a single level of submodules or 'recursive' to get submodules of submodules
-        persistCredentials: true
-      # Linux or macOS
+      - task: DownloadPipelineArtifact@0
+        inputs:
+          artifactName: ${{ parameters.artifactName }}
+          targetPath: $(System.DefaultWorkingDirectory)
       - task: Bash@3 
         displayName: Linux / OSX Build
         inputs:
@@ -38,22 +40,16 @@ jobs:
           testResultsFiles: '**/*.trx' #TestResults folder usually
           testRunTitle: ${{ parameters.name }}
           mergeTestResults: true
-      #Docker build 
-      # Build on Linux
-      - task: Bash@3 
-        displayName: Docker Build (Linux)
+      - task: CopyFiles@2
+        displayName: 'Copy TestResults'
         inputs:
-          filePath: ${{ parameters.scriptFileName }}
-          arguments: ${{ parameters.dockerBuildArgs }}
-        continueOnError: false
-        condition: in( variables['Agent.OS'], 'Linux', 'Darwin' )
-      - task: BatchScript@1
-        displayName: Docker Build (Windows)
+          sourceFolder: ${{ outputDirectory }}
+          contents: '*'
+          targetFolder: $(Build.ArtifactStagingDirectory)
+      - task: PublishBuildArtifacts@1
         inputs:
-          filename: ${{ parameters.scriptFileName }}
-          arguments: ${{ parameters.dockerBuildArgs }}
-        continueOnError: true
-        condition: eq( variables['Agent.OS'], 'Windows_NT' )
+          pathtoPublish: '$(Build.ArtifactStagingDirectory)'
+          artifactName: ${{ parameters.name }}
       - script: 'echo 1>&2'
         failOnStderr: true
         displayName: 'If above is partially succeeded, then fail'
