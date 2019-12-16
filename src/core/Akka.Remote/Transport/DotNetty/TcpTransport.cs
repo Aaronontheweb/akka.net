@@ -44,6 +44,7 @@ namespace Akka.Remote.Transport.DotNetty
         
         public override void ChannelInactive(IChannelHandlerContext context)
         {
+            Log.Debug("Channel {0}->{1} inactive...", context.Channel.LocalAddress, context.Channel.RemoteAddress);
             NotifyListener(new Disassociated(DisassociateInfo.Unknown));
             base.ChannelInactive(context);
         }
@@ -60,6 +61,18 @@ namespace Akka.Remote.Transport.DotNetty
 
             // decrease the reference count to 0 (releases buffer)
             ReferenceCountUtil.SafeRelease(message);
+        }
+
+        public override Task CloseAsync(IChannelHandlerContext context)
+        {
+            Log.Debug("Channel {0}->{1} closing...", context.Channel.LocalAddress, context.Channel.RemoteAddress);
+            return base.CloseAsync(context);
+        }
+
+        public override void ChannelUnregistered(IChannelHandlerContext context)
+        {
+            Log.Debug("Channel {0}->{1} unregistered...", context.Channel.LocalAddress, context.Channel.RemoteAddress);
+            base.ChannelUnregistered(context);
         }
 
         /// <summary>
