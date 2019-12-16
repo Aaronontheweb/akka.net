@@ -201,7 +201,7 @@ namespace Akka.Remote.Transport.DotNetty
 
         public override void Disassociate()
         {
-            _channel.CloseAsync();
+            _channel.CloseAsync().Wait();
         }
     }
     
