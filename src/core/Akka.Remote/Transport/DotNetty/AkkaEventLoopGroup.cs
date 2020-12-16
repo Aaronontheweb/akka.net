@@ -13,6 +13,8 @@ namespace Akka.Remote.Transport.DotNetty
     {
         private readonly ActorSystem _actorSystem;
         private readonly MessageDispatcher _dispatcher;
+        private readonly IScheduler _scheduler;
+        private readonly TaskCompletionSource<bool> _shutdownTcs;
 
         public AkkaEventLoopGroup(ActorSystem actorSystem) : this(
             actorSystem.Dispatchers.Lookup(RARP.For(actorSystem).Provider.RemoteSettings.Dispatcher), actorSystem)
@@ -28,6 +30,8 @@ namespace Akka.Remote.Transport.DotNetty
         {
             _dispatcher = dispatcher;
             _actorSystem = actorSystem;
+            _scheduler = actorSystem.Scheduler;
+            _shutdownTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
         public void Execute(IRunnable task)
@@ -87,8 +91,8 @@ namespace Akka.Remote.Transport.DotNetty
             return node.Completion;
         }
 
-        public bool IsShutdown { get; }
-        public bool IsTerminated { get; }
+        public bool IsShutdown { get; private set; }
+        public bool IsTerminated { get; private set; }
 
         public IScheduledTask Schedule(IRunnable action, TimeSpan delay)
         {
@@ -144,12 +148,16 @@ namespace Akka.Remote.Transport.DotNetty
 
         public Task ShutdownGracefullyAsync()
         {
-            throw new NotImplementedException();
+            IsShuttingDown = true;
+            IsShutdown = true;
+            IsTerminated = true;
+            _shutdownTcs.SetResult(true);
+            return _shutdownTcs.Task;
         }
 
         public Task ShutdownGracefullyAsync(TimeSpan quietPeriod, TimeSpan timeout)
         {
-            throw new NotImplementedException();
+            return ShutdownGracefullyAsync();
         }
 
         public IEventLoop GetNext()
@@ -167,8 +175,8 @@ namespace Akka.Remote.Transport.DotNetty
             return GetNext();
         }
 
-        public bool IsShuttingDown => _actorSystem.WhenTerminated.IsCompleted;
-        public Task TerminationCompletion => _actorSystem.WhenTerminated;
+        public bool IsShuttingDown {get; private set; }
+        public Task TerminationCompletion => _shutdownTcs.Task;
 
         private void InternalExecute(Dispatch.IRunnable execute)
         {
