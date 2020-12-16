@@ -1,15 +1,17 @@
 ﻿using System;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Dispatch;
+using DotNetty.Common;
 using DotNetty.Common.Concurrency;
 using DotNetty.Transport.Channels;
 using IRunnable = DotNetty.Common.Concurrency.IRunnable;
 
 namespace Akka.Remote.Transport.DotNetty
 {
-    internal sealed class AkkaEventLoopGroup : IEventLoopGroup
+    internal sealed class AkkaEventLoopGroup : IEventLoopGroup, IEventLoop
     {
         private readonly ActorSystem _actorSystem;
         private readonly MessageDispatcher _dispatcher;
@@ -96,54 +98,75 @@ namespace Akka.Remote.Transport.DotNetty
 
         public IScheduledTask Schedule(IRunnable action, TimeSpan delay)
         {
-            throw new NotImplementedException();
+            var cts = new Cancelable(_scheduler);
+            var t = new ScheduledTask(new AdaptedRunnable(action), cts);
+            _scheduler.Advanced.ScheduleOnce(delay, t);
+            return t;
         }
 
         public IScheduledTask Schedule(Action action, TimeSpan delay)
         {
-            throw new NotImplementedException();
+            var cts = new Cancelable(_scheduler);
+            var t = new ScheduledTask(new ActionRunnable(action), cts);
+            _scheduler.Advanced.ScheduleOnce(delay, t);
+            return t;
         }
 
         public IScheduledTask Schedule(Action<object> action, object state, TimeSpan delay)
         {
-            throw new NotImplementedException();
+            var cts = new Cancelable(_scheduler);
+            var t = new ScheduledTask(new ActionWithStateRunnable(action, state), cts);
+            _scheduler.Advanced.ScheduleOnce(delay, t);
+            return t;
         }
 
         public IScheduledTask Schedule(Action<object, object> action, object context, object state, TimeSpan delay)
         {
-            throw new NotImplementedException();
+            var cts = new Cancelable(_scheduler);
+            var t = new ScheduledTask(new ActionWithContextRunnable(context, state, action), cts);
+            _scheduler.Advanced.ScheduleOnce(delay, t);
+            return t;
         }
 
         public Task ScheduleAsync(Action<object> action, object state, TimeSpan delay,
             CancellationToken cancellationToken)
         {
-            throw new NotImplementedException();
+            var cts = new Cancelable(_scheduler.Advanced, CancellationTokenSource.CreateLinkedTokenSource(cancellationToken));
+            var t = new ScheduledTask(new ActionWithStateRunnable(action, state), cts);
+            _scheduler.Advanced.ScheduleOnce(delay, t);
+            return t.Completion;
         }
 
         public Task ScheduleAsync(Action<object> action, object state, TimeSpan delay)
         {
-            throw new NotImplementedException();
+            return Schedule(action, state, delay).Completion;
         }
 
         public Task ScheduleAsync(Action action, TimeSpan delay, CancellationToken cancellationToken)
         {
-            throw new NotImplementedException();
+            var cts = new Cancelable(_scheduler.Advanced, CancellationTokenSource.CreateLinkedTokenSource(cancellationToken));
+            var t = new ScheduledTask(new ActionRunnable(action), cts);
+            _scheduler.Advanced.ScheduleOnce(delay, t);
+            return t.Completion;
         }
 
         public Task ScheduleAsync(Action action, TimeSpan delay)
         {
-            throw new NotImplementedException();
+            return Schedule(action, delay).Completion;
         }
 
         public Task ScheduleAsync(Action<object, object> action, object context, object state, TimeSpan delay)
         {
-            throw new NotImplementedException();
+            return Schedule(action, context, state, delay).Completion;
         }
 
         public Task ScheduleAsync(Action<object, object> action, object context, object state, TimeSpan delay,
             CancellationToken cancellationToken)
         {
-            throw new NotImplementedException();
+            var cts = new Cancelable(_scheduler.Advanced, CancellationTokenSource.CreateLinkedTokenSource(cancellationToken));
+            var t = new ScheduledTask(new ActionWithContextRunnable(context, state, action), cts);
+            _scheduler.Advanced.ScheduleOnce(delay, t);
+            return t.Completion;
         }
 
         public Task ShutdownGracefullyAsync()
@@ -167,7 +190,7 @@ namespace Akka.Remote.Transport.DotNetty
 
         public Task RegisterAsync(IChannel channel)
         {
-            throw new NotImplementedException();
+            return channel.Unsafe.RegisterAsync(this);
         }
 
         IEventExecutor IEventExecutorGroup.GetNext()
@@ -178,9 +201,20 @@ namespace Akka.Remote.Transport.DotNetty
         public bool IsShuttingDown {get; private set; }
         public Task TerminationCompletion => _shutdownTcs.Task;
 
+        public IEventLoopGroup Parent => this;
+
+        IEventExecutorGroup IEventExecutor.Parent => this;
+
+        public bool InEventLoop => false;
+
         private void InternalExecute(Dispatch.IRunnable execute)
         {
             _dispatcher.Schedule(execute);
+        }
+
+        public bool IsInEventLoop(XThread thread)
+        {
+            return false;
         }
 
         private readonly struct AdaptedRunnable : IRunnable, Dispatch.IRunnable
@@ -309,6 +343,52 @@ namespace Akka.Remote.Transport.DotNetty
             protected override T Call()
             {
                 return func(context, Completion.AsyncState);
+            }
+        }
+
+        private sealed class ScheduledTask : IScheduledRunnable, Dispatch.IRunnable
+        {
+            private readonly ICancelable _cts;
+            private readonly TaskCompletionSource<bool> _tcs;
+            private readonly Akka.Dispatch.IRunnable _runnable;
+
+            public ScheduledTask(Akka.Dispatch.IRunnable runnable, ICancelable cts)
+            {
+                _runnable = runnable;
+                _cts = cts;
+                _tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+
+            public void Run()
+            {
+                try
+                {
+                    _runnable.Run();
+                    _tcs.TrySetResult(true);
+                }
+                catch (Exception ex)
+                {
+                    _tcs.TrySetException(ex);
+                }
+            }
+
+            public bool Cancel()
+            {
+                _cts.Cancel();
+                return _tcs.TrySetCanceled();
+            }
+
+            public TaskAwaiter GetAwaiter()
+            {
+                return Completion.GetAwaiter();
+            }
+
+            public PreciseTimeSpan Deadline => PreciseTimeSpan.Zero;
+            public Task Completion => _tcs.Task;
+
+            public int CompareTo(IScheduledRunnable other)
+            {
+                return Deadline.CompareTo(other.Deadline);
             }
         }
     }
