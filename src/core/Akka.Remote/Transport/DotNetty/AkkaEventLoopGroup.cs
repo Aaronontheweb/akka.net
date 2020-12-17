@@ -53,7 +53,7 @@ namespace Akka.Remote.Transport.DotNetty
 
         public void Execute(Action<object, object> action, object context, object state)
         {
-            InternalExecute(new ActionWithContextRunnable(context, state, action));
+            InternalExecute(new ActionWithContextRunnable(action, context, state));
         }
 
         public Task<T> SubmitAsync<T>(Func<T> func)
@@ -123,7 +123,7 @@ namespace Akka.Remote.Transport.DotNetty
         public IScheduledTask Schedule(Action<object, object> action, object context, object state, TimeSpan delay)
         {
             var cts = new Cancelable(_scheduler);
-            var t = new ScheduledTask(new ActionWithContextRunnable(context, state, action), cts);
+            var t = new ScheduledTask(new ActionWithContextRunnable(action, context, state), cts);
             _scheduler.Advanced.ScheduleOnce(delay, t);
             return t;
         }
@@ -164,7 +164,7 @@ namespace Akka.Remote.Transport.DotNetty
             CancellationToken cancellationToken)
         {
             var cts = new Cancelable(_scheduler.Advanced, CancellationTokenSource.CreateLinkedTokenSource(cancellationToken));
-            var t = new ScheduledTask(new ActionWithContextRunnable(context, state, action), cts);
+            var t = new ScheduledTask(new ActionWithContextRunnable(action, context, state), cts);
             _scheduler.Advanced.ScheduleOnce(delay, t);
             return t.Completion;
         }
@@ -185,7 +185,7 @@ namespace Akka.Remote.Transport.DotNetty
 
         public IEventLoop GetNext()
         {
-            throw new NotImplementedException();
+            return this;
         }
 
         public Task RegisterAsync(IChannel channel)
@@ -243,7 +243,7 @@ namespace Akka.Remote.Transport.DotNetty
             private readonly object _context;
             private readonly object _state;
 
-            public ActionWithContextRunnable(object context, object state, Action<object, object> actionWithState)
+            public ActionWithContextRunnable(Action<object, object> actionWithState, object context, object state)
             {
                 _context = context;
                 _state = state;
