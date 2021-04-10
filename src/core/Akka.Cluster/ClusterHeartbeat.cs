@@ -21,22 +21,42 @@ namespace Akka.Cluster
     /// 
     /// Receives <see cref="ClusterHeartbeatSender.Heartbeat"/> messages and replies.
     /// </summary>
-    internal sealed class ClusterHeartbeatReceiver : ReceiveActor
+    internal sealed class ClusterHeartbeatReceiver : UntypedActor
     {
-        private readonly Lazy<ClusterHeartbeatSender.HeartbeatRsp> _selfHeartbeatRsp;
+        // Important - don't use Cluster.Get(Context.System) in constructor because that would
+        // cause deadlock. See startup sequence in ClusterDaemon.
+        private readonly Lazy<Cluster> _cluster;
+
+        public bool VerboseHeartbeat => _cluster.Value.Settings.VerboseHeartbeatLogging;
 
         /// <summary>
         /// TBD
         /// </summary>
-        public ClusterHeartbeatReceiver()
+        public ClusterHeartbeatReceiver(Func<Cluster> getCluster)
         {
-            // Important - don't use Cluster.Get(Context.System) in constructor because that would
-            // cause deadlock. See startup sequence in ClusterDaemon.
-            _selfHeartbeatRsp = new Lazy<ClusterHeartbeatSender.HeartbeatRsp>(() =>
-                new ClusterHeartbeatSender.HeartbeatRsp(Cluster.Get(Context.System).SelfUniqueAddress));
-
-            Receive<ClusterHeartbeatSender.Heartbeat>(heartbeat => Sender.Tell(_selfHeartbeatRsp.Value));
+            _cluster = new Lazy<Cluster>(getCluster);
         }
+
+        protected override void OnReceive(object message)
+        {
+            switch (message)
+            {
+                case ClusterHeartbeatSender.Heartbeat hb:
+                    // TODO log the sequence nr once serializer is enabled
+                    if(VerboseHeartbeat) _cluster.Value.CurrentInfoLogger.LogDebug("Heartbeat from [{0}]", hb.From);
+                    Sender.Tell(new ClusterHeartbeatSender.HeartbeatRsp(_cluster.Value.SelfUniqueAddress));
+                    break;
+                default:
+                    Unhandled(message);
+                    break;
+            }
+        }
+
+        public static Props Props(Func<Cluster> getCluster)
+        {
+            return Akka.Actor.Props.Create(() => new ClusterHeartbeatReceiver(getCluster));
+        }
+
     }
 
     /// <summary>
