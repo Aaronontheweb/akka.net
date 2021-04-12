@@ -31,55 +31,35 @@ namespace Akka.Cluster.Serialization
          * BUG: should have been a SerializerWithStringManifest this entire time
          * Since it wasn't need to include full type names for backwards compatibility
          */
-        internal static readonly string JoinManifest = typeof(InternalClusterAction.Join).TypeQualifiedName();
-        internal static readonly string WelcomeManifest = typeof(InternalClusterAction.Welcome).TypeQualifiedName();
-        internal static readonly string LeaveManifest = typeof(ClusterUserAction.Leave).TypeQualifiedName();
-        internal static readonly string DownManifest = typeof(ClusterUserAction.Down).TypeQualifiedName();
+        internal const string JoinManifest = "Akka.Cluster.InternalClusterAction+Join, Akka.Cluster";
+        internal const string WelcomeManifest = "Akka.Cluster.InternalClusterAction+Welcome, Akka.Cluster";
+        internal const string LeaveManifest = "Akka.Cluster.ClusterUserAction+Leave, Akka.Cluster";
+        internal const string DownManifest = "Akka.Cluster.ClusterUserAction+Down, Akka.Cluster";
 
-        internal static readonly string InitJoinManifest = typeof(InternalClusterAction.InitJoin).TypeQualifiedName();
+        internal const string InitJoinManifest = "Akka.Cluster.InternalClusterAction+InitJoin, Akka.Cluster";
 
-        internal static readonly string InitJoinAckManifest =
-            typeof(InternalClusterAction.InitJoinAck).TypeQualifiedName();
+        internal const string InitJoinAckManifest = "Akka.Cluster.InternalClusterAction+InitJoinAck, Akka.Cluster";
 
-        internal static readonly string InitJoinNackManifest =
-            typeof(InternalClusterAction.InitJoinNack).TypeQualifiedName();
+        internal const string InitJoinNackManifest = "Akka.Cluster.InternalClusterAction+InitJoinNack, Akka.Cluster";
 
         // TODO: remove in a future version of Akka.NET (2.0)
-        internal static readonly string HeartBeatManifestPre1419 =
-            typeof(ClusterHeartbeatSender.Heartbeat).TypeQualifiedName();
-        internal static readonly string HeartBeatRspManifestPre1419 = typeof(ClusterHeartbeatSender.HeartbeatRsp).TypeQualifiedName();
+        internal const string HeartBeatManifestPre1419 = "Akka.Cluster.ClusterHeartbeatSender+Heartbeat, Akka.Cluster";
+        internal const string HeartBeatRspManifestPre1419 = "Akka.Cluster.ClusterHeartbeatSender+HeartbeatRsp, Akka.Cluster";
 
         internal const string HeartBeatManifest = "HB";
         internal const string HeartBeatRspManifest = "HBR";
 
-        internal static readonly string ExitingConfirmedManifest =
-            typeof(InternalClusterAction.ExitingConfirmed).TypeQualifiedName();
+        internal const string ExitingConfirmedManifest = "Akka.Cluster.InternalClusterAction+ExitingConfirmed, Akka.Cluster";
 
-        internal const string GossipStatusManifest = typeof(GossipStatus).TypeQualifiedName();
-        internal static readonly string GossipEnvelopeManifest = typeof(GossipEnvelope).TypeQualifiedName();
-        internal static readonly string ClusterRouterPoolManifest = typeof(ClusterRouterPool).TypeQualifiedName();
+        internal const string GossipStatusManifest = "Akka.Cluster.GossipStatus, Akka.Cluster";
+        internal const string GossipEnvelopeManifest = "Akka.Cluster.GossipEnvelope, Akka.Cluster";
+        internal const string ClusterRouterPoolManifest = "Akka.Cluster.Routing.ClusterRouterPool, Akka.Cluster";
 
-        private readonly Dictionary<Type, Func<byte[], object>> _fromBinaryMap;
 
         public ClusterMessageSerializer(ExtendedActorSystem system) : base(system)
         {
 
-            _fromBinaryMap = new Dictionary<Type, Func<byte[], object>>
-            {
-                [typeof(ClusterHeartbeatSender.Heartbeat)] = bytes => new ClusterHeartbeatSender.Heartbeat(AddressFrom(AddressData.Parser.ParseFrom(bytes))),
-                [typeof(ClusterHeartbeatSender.HeartbeatRsp)] = bytes => new ClusterHeartbeatSender.HeartbeatRsp(UniqueAddressFrom(Proto.Msg.UniqueAddress.Parser.ParseFrom(bytes))),
-                [typeof(GossipEnvelope)] = GossipEnvelopeFrom,
-                [typeof(GossipStatus)] = GossipStatusFrom,
-                [typeof(InternalClusterAction.Join)] = JoinFrom,
-                [typeof(InternalClusterAction.Welcome)] = WelcomeFrom,
-                [typeof(ClusterUserAction.Leave)] = bytes => new ClusterUserAction.Leave(AddressFrom(AddressData.Parser.ParseFrom(bytes))),
-                [typeof(ClusterUserAction.Down)] = bytes => new ClusterUserAction.Down(AddressFrom(AddressData.Parser.ParseFrom(bytes))),
-                [typeof(InternalClusterAction.InitJoin)] = bytes => new InternalClusterAction.InitJoin(),
-                [typeof(InternalClusterAction.InitJoinAck)] = bytes => new InternalClusterAction.InitJoinAck(AddressFrom(AddressData.Parser.ParseFrom(bytes))),
-                [typeof(InternalClusterAction.InitJoinNack)] = bytes => new InternalClusterAction.InitJoinNack(AddressFrom(AddressData.Parser.ParseFrom(bytes))),
-                [typeof(InternalClusterAction.ExitingConfirmed)] = bytes => new InternalClusterAction.ExitingConfirmed(UniqueAddressFrom(Proto.Msg.UniqueAddress.Parser.ParseFrom(bytes))),
-                [typeof(ClusterRouterPool)] = ClusterRouterPoolFrom
-            };
+           
         }
 
         public override byte[] ToBinary(object obj)
@@ -122,6 +102,38 @@ namespace Akka.Cluster.Serialization
             switch (manifest)
             {
                 case HeartBeatManifestPre1419:
+                    return DeserializeHeartbeatAsAddress(bytes);
+                case HeartBeatRspManifestPre1419:
+                    return DeserializeHeartbeatRspAsUniqueAddress(bytes);
+                case HeartBeatManifest:
+                    return DeserializeHeartbeat(bytes);
+                case HeartBeatRspManifest:
+                    return DeserializeHeartbeatRsp(bytes);
+                case GossipStatusManifest:
+                    return GossipStatusFrom(bytes);
+                case GossipEnvelopeManifest:
+                    return GossipEnvelopeFrom(bytes);
+                case InitJoinManifest:
+                    return new InternalClusterAction.InitJoin();
+                case InitJoinAckManifest:
+                    return new InternalClusterAction.InitJoinAck(AddressFrom(AddressData.Parser.ParseFrom(bytes)));
+                case InitJoinNackManifest:
+                    return new InternalClusterAction.InitJoinNack(AddressFrom(AddressData.Parser.ParseFrom(bytes)));
+                case JoinManifest:
+                    return JoinFrom(bytes);
+                case WelcomeManifest:
+                    return WelcomeFrom(bytes);
+                case LeaveManifest:
+                    return new ClusterUserAction.Leave(AddressFrom(AddressData.Parser.ParseFrom(bytes)));
+                case DownManifest:
+                    return new ClusterUserAction.Down(AddressFrom(AddressData.Parser.ParseFrom(bytes)));
+                case ExitingConfirmedManifest:
+                    return new InternalClusterAction.ExitingConfirmed(
+                        UniqueAddressFrom(Proto.Msg.UniqueAddress.Parser.ParseFrom(bytes)));
+                case ClusterRouterPoolManifest:
+                    return ClusterRouterPoolFrom(bytes);
+                default:
+                    throw new ArgumentException($"Unknown manifest [{manifest}] in [{nameof(ClusterMessageSerializer)}]");
             }
         }
 
@@ -179,6 +191,7 @@ namespace Akka.Cluster.Serialization
             return new InternalClusterAction.Join(UniqueAddressFrom(join.Node), join.Roles.ToImmutableHashSet(), ver);
         }
 
+        // TODO: need to gzip compress the Welcome message for large clusters
         private static byte[] WelcomeMessageBuilder(InternalClusterAction.Welcome welcome)
         {
             var welcomeProto = new Proto.Msg.Welcome();
@@ -447,7 +460,7 @@ namespace Akka.Cluster.Serialization
         private static ClusterHeartbeatSender.HeartbeatRsp DeserializeHeartbeatRsp(byte[] bytes)
         {
             var hbsp = HeartBeatResponse.Parser.ParseFrom(bytes);
-            return new ClusterHeartbeatSender.HeartbeatRsp(hbsp.From, hbsp.SequenceNr, hbsp.CreationTime);
+            return new ClusterHeartbeatSender.HeartbeatRsp(UniqueAddressFrom(hbsp.From), hbsp.SequenceNr, hbsp.CreationTime);
         }
 
         private static ClusterHeartbeatSender.Heartbeat DeserializeHeartbeatAsAddress(byte[] bytes)
@@ -466,7 +479,7 @@ namespace Akka.Cluster.Serialization
         //
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static AddressData AddressToProto(Address address)
+        internal static AddressData AddressToProto(Address address)
         {
             var message = new AddressData();
             message.System = address.System;
@@ -477,7 +490,7 @@ namespace Akka.Cluster.Serialization
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static Address AddressFrom(AddressData addressProto)
+        internal static Address AddressFrom(AddressData addressProto)
         {
             return new Address(
                 addressProto.Protocol,
@@ -487,7 +500,7 @@ namespace Akka.Cluster.Serialization
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static Proto.Msg.UniqueAddress UniqueAddressToProto(UniqueAddress uniqueAddress)
+        internal static Proto.Msg.UniqueAddress UniqueAddressToProto(UniqueAddress uniqueAddress)
         {
             var message = new Proto.Msg.UniqueAddress();
             message.Address = AddressToProto(uniqueAddress.Address);
@@ -496,7 +509,7 @@ namespace Akka.Cluster.Serialization
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static UniqueAddress UniqueAddressFrom(Proto.Msg.UniqueAddress uniqueAddressProto)
+        internal static UniqueAddress UniqueAddressFrom(Proto.Msg.UniqueAddress uniqueAddressProto)
         {
             return new UniqueAddress(AddressFrom(uniqueAddressProto.Address), (int)uniqueAddressProto.Uid);
         }
