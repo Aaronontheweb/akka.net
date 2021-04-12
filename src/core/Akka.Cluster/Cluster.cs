@@ -538,10 +538,7 @@ namespace Akka.Cluster
                 LogInfo("Shutting down...");
                 System.Stop(_clusterDaemons);
 
-                if (_readView != null)
-                {
-                    _readView.Dispose();
-                }
+                _readView?.Dispose();
 
                 LogInfo("Successfully shut down");
             }
