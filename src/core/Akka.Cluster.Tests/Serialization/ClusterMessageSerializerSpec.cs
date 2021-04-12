@@ -8,6 +8,7 @@
 using System.Collections.Immutable;
 using Akka.Actor;
 using Akka.Cluster.Routing;
+using Akka.Cluster.Serialization;
 using Akka.Routing;
 using Akka.Serialization;
 using Akka.TestKit;
@@ -49,7 +50,7 @@ namespace Akka.Cluster.Tests.Serialization
                 SequenceNr = 1
             }.ToByteArray();
 
-            var serializer = (SerializerWithStringManifest)Sys.Serialization.FindSerializerFor(typeof(ClusterHeartbeatSender.Heartbeat));
+            var serializer = (SerializerWithStringManifest)Sys.Serialization.FindSerializerForType(typeof(ClusterHeartbeatSender.Heartbeat));
             serializer.FromBinary(hb, Akka.Cluster.Serialization.ClusterMessageSerializer.HeartBeatManifest);
         }
 
@@ -72,7 +73,7 @@ namespace Akka.Cluster.Tests.Serialization
                 SequenceNr = 1
             }.ToByteArray();
 
-            var serializer = (SerializerWithStringManifest)Sys.Serialization.FindSerializerFor(typeof(ClusterHeartbeatSender.Heartbeat));
+            var serializer = (SerializerWithStringManifest)Sys.Serialization.FindSerializerForType(typeof(ClusterHeartbeatSender.Heartbeat));
             serializer.FromBinary(hb, Akka.Cluster.Serialization.ClusterMessageSerializer.HeartBeatRspManifest);
         }
 
@@ -221,6 +222,7 @@ namespace Akka.Cluster.Tests.Serialization
         {
             var serializer = Sys.Serialization.FindSerializerFor(message);
             var serialized = serializer.ToBinary(message);
+            serializer.Should().BeOfType<ClusterMessageSerializer>();
             return serializer.FromBinary<T>(serialized);
         }
 
