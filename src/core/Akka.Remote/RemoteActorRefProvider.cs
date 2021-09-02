@@ -555,7 +555,7 @@ namespace Akka.Remote
             if (path == string.Empty)
                 return ActorRefs.NoSender;
 
-            if (ActorPath.TryParse(path, out var actorPath))
+            if (TryParseCachedPath(path, out var actorPath))
                 return ResolveActorRef(actorPath);
 
             _log.Debug("resolve of unknown path [{0}] failed", path);
