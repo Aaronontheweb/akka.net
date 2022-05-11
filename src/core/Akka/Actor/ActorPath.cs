@@ -134,6 +134,7 @@ namespace Akka.Actor
                     return false;
                 }
             }
+
             return true;
         }
 
@@ -221,6 +222,7 @@ namespace Akka.Actor
                     b[_depth - i - 1] = p._name;
                     p = p._parent;
                 }
+
                 return b.MoveToImmutable();
             }
         }
@@ -248,6 +250,7 @@ namespace Akka.Actor
                     b[_depth - i - 1] = i > 0 ? p._name : AppendUidFragment(p._name);
                     p = p._parent;
                 }
+
                 return b.MoveToImmutable();
             }
         }
@@ -292,6 +295,7 @@ namespace Akka.Actor
                 if (other is null || other._depth > 0) return 1;
                 return StringComparer.Ordinal.Compare(ToString(), other.ToString());
             }
+
             return InternalCompareTo(this, other);
         }
 
@@ -361,6 +365,7 @@ namespace Akka.Actor
                 if (!string.IsNullOrEmpty(element))
                     a /= element;
             }
+
             return a;
         }
 
@@ -382,6 +387,7 @@ namespace Akka.Actor
                 for (var i = depth; i < 0 && current._depth > 0; i++)
                     current = current._parent;
             }
+
             return current;
         }
 
@@ -451,7 +457,11 @@ namespace Akka.Actor
                 nextSlash = absoluteUri.IndexOf('/');
                 if (nextSlash > 0)
                 {
+#if NETSTANDARD
                     var name = absoluteUri.Slice(0, nextSlash).ToString();
+#else
+                    var name = new string(absoluteUri.Slice(0, nextSlash));
+#endif
                     actorPath = new ChildActorPath(actorPath, name, ActorCell.UndefinedUid);
                 }
                 else if (nextSlash < 0 && absoluteUri.Length > 0) // final segment
@@ -462,18 +472,24 @@ namespace Akka.Actor
                         var fragment = absoluteUri.Slice(fragLoc + 1);
                         var fragValue = SpanHacks.Parse(fragment);
                         absoluteUri = absoluteUri.Slice(0, fragLoc);
+#if NETSTANDARD
                         actorPath = new ChildActorPath(actorPath, absoluteUri.ToString(), fragValue);
+#else
+                        actorPath = new ChildActorPath(actorPath, new string(absoluteUri), fragValue);
+#endif
                     }
                     else
                     {
+#if NETSTANDARD
                         actorPath = new ChildActorPath(actorPath, absoluteUri.ToString(), ActorCell.UndefinedUid);
+#else
+                        actorPath = new ChildActorPath(actorPath, new string(absoluteUri), ActorCell.UndefinedUid);
+#endif
                     }
-
                 }
 
                 absoluteUri = absoluteUri.Slice(nextSlash + 1);
-            }
-            while (nextSlash >= 0);
+            } while (nextSlash >= 0);
 
             return true;
         }
@@ -516,7 +532,8 @@ namespace Akka.Actor
         /// <param name="address">A <see cref="ReadOnlySpan{T}"/> containing the address part.</param>
         /// <param name="absoluteUri">A <see cref="ReadOnlySpan{T}"/> containing the path following the address.</param>
         /// <returns><c>true</c> if the path parts could be parsed, <c>false</c> otherwise.</returns>
-        public static bool TryParseParts(ReadOnlySpan<char> path, out ReadOnlySpan<char> address, out ReadOnlySpan<char> absoluteUri)
+        public static bool TryParseParts(ReadOnlySpan<char> path, out ReadOnlySpan<char> address,
+            out ReadOnlySpan<char> absoluteUri)
         {
             var firstAtPos = path.IndexOf(':');
             if (firstAtPos < 4 || 255 < firstAtPos)
@@ -561,10 +578,16 @@ namespace Akka.Actor
         {
             if (_depth == 0)
             {
-                Span<char> buffer = prefix.Length < 1024 ? stackalloc char[prefix.Length + 1] : new char[prefix.Length + 1];
+                Span<char> buffer = prefix.Length < 1024
+                    ? stackalloc char[prefix.Length + 1]
+                    : new char[prefix.Length + 1];
                 prefix.CopyTo(buffer);
                 buffer[buffer.Length - 1] = '/';
-                return buffer.ToString(); //todo use string.Create() when available
+#if NETSTANDARD
+                    return buffer.ToString(); //todo use string.Create() when available
+#else
+                return new string(buffer);
+#endif
             }
             else
             {
@@ -592,7 +615,12 @@ namespace Akka.Actor
                     name.CopyTo(buffer.Slice(offset + 1, name.Length));
                     p = p._parent;
                 }
+
+#if NETSTANDARD
                 return buffer.ToString(); //todo use string.Create() when available
+#else
+                return new string(buffer);
+#endif
             }
         }
 
@@ -700,6 +728,7 @@ namespace Akka.Actor
                 // we never change address for IgnoreActorRef
                 return ToString();
             }
+
             var withAddress = ToStringWithAddress(address);
             var result = AppendUidFragment(withAddress);
             return result;
@@ -724,6 +753,7 @@ namespace Akka.Actor
                 // we never change address for IgnoreActorRef
                 return ToString();
             }
+
             if (_address.Host != null && _address.Port.HasValue)
                 return Join(_address.ToString().AsSpan());
 
@@ -765,7 +795,6 @@ namespace Akka.Actor
             : base(address, name)
         {
         }
-
     }
 
     /// <summary>
