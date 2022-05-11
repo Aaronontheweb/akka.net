@@ -736,7 +736,22 @@ namespace Akka.Actor
 
         private string AppendUidFragment(string withAddress)
         {
+#if NETSTANDARD
             return _uid != ActorCell.UndefinedUid ? $"{withAddress}#{_uid}" : withAddress;
+#else
+            if (_uid == ActorCell.UndefinedUid)
+                return withAddress;
+            var length = withAddress.Length + 1 + SpanHacks.ComputeStrLength(_uid);
+            return string.Create(length, (withAddress, _uid), (span, tuple) =>
+            {
+                var position = 0;
+                var (s, uid) = tuple;
+                s.AsSpan().CopyTo(span);
+                position += s.Length;
+                span[position++] = '#';
+                SpanHacks.WriteLong(span, uid, position);
+            });
+#endif
         }
 
         /// <summary>

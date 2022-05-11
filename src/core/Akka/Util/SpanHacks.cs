@@ -30,6 +30,26 @@ namespace Akka.Util
                 return sigfigs + 1;
             return sigfigs;
         }
+        
+        /// <summary>
+        /// Computes how long the string representation of an long integer without allocations.
+        /// </summary>
+        /// <param name="i">The long integer to evaluate.</param>
+        /// <returns>The length, expressed as an integer.</returns>
+        public static int ComputeStrLength(long i)
+        {
+            var mask = i >> 63;
+            var abs = (i + mask) ^ mask;  // absolute value
+            var sigfigs = 0;
+            do{
+                sigfigs++;
+                abs /= 10;
+            }while(abs != 0);
+
+            if (i < 0)
+                return sigfigs + 1;
+            return sigfigs;
+        }
 
         /// <summary>
         /// Writes an integer into a <see cref="Span{T}"/> without allocating on the heap.
@@ -69,6 +89,51 @@ namespace Akka.Util
             // trim the fat
             var finalSpan = tempSpan.Slice(0, position);
             
+            // have to reverse the bytes in order to get them into string format...
+            finalSpan.Reverse();
+
+            finalSpan.CopyTo(span.Slice(index));
+            return position;
+        }
+        
+        /// <summary>
+        /// Writes a long integer into a <see cref="Span{T}"/> without allocating on the heap.
+        /// </summary>
+        /// <param name="span">A span that is long enough to support the long integer we're about to write into it.</param>
+        /// <param name="i">The long integer we're going to write</param>
+        /// <param name="index">Optional. The start position in <see cref="span"/> we're going to begin writing in.</param>
+        /// <returns>The number of bytes written to <see cref="span"/>.</returns>
+        /// <remarks>
+        /// Will not work for <see cref="Int64.MinValue"/>.
+        /// </remarks>
+        public static int WriteLong(Span<char> span, long i, int index = 0)
+        {
+            // 11 is the max characters for a span
+            Span<char> tempSpan = stackalloc char[20];
+
+            // need to cache initial start position to determine number of inserted bytes
+            var position = 0;
+            var negative = false;
+            if (i < 0)
+            {
+                negative = true;
+                i = -i;
+            }
+
+            do
+            {
+                tempSpan[position++] = (char)((i % 10) + '0');
+                i /= 10;
+            }while(i != 0);
+
+            if(negative){
+                tempSpan[position++] = '-';
+            }
+
+
+            // trim the fat
+            var finalSpan = tempSpan.Slice(0, position);
+
             // have to reverse the bytes in order to get them into string format...
             finalSpan.Reverse();
 
