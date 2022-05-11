@@ -117,12 +117,52 @@ namespace Akka.Actor
 
         private static string CreateLazyToString(Address addr)
         {
+#if NETSTANDARD
             if (!string.IsNullOrWhiteSpace(addr.Host) && addr.Port.HasValue)
                 return $"{addr.Protocol}://{addr.System}@{addr.Host}:{addr.Port}";
             if (!string.IsNullOrWhiteSpace(addr.Host)) // host, but no port - rare case
                 return $"{addr.Protocol}://{addr.System}@{addr.Host}";
 
             return $"{addr.Protocol}://{addr.System}";
+#else
+            var length = 0;
+            if (!string.IsNullOrWhiteSpace(addr.Host) && addr.Port.HasValue)
+                length = addr.Protocol.Length + 3 + addr.System.Length + 1 + addr._host.Length + 1 +
+                         SpanHacks.ComputeStrLength(addr._port.Value);
+            else if (!string.IsNullOrWhiteSpace(addr.Host)) // host, but no port - rare case
+                length = addr.Protocol.Length + 3 + addr.System.Length + 1 + addr._host.Length;
+            else
+                length = addr.Protocol.Length + 3 + addr.System.Length;
+
+            return string.Create(length, addr, (span, address) =>
+            {
+                var position = 0;
+                addr._protocol.AsSpan().CopyTo(span);
+                position += addr._protocol.Length;
+                span[position++] = ':';
+                span[position++] = '/';
+                span[position++] = '/';
+                
+                addr._system.AsSpan().CopyTo(span.Slice(position));
+                position += addr._system.Length;
+
+                // if we don't have a host, we can stop here
+                if (string.IsNullOrWhiteSpace(addr.Host))
+                    return;
+                
+                // copy the host
+                span[position++] = '@';
+                addr._host.AsSpan().CopyTo(span.Slice(position));
+                position += addr._host.Length;
+
+                // if we don't have a port, stop here
+                if (!addr.Port.HasValue)
+                    return;
+                
+                span[position++] = ':';
+                SpanHacks.WriteInt(span, addr._port.Value, position);
+            });
+#endif
         }
 
         /// <summary>
@@ -150,7 +190,8 @@ namespace Akka.Actor
         {
             if (ReferenceEquals(null, other)) return false;
             if (ReferenceEquals(this, other)) return true;
-            return Port == other.Port && string.Equals(Host, other.Host) && string.Equals(System, other.System) && string.Equals(Protocol, other.Protocol);
+            return Port == other.Port && string.Equals(Host, other.Host) && string.Equals(System, other.System) &&
+                   string.Equals(Protocol, other.Protocol);
         }
 
 
@@ -172,7 +213,8 @@ namespace Akka.Actor
         {
             if (obj is Address address) return CompareTo(address);
 
-            throw new ArgumentException($"Cannot compare {nameof(Address)} with instance of type '{obj?.GetType().FullName ?? "null"}'.");
+            throw new ArgumentException(
+                $"Cannot compare {nameof(Address)} with instance of type '{obj?.GetType().FullName ?? "null"}'.");
         }
 
         /// <summary>
@@ -381,11 +423,11 @@ namespace Akka.Actor
             {
                 absolutUri = span.Slice(uriStart);
                 span = span.Slice(0, uriStart);
-            } 
+            }
             else
             {
                 absolutUri = "/".AsSpan();
-            }               
+            }
 
             var firstAtPos = span.IndexOf('@');
             string sysName;
@@ -437,7 +479,6 @@ namespace Akka.Actor
                 span = span.Slice(secondColonPos + 1);
             }
 
-            
 
             if (SpanHacks.TryParse(span, out var port) && port >= 0)
             {
@@ -458,18 +499,22 @@ namespace Akka.Actor
             /// TBD
             /// </summary>
             public string Protocol { get; set; }
+
             /// <summary>
             /// TBD
             /// </summary>
             public string System { get; set; }
+
             /// <summary>
             /// TBD
             /// </summary>
             public string Host { get; set; }
+
             /// <summary>
             /// TBD
             /// </summary>
             public int? Port { get; set; }
+
             /// <summary>
             /// Creates a <see cref="Address"/> encapsulated by this surrogate.
             /// </summary>
@@ -488,13 +533,7 @@ namespace Akka.Actor
         /// <returns>The surrogate representation of the current <see cref="Address"/>.</returns>
         public ISurrogate ToSurrogate(ActorSystem system)
         {
-            return new AddressSurrogate()
-            {
-                Host = Host,
-                Port = Port,
-                System = System,
-                Protocol = Protocol
-            };
+            return new AddressSurrogate() { Host = Host, Port = Port, System = System, Protocol = Protocol };
         }
     }
 
@@ -509,7 +548,6 @@ namespace Akka.Actor
     /// </summary>
     public static class RelativeActorPath
     {
-
         /// <summary>
         /// TBD
         /// </summary>
@@ -539,4 +577,3 @@ namespace Akka.Actor
         }
     }
 }
-
