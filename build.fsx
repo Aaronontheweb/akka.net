@@ -581,8 +581,8 @@ Target "Protobuf" <| fun _ ->
     let protoFiles = [
         ("WireFormats.proto", "/src/core/Akka.Remote/Serialization/Proto/");
         ("ContainerFormats.proto", "/src/core/Akka.Remote/Serialization/Proto/");
-        ("ContainerFormats.proto", "/src/core/Akka.Remote/Serialization/Proto/");
         ("SystemMessageFormats.proto", "/src/core/Akka.Remote/Serialization/Proto/");
+        ("ArteryControlFormats.proto", "/src/core/Akka.Remote/Serialization/Proto/");
         ("ClusterMessages.proto", "/src/core/Akka.Cluster/Serialization/Proto/");
         ("ClusterClientMessages.proto", "/src/contrib/cluster/Akka.Cluster.Tools/Client/Serialization/Proto/");
         ("DistributedPubSubMessages.proto", "/src/contrib/cluster/Akka.Cluster.Tools/PublishSubscribe/Serialization/Proto/");
