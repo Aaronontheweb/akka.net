@@ -20,6 +20,7 @@ using Google.Protobuf;
 
 namespace Akka.Remote.Transport.DotNetty
 {
+
     internal abstract class TcpHandlers : CommonHandlers
     {
         private IHandleEventListener _listener;
@@ -61,6 +62,21 @@ namespace Akka.Remote.Transport.DotNetty
 
             // decrease the reference count to 0 (releases buffer)
             ReferenceCountUtil.SafeRelease(message);
+        }
+
+        public override Task WriteAsync(IChannelHandlerContext context, object message)
+        {
+            if (message is ByteString byteString)
+            {
+                var buffer = context.Allocator.DirectBuffer(byteString.Length);
+                byteString.CopyTo(buffer.Array, buffer.ArrayOffset + buffer.WriterIndex);
+                buffer.SetWriterIndex(byteString.Length);
+                
+                // OUTBOUND WRITES WILL AUTOMATICALLY FREE MEMORY POOLED BUFFERS
+                return context.WriteAsync(buffer);
+            }
+
+            return context.WriteAsync(message);
         }
 
         /// <summary>
@@ -171,8 +187,8 @@ namespace Akka.Remote.Transport.DotNetty
         {
             if (_channel.Open)
             {
-                var data = ToByteBuffer(_channel, payload);
-                _channel.WriteAndFlushAsync(data);
+                //var data = ToByteBuffer(_channel, payload);
+                _channel.WriteAndFlushAsync(payload);
                 return true;
             }
             return false;
@@ -181,7 +197,10 @@ namespace Akka.Remote.Transport.DotNetty
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static IByteBuffer ToByteBuffer(IChannel channel, ByteString payload)
         {
-            var buffer = Unpooled.WrappedBuffer(payload.ToByteArray());
+            var buffer = channel.Allocator.Buffer(payload.Length);
+            payload.CopyTo(buffer.Array, 0);
+            buffer.SetWriterIndex(payload.Length).MarkWriterIndex();
+            //var buffer = Unpooled.WrappedBuffer(payload.ToByteArray());
             return buffer;
         }
 

@@ -280,7 +280,7 @@ namespace Akka.Remote.Transport.DotNetty
                 .Option(ChannelOption.TcpNodelay, Settings.TcpNoDelay)
                 .Option(ChannelOption.ConnectTimeout, Settings.ConnectTimeout)
                 .Option(ChannelOption.AutoRead, false)
-                .Option(ChannelOption.Allocator, UnpooledByteBufferAllocator.Default)
+                .Option(ChannelOption.Allocator, PooledByteBufferAllocator.Default)
                 .ChannelFactory(() => Settings.EnforceIpFamily
                     ? new TcpSocketChannel(addressFamily)
                     : new TcpSocketChannel())
@@ -314,6 +314,8 @@ namespace Akka.Remote.Transport.DotNetty
         private void SetInitialChannelPipeline(IChannel channel)
         {
             var pipeline = channel.Pipeline;
+
+            //pipeline.AddFirst(new ReferenceCountHandle()); // FOR MEMORY POOLING OUTBOUND WRITES
 
             if (Settings.LogTransport)
             {
@@ -392,7 +394,7 @@ namespace Akka.Remote.Transport.DotNetty
                 .Option(ChannelOption.TcpNodelay, Settings.TcpNoDelay)
                 .Option(ChannelOption.AutoRead, false)
                 .Option(ChannelOption.SoBacklog, Settings.Backlog)
-                .Option(ChannelOption.Allocator, UnpooledByteBufferAllocator.Default)
+                .Option(ChannelOption.Allocator, PooledByteBufferAllocator.Default)
                 .ChannelFactory(() => Settings.EnforceIpFamily
                     ? new TcpServerSocketChannel(addressFamily)
                     : new TcpServerSocketChannel())
