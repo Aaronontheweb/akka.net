@@ -1279,6 +1279,7 @@ namespace Akka.Cluster.Sharding
                     }
                     else
                     {
+                        // we are sending the fully wrapped message here
                         receiver.Tell(Message, Ref);
                     }
                 }

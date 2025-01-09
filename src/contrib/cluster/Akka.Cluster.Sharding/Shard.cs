@@ -1880,7 +1880,7 @@ namespace Akka.Cluster.Sharding
                 case RememberingStart:
                 case RememberingStop:
                 case Passivating:
-                    AppendToMessageBuffer(entityId, msg, snd);
+                    AppendToMessageBuffer(entityId, payload, snd);
                     break;
                 case { } state and (WaitingForRestart or RememberedButNotCreated):
                     if (_verboseDebug)
@@ -1912,7 +1912,7 @@ namespace Akka.Cluster.Sharding
                                     payload.GetType().Name,
                                     entityId,
                                     _entities.PendingRememberEntities);
-                            AppendToMessageBuffer(entityId, msg, snd);
+                            AppendToMessageBuffer(entityId, payload, snd);
                             _entities.RememberingStart(entityId, ackTo: null);
                         }
                         else
@@ -1923,7 +1923,7 @@ namespace Akka.Cluster.Sharding
                                     _typeName,
                                     payload.GetType().Name,
                                     entityId);
-                            AppendToMessageBuffer(entityId, msg, snd);
+                            AppendToMessageBuffer(entityId, payload, snd);
                             _entities.RememberingStart(entityId, ackTo: null);
                             RememberUpdate(add: ImmutableHashSet.Create(entityId));
                         }
