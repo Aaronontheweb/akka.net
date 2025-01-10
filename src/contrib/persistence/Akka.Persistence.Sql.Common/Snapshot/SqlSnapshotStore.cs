@@ -24,13 +24,16 @@ namespace Akka.Persistence.Sql.Common.Snapshot
     public abstract class SqlSnapshotStore : SnapshotStore, IWithUnboundedStash
     {
         #region messages
-        
+
         private sealed class Initialized
         {
             public static readonly Initialized Instance = new Initialized();
-            private Initialized() { }
+
+            private Initialized()
+            {
+            }
         }
-            
+
         #endregion
 
         /// <summary>
@@ -57,6 +60,7 @@ namespace Akka.Persistence.Sql.Common.Snapshot
         /// TBD
         /// </summary>
         protected ILoggingAdapter Log => _log ?? (_log ?? Context.GetLogger());
+
         private ILoggingAdapter _log;
 
         /// <summary>
@@ -114,7 +118,8 @@ namespace Akka.Persistence.Sql.Common.Snapshot
             try
             {
                 using (var connection = CreateDbConnection())
-                using (var nestedCancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(_pendingRequestsCancellation.Token))
+                using (var nestedCancellationTokenSource =
+                       CancellationTokenSource.CreateLinkedTokenSource(_pendingRequestsCancellation.Token))
                 {
                     await connection.OpenAsync(nestedCancellationTokenSource.Token);
                     await QueryExecutor.CreateTableAsync(connection, nestedCancellationTokenSource.Token);
@@ -129,7 +134,7 @@ namespace Akka.Persistence.Sql.Common.Snapshot
 
         private bool WaitingForInitialization(object message)
         {
-            switch(message)
+            switch (message)
             {
                 case Initialized _:
                     UnbecomeStacked();
@@ -137,7 +142,7 @@ namespace Akka.Persistence.Sql.Common.Snapshot
                     return true;
                 case Status.Failure msg:
                     Log.Error(msg.Cause, "Error during snapshot store initialization");
-                    
+
                     // trigger a restart so we have some hope of succeeding in the future even if initialization failed
                     throw new ApplicationException("Failed to initialize SQL SnapshotStore.", msg.Cause);
                 default:
@@ -154,10 +159,13 @@ namespace Akka.Persistence.Sql.Common.Snapshot
         {
             var connectionString = Settings.ConnectionString;
 
+#if NETSTANDARD
             if (string.IsNullOrEmpty(connectionString))
             {
-                connectionString = System.Configuration.ConfigurationManager.ConnectionStrings[Settings.ConnectionStringName].ConnectionString;
+                connectionString =
+ System.Configuration.ConfigurationManager.ConnectionStrings[Settings.ConnectionStringName].ConnectionString;
             }
+#endif
 
             return connectionString;
         }
@@ -168,13 +176,16 @@ namespace Akka.Persistence.Sql.Common.Snapshot
         /// <param name="persistenceId">TBD</param>
         /// <param name="criteria">TBD</param>
         /// <returns>TBD</returns>
-        protected override async Task<SelectedSnapshot> LoadAsync(string persistenceId, SnapshotSelectionCriteria criteria)
+        protected override async Task<SelectedSnapshot> LoadAsync(string persistenceId,
+            SnapshotSelectionCriteria criteria)
         {
             using (var connection = CreateDbConnection())
-            using (var nestedCancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(_pendingRequestsCancellation.Token))
+            using (var nestedCancellationTokenSource =
+                   CancellationTokenSource.CreateLinkedTokenSource(_pendingRequestsCancellation.Token))
             {
                 await connection.OpenAsync(nestedCancellationTokenSource.Token);
-                return await QueryExecutor.SelectSnapshotAsync(connection, nestedCancellationTokenSource.Token, persistenceId, criteria.MaxSequenceNr, criteria.MaxTimeStamp);
+                return await QueryExecutor.SelectSnapshotAsync(connection, nestedCancellationTokenSource.Token,
+                    persistenceId, criteria.MaxSequenceNr, criteria.MaxTimeStamp);
             }
         }
 
@@ -187,7 +198,8 @@ namespace Akka.Persistence.Sql.Common.Snapshot
         protected override async Task SaveAsync(SnapshotMetadata metadata, object snapshot)
         {
             using (var connection = CreateDbConnection())
-            using (var nestedCancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(_pendingRequestsCancellation.Token))
+            using (var nestedCancellationTokenSource =
+                   CancellationTokenSource.CreateLinkedTokenSource(_pendingRequestsCancellation.Token))
             {
                 await connection.OpenAsync(nestedCancellationTokenSource.Token);
                 await QueryExecutor.InsertAsync(connection, nestedCancellationTokenSource.Token, snapshot, metadata);
@@ -202,11 +214,13 @@ namespace Akka.Persistence.Sql.Common.Snapshot
         protected override async Task DeleteAsync(SnapshotMetadata metadata)
         {
             using (var connection = CreateDbConnection())
-            using (var nestedCancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(_pendingRequestsCancellation.Token))    
+            using (var nestedCancellationTokenSource =
+                   CancellationTokenSource.CreateLinkedTokenSource(_pendingRequestsCancellation.Token))
             {
                 await connection.OpenAsync(nestedCancellationTokenSource.Token);
                 DateTime? timestamp = metadata.Timestamp != DateTime.MinValue ? metadata.Timestamp : default(DateTime?);
-                await QueryExecutor.DeleteAsync(connection, nestedCancellationTokenSource.Token, metadata.PersistenceId, metadata.SequenceNr, timestamp);
+                await QueryExecutor.DeleteAsync(connection, nestedCancellationTokenSource.Token, metadata.PersistenceId,
+                    metadata.SequenceNr, timestamp);
             }
         }
 
@@ -219,10 +233,12 @@ namespace Akka.Persistence.Sql.Common.Snapshot
         protected override async Task DeleteAsync(string persistenceId, SnapshotSelectionCriteria criteria)
         {
             using (var connection = CreateDbConnection())
-            using (var nestedCancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(_pendingRequestsCancellation.Token))
+            using (var nestedCancellationTokenSource =
+                   CancellationTokenSource.CreateLinkedTokenSource(_pendingRequestsCancellation.Token))
             {
                 await connection.OpenAsync(nestedCancellationTokenSource.Token);
-                await QueryExecutor.DeleteBatchAsync(connection, nestedCancellationTokenSource.Token, persistenceId, criteria.MaxSequenceNr, criteria.MaxTimeStamp);
+                await QueryExecutor.DeleteBatchAsync(connection, nestedCancellationTokenSource.Token, persistenceId,
+                    criteria.MaxSequenceNr, criteria.MaxTimeStamp);
             }
         }
     }

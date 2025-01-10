@@ -430,6 +430,7 @@ module Configuration =
     let defaultConfig = Akka.Configuration.ConfigurationFactory.Default
 
     /// Loads Akka configuration from the project's .config file.
+    #
     let load = Akka.Configuration.ConfigurationFactory.Load
     
 module internal OptionHelper =

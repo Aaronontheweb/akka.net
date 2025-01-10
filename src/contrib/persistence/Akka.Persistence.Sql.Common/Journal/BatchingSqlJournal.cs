@@ -84,7 +84,9 @@ namespace Akka.Persistence.Sql.Common.Journal
                 case "repair-by-discard-old": mode = ReplayFilterMode.RepairByDiscardOld; break;
                 case "fail": mode = ReplayFilterMode.Fail; break;
                 case "warn": mode = ReplayFilterMode.Warn; break;
-                default: throw new ConfigurationException($"Invalid replay-filter.mode [{replayModeString}], supported values [off, repair-by-discard-old, fail, warn]");
+                default:
+                    throw new ConfigurationException(
+                        $"Invalid replay-filter.mode [{replayModeString}], supported values [off, repair-by-discard-old, fail, warn]");
             }
 
             Mode = mode;
@@ -236,14 +238,16 @@ namespace Akka.Persistence.Sql.Common.Journal
         /// <summary>
         /// The default serializer used when not type override matching is found
         /// </summary>
-        [Obsolete(message: "This property should never be used for writes, use the default `System.Object` serializer instead")]
+        [Obsolete(
+            message:
+            "This property should never be used for writes, use the default `System.Object` serializer instead")]
         public string DefaultSerializer { get; }
 
         /// <summary>
         /// The fully qualified name of the type that should be used as timestamp provider.
         /// </summary>
         public string TimestampProviderTypeName { get; }
-        
+
         /// <summary>
         /// Isolation level of transactions used during read query execution.
         /// </summary>
@@ -278,19 +282,21 @@ namespace Akka.Persistence.Sql.Common.Journal
                 throw ConfigurationException.NullOrEmptyConfig<BatchingSqlJournalSetup>();
 
             var connectionString = config.GetString("connection-string", null);
+#if NETSTANDARD
             if (string.IsNullOrWhiteSpace(connectionString))
             {
                 connectionString = System.Configuration.ConfigurationManager
                     .ConnectionStrings[config.GetString("connection-string-name", "DefaultConnection")]?
                     .ConnectionString;
             }
+#endif
 
             if (string.IsNullOrWhiteSpace(connectionString))
                 throw new ConfigurationException("No connection string for Sql Event Journal was specified");
 
             ReadIsolationLevel = namingConventions.ReadIsolationLevel;
             WriteIsolationLevel = namingConventions.WriteIsolationLevel;
-            
+
             // backward compatibility
             var level = config.GetString("isolation-level");
             if (level is { })
@@ -357,8 +363,9 @@ namespace Akka.Persistence.Sql.Common.Journal
                 replayFilterSettings: replayFilterSettings,
                 namingConventions: namingConventions,
                 defaultSerializer: defaultSerializer)
-        { }
-        
+        {
+        }
+
         /// <summary>
         /// Initializes a new instance of the <see cref="BatchingSqlJournalSetup" /> class.
         /// </summary>
@@ -630,8 +637,9 @@ namespace Akka.Persistence.Sql.Common.Journal
         protected BatchingSqlJournal(BatchingSqlJournalSetup setup)
         {
             Setup = setup;
-            CanPublish = Persistence.Instance.Apply(Context.System).Settings.Internal.PublishPluginCommands;      
-            TimestampProvider = TimestampProviderProvider.GetTimestampProvider(setup.TimestampProviderTypeName, Context);
+            CanPublish = Persistence.Instance.Apply(Context.System).Settings.Internal.PublishPluginCommands;
+            TimestampProvider =
+                TimestampProviderProvider.GetTimestampProvider(setup.TimestampProviderTypeName, Context);
 
             _remainingOperations = Setup.MaxConcurrentOperations;
             _buffers = new[]
@@ -648,7 +656,7 @@ namespace Akka.Persistence.Sql.Common.Journal
                 maxFailures: Setup.CircuitBreakerSettings.MaxFailures,
                 callTimeout: Setup.CircuitBreakerSettings.CallTimeout,
                 resetTimeout: Setup.CircuitBreakerSettings.ResetTimeout);
-            
+
             _writeIsolationLevel = Setup.WriteIsolationLevel;
             _readIsolationLevel = Setup.ReadIsolationLevel;
 
@@ -808,11 +816,12 @@ namespace Akka.Persistence.Sql.Common.Journal
 
             var cause = message.Cause is AggregateException aggregateException
                 ? aggregateException.Flatten().InnerExceptions.OfType<DbException>().FirstOrDefault()
-                    ?? aggregateException.Flatten().InnerExceptions[0]
+                  ?? aggregateException.Flatten().InnerExceptions[0]
                 : message.Cause;
 
-            Log.Error(cause, "An error occurred during event batch processing. ChunkId: [{0}], batched requests: [{1}]", message.ChunkId, message.Requests.Length);
-            
+            Log.Error(cause, "An error occurred during event batch processing. ChunkId: [{0}], batched requests: [{1}]",
+                message.ChunkId, message.Requests.Length);
+
             foreach (var request in message.Requests)
             {
                 switch (request)
@@ -826,7 +835,7 @@ namespace Akka.Persistence.Sql.Common.Journal
                         aRef.Tell(new WriteMessagesFailed(cause, atomicWriteCount));
                         foreach (var envelope in req.Messages)
                         {
-                            if (!(envelope is AtomicWrite write)) 
+                            if (!(envelope is AtomicWrite write))
                                 continue;
 
                             var writes = (IImmutableList<IPersistentRepresentation>)write.Payload;
@@ -835,19 +844,23 @@ namespace Akka.Persistence.Sql.Common.Journal
                                 if (cause is DbException)
                                 {
                                     // database-related exceptions should result in failure                                
-                                    aRef.Tell(new WriteMessageFailure(unadapted, cause, actorInstanceId), unadapted.Sender);
+                                    aRef.Tell(new WriteMessageFailure(unadapted, cause, actorInstanceId),
+                                        unadapted.Sender);
                                 }
                                 else
                                 {
-                                    aRef.Tell(new WriteMessageRejected(unadapted, cause, actorInstanceId), unadapted.Sender);
+                                    aRef.Tell(new WriteMessageRejected(unadapted, cause, actorInstanceId),
+                                        unadapted.Sender);
                                 }
                             }
                         }
+
                         break;
                     }
 
                     case DeleteMessagesTo delete:
-                        delete.PersistentActor.Tell(new DeleteMessagesFailure(cause, delete.ToSequenceNr), ActorRefs.NoSender);
+                        delete.PersistentActor.Tell(new DeleteMessagesFailure(cause, delete.ToSequenceNr),
+                            ActorRefs.NoSender);
                         break;
 
                     case ReplayMessages replay:
@@ -869,7 +882,8 @@ namespace Akka.Persistence.Sql.Common.Journal
                         break;
 
                     default:
-                        Log.Error(cause, $"Batching failure not reported to original sender. Unknown batched persistence journal request type [{request.GetType()}].");
+                        Log.Error(cause,
+                            $"Batching failure not reported to original sender. Unknown batched persistence journal request type [{request.GetType()}].");
                         break;
                 }
             }
@@ -916,19 +930,26 @@ namespace Akka.Persistence.Sql.Common.Journal
             {
                 case WriteMessages msg:
                     var atomicWriteCount = msg.Messages.OfType<AtomicWrite>().Count();
-                    msg.PersistentActor.Tell(new WriteMessagesFailed(JournalBufferOverflowException.Instance, atomicWriteCount), ActorRefs.NoSender);
+                    msg.PersistentActor.Tell(
+                        new WriteMessagesFailed(JournalBufferOverflowException.Instance, atomicWriteCount),
+                        ActorRefs.NoSender);
                     break;
                 case ReplayMessages msg:
-                    msg.PersistentActor.Tell(new ReplayMessagesFailure(JournalBufferOverflowException.Instance), ActorRefs.NoSender);
+                    msg.PersistentActor.Tell(new ReplayMessagesFailure(JournalBufferOverflowException.Instance),
+                        ActorRefs.NoSender);
                     break;
                 case DeleteMessagesTo msg:
-                    msg.PersistentActor.Tell(new DeleteMessagesFailure(JournalBufferOverflowException.Instance, msg.ToSequenceNr), ActorRefs.NoSender);
+                    msg.PersistentActor.Tell(
+                        new DeleteMessagesFailure(JournalBufferOverflowException.Instance, msg.ToSequenceNr),
+                        ActorRefs.NoSender);
                     break;
                 case ReplayTaggedMessages msg:
-                    msg.ReplyTo.Tell(new ReplayMessagesFailure(JournalBufferOverflowException.Instance), ActorRefs.NoSender);
+                    msg.ReplyTo.Tell(new ReplayMessagesFailure(JournalBufferOverflowException.Instance),
+                        ActorRefs.NoSender);
                     break;
                 case ReplayAllEvents msg:
-                    msg.ReplyTo.Tell(new EventReplayFailure(JournalBufferOverflowException.Instance), ActorRefs.NoSender);
+                    msg.ReplyTo.Tell(new EventReplayFailure(JournalBufferOverflowException.Instance),
+                        ActorRefs.NoSender);
                     break;
             }
         }
@@ -956,7 +977,9 @@ namespace Akka.Persistence.Sql.Common.Journal
 
                 // In the grand scheme of thing, using a transaction in an all read batch operation
                 // should not hurt performance by much, because it is done only once at the start.
-                using (var tx = connection.BeginTransaction(isWriteOperation ? _writeIsolationLevel : _readIsolationLevel))
+                using (var tx = connection.BeginTransaction(isWriteOperation
+                           ? _writeIsolationLevel
+                           : _readIsolationLevel))
                 using (var command = (TCommand)connection.CreateCommand())
                 {
                     command.CommandTimeout = (int)Setup.ConnectionTimeout.TotalSeconds;
@@ -971,7 +994,7 @@ namespace Akka.Persistence.Sql.Common.Journal
                             switch (req)
                             {
                                 case WriteMessages msg:
-                                    writeResults.Enqueue(await HandleWriteMessages(msg, command)); 
+                                    writeResults.Enqueue(await HandleWriteMessages(msg, command));
                                     break;
                                 case DeleteMessagesTo msg:
                                     await HandleDeleteMessagesTo(msg, command);
@@ -993,6 +1016,7 @@ namespace Akka.Persistence.Sql.Common.Journal
                                     break;
                             }
                         }
+
                         tx.Commit();
                     }
                     catch (Exception e1)
@@ -1005,6 +1029,7 @@ namespace Akka.Persistence.Sql.Common.Journal
                         {
                             throw new AggregateException(e2, e1);
                         }
+
                         throw;
                     }
                     finally
@@ -1091,7 +1116,8 @@ namespace Akka.Persistence.Sql.Common.Journal
             return highestSequenceNr;
         }
 
-        protected virtual async Task HandleSelectCurrentPersistenceIds(SelectCurrentPersistenceIds message, TCommand command)
+        protected virtual async Task HandleSelectCurrentPersistenceIds(SelectCurrentPersistenceIds message,
+            TCommand command)
         {
             long highestOrderingNumber = await ReadHighestSequenceNr(command);
 
@@ -1279,10 +1305,12 @@ namespace Akka.Persistence.Sql.Common.Journal
                                 tagBuilder.Append(tag).Append(';');
                             }
                         }
+
                         persistent = persistent.WithPayload(tagged.Payload);
                     }
 
-                    WriteEvent(command, persistent.WithTimestamp(TimestampProvider.GenerateTimestamp(persistent)), tagBuilder.ToString());
+                    WriteEvent(command, persistent.WithTimestamp(TimestampProvider.GenerateTimestamp(persistent)),
+                        tagBuilder.ToString());
 
                     await command.ExecuteNonQueryAsync();
 
@@ -1364,7 +1392,8 @@ namespace Akka.Persistence.Sql.Common.Journal
                 deserialized = _serialization.Deserialize((byte[])payload, serializerId, manifest);
             }
 
-            return new Persistent(deserialized, sequenceNr, persistenceId, manifest, isDeleted, ActorRefs.NoSender, null, timestamp);
+            return new Persistent(deserialized, sequenceNr, persistenceId, manifest, isDeleted, ActorRefs.NoSender,
+                null, timestamp);
         }
 
         /// <summary>
@@ -1390,7 +1419,7 @@ namespace Akka.Persistence.Sql.Common.Journal
             param.DbType = dbType;
 
             PreAddParameterToCommand(command, param);
-            
+
             command.Parameters.Add(param);
         }
 
@@ -1399,8 +1428,10 @@ namespace Akka.Persistence.Sql.Common.Journal
         /// </summary>
         /// <param name="command"><see cref="DbCommand"/> used to define a parameter in.</param>
         /// <param name="param">Parameter to customize</param>
-        protected virtual void PreAddParameterToCommand(TCommand command, DbParameter param) { }
-        
+        protected virtual void PreAddParameterToCommand(TCommand command, DbParameter param)
+        {
+        }
+
         /// <summary>
         /// Select the buffer that has the smallest id on its first item, retrieve a maximum Setup.MaxBatchSize
         /// items from it, and return it as a chunk that needs to be batched
@@ -1418,28 +1449,31 @@ namespace Akka.Persistence.Sql.Common.Journal
                 // We don't batch delete and writes in the same batch, reason being a database
                 // can be deadlocked if write and delete happens in the same transaction
                 var writeType = currentBuffer.Peek().request.GetType();
-                while(currentBuffer.Count > 0 && currentBuffer.Peek().request.GetType() == writeType)
+                while (currentBuffer.Count > 0 && currentBuffer.Peek().request.GetType() == writeType)
                 {
                     operations.Add(currentBuffer.Dequeue().request);
                     if (operations.Count == Setup.MaxBatchSize)
                         break;
                 }
+
                 return (new RequestChunk(chunkId, operations.ToArray()), true);
             }
-            
-            while(currentBuffer.Count > 0)
+
+            while (currentBuffer.Count > 0)
             {
                 operations.Add(currentBuffer.Dequeue().request);
                 if (operations.Count == Setup.MaxBatchSize)
                     break;
             }
+
             return (new RequestChunk(chunkId, operations.ToArray()), false);
         }
 
         private void CompleteBatch(BatchComplete msg)
         {
             _remainingOperations++;
-            Log.Debug("Completed batch (chunkId: {0}) of {1} operations in {2} milliseconds", msg.ChunkId, msg.OperationCount, msg.TimeSpent.TotalMilliseconds);
+            Log.Debug("Completed batch (chunkId: {0}) of {1} operations in {2} milliseconds", msg.ChunkId,
+                msg.OperationCount, msg.TimeSpent.TotalMilliseconds);
 
             TryProcess();
         }
@@ -1453,7 +1487,7 @@ namespace Akka.Persistence.Sql.Common.Journal
 
             public WriteMessagesResult(
                 WriteMessages request,
-                IEnumerable<string> tags, 
+                IEnumerable<string> tags,
                 IEnumerable<string> persistenceIds)
             {
                 _request = request;

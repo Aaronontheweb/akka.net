@@ -259,8 +259,11 @@ namespace Akka.Actor
         public static ActorSystem Create(string name, ActorSystemSetup setup)
         {
             var bootstrapSetup = setup.Get<BootstrapSetup>();
-            var appConfig = bootstrapSetup.FlatSelect(_ => _.Config).GetOrElse(ConfigurationFactory.Load());
-
+            #if NETSTANDARD
+            var appConfig = bootstrapSetup.FlatSelect(s => s.Config).GetOrElse(ConfigurationFactory.Load());
+            #else
+            var appConfig = bootstrapSetup.FlatSelect(s => s.Config).GetOrElse(ConfigurationFactory.Default());
+            #endif
             return CreateAndStartSystem(name, appConfig, setup);
         }
 
