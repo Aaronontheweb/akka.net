@@ -24,7 +24,7 @@ namespace Akka.IO.Memory
     /// and also providing a thread safe way of working with bytes.
     /// </summary>
     [DebuggerDisplay("(Count = {Count}, Segments = {_segments.Count})")]
-    internal sealed class ByteStringV2 : IEquatable<ByteStringV2>, IEnumerable<byte>
+    public sealed class ByteStringV2 : IEquatable<ByteStringV2>, IEnumerable<byte>
     {
         #region Fields and properties
 
@@ -302,7 +302,7 @@ namespace Akka.IO.Memory
 
             foreach (var segment in _segments)
             {
-                segment.CopyTo(result.AsSpan(position));
+                segment.CopyTo(result, position);
                 position += segment.Length;
             }
 
@@ -415,9 +415,9 @@ namespace Akka.IO.Memory
             // Optimization for single segment
             if (IsCompact && _segments[0] is ArrayMemorySegment segment)
             {
-                var span = segment.AsSpan();
-                var result = new byte[span.Length];
-                span.CopyTo(result);
+                byte[] bytes = segment.ToArray();
+                var result = new byte[bytes.Length];
+                Array.Copy(bytes, 0, result, 0, bytes.Length);
                 return result;
             }
 
@@ -427,7 +427,7 @@ namespace Akka.IO.Memory
 
             foreach (var seg in _segments)
             {
-                seg.CopyTo(array.AsSpan(position));
+                seg.CopyTo(array, position);
                 position += seg.Length;
             }
 
@@ -435,43 +435,27 @@ namespace Akka.IO.Memory
         }
 
         /// <summary>
-        /// Attempts to get a ReadOnlySpan over the ByteString contents without copying.
-        /// This only works if the ByteString is compact (single segment).
+        /// Gets the ByteString contents as a byte array. This makes a copy of the data.
         /// </summary>
-        /// <param name="span">The span, if successful.</param>
-        /// <returns>True if a span could be created without copying; otherwise, false.</returns>
-        public bool TryGetReadOnlySpan(out ReadOnlySpan<byte> span)
+        /// <returns>A new byte array containing the ByteString data.</returns>
+        public byte[] GetBytes()
         {
             if (_count == 0)
-            {
-                span = ReadOnlySpan<byte>.Empty;
-                return true;
-            }
-        
+                return Array.Empty<byte>();
+            
             if (IsCompact)
-            {
-                // If compact, data is in a single segment
-                span = _segments[0].AsSpan();
-                return true;
-            }
-           
-            span = default;
-            return false;
+                return _segments[0].ToArray();
+            
+            return ToArray(); // Fall back to the more expensive copy
         }
         
         /// <summary>
-        /// Returns a ReadOnlySpan over the ByteString contents.
-        /// WARNING: This operation creates a copy when the ByteString is not compact.
-        /// Use TryGetReadOnlySpan for zero-copy operations.
+        /// Returns the ByteString contents as a new byte array.
         /// </summary>
-        /// <returns>A ReadOnlySpan over the byte data.</returns>
-        public ReadOnlySpan<byte> ToReadOnlySpan()
+        /// <returns>A new byte array containing a copy of the data.</returns>
+        public byte[] ToArray2()
         {
-            if (TryGetReadOnlySpan(out var span))
-                return span;
-            
-            // Fall back to copying
-            return new ReadOnlySpan<byte>(ToArray());
+            return GetBytes();
         }
 
         /// <summary>
@@ -495,6 +479,38 @@ namespace Akka.IO.Memory
             memory = default;
             return false;
         }
+        
+        /// <summary>
+        /// Attempts to get the ByteString as a single ReadOnlySpan region.
+        /// </summary>
+        /// <param name="span">The span, if successful.</param>
+        /// <returns>True if the ByteString could be represented as a single span; otherwise, false.</returns>
+        public bool TryGetReadOnlySpan(out ReadOnlySpan<byte> span)
+        {
+            if (TryGetSingleMemory(out var memory))
+            {
+                span = memory.Span;
+                return true;
+            }
+
+            span = default;
+            return false;
+        }
+        
+        /// <summary>
+        /// Gets the ByteString contents as a ReadOnlySpan. This may involve copying if the ByteString is not compact.
+        /// </summary>
+        /// <returns>A ReadOnlySpan containing the ByteString data.</returns>
+        public ReadOnlySpan<byte> ToReadOnlySpan()
+        {
+            if (TryGetReadOnlySpan(out var span))
+            {
+                return span;
+            }
+            
+            // If we can't get a direct span, we need to copy the data to a new array
+            return new ReadOnlySpan<byte>(ToArray());
+        }
 
         /// <summary>
         /// Creates a ReadOnlySequence from this ByteString. This is useful for
@@ -506,6 +522,7 @@ namespace Akka.IO.Memory
             if (IsEmpty)
                 return ReadOnlySequence<byte>.Empty;
 
+            // Handle compact case efficiently
             if (IsCompact && _segments[0].TryGetReadOnlyMemory(out var memory))
                 return new ReadOnlySequence<byte>(memory);
 
@@ -520,24 +537,60 @@ namespace Akka.IO.Memory
                 if (segment.TryGetReadOnlyMemory(out var singleMemory))
                     return new ReadOnlySequence<byte>(singleMemory);
                     
-                // If we can't get direct memory and don't want to copy, use a custom segment
-                return new ReadOnlySequence<byte>(new SegmentAdapter(segment), 0, new SegmentAdapter(segment), segment.Length);
+                // For a single segment, if we can't get direct memory, create an array and wrap it
+                return new ReadOnlySequence<byte>(segment.ToArray());
             }
             
-            // Multiple segments case - build a linked list
-            var first = new SegmentAdapter(_segments[0], null);
-            var current = first;
-            long runningIndex = _segments[0].Length;
-
-            for (int i = 1; i < _segments.Count; i++)
+            // For multiple segments, we need to create separate ReadOnlyMemory<byte> instances
+            var memorySegments = new ReadOnlyMemory<byte>[_segments.Count];
+            for (int i = 0; i < _segments.Count; i++)
             {
-                var next = new SegmentAdapter(_segments[i], runningIndex);
-                current.SetNext(next);
-                current = next;
-                runningIndex += _segments[i].Length;
+                // Try to get memory directly, or create a new array
+                if (!_segments[i].TryGetReadOnlyMemory(out var segmentMemory))
+                    segmentMemory = _segments[i].ToArray();
+                memorySegments[i] = segmentMemory;
             }
-
-            return new ReadOnlySequence<byte>(first, 0, current, current.Memory.Length);
+            
+            // Create the sequence from segments
+            return CreateReadOnlySequence(memorySegments);
+        }
+        
+        // Helper method to create ReadOnlySequence from multiple memory segments
+        private static ReadOnlySequence<byte> CreateReadOnlySequence(ReadOnlyMemory<byte>[] segments)
+        {            
+            if (segments.Length == 0)
+                return ReadOnlySequence<byte>.Empty;
+                
+            if (segments.Length == 1)
+                return new ReadOnlySequence<byte>(segments[0]);
+                
+            // Build a linked sequence
+            var firstSegment = new SimpleSegment(segments[0]);
+            var currentSegment = firstSegment;
+            
+            for (int i = 1; i < segments.Length; i++)
+            {                
+                var nextSegment = new SimpleSegment(segments[i]);
+                currentSegment.SetNext(nextSegment);
+                currentSegment = nextSegment;
+            }
+            
+            return new ReadOnlySequence<byte>(firstSegment, 0, currentSegment, segments[segments.Length - 1].Length);
+        }
+        
+        // Simple implementation of ReadOnlySequenceSegment<byte>
+        private class SimpleSegment : ReadOnlySequenceSegment<byte>
+        {
+            public SimpleSegment(ReadOnlyMemory<byte> memory)
+            {                
+                Memory = memory;
+            }
+            
+            public void SetNext(SimpleSegment next)
+            {                
+                next.RunningIndex = RunningIndex + Memory.Length;
+                Next = next;
+            }
         }
         
         /// <summary>
@@ -587,7 +640,7 @@ namespace Akka.IO.Memory
             // Convert to a ReadOnlyMemory<byte>
             public static implicit operator ReadOnlyMemory<byte>(SegmentMemory memory)
             {
-                return memory._segment.AsSpan().ToArray(); // This is only called when we can't avoid copying
+                return memory._segment.ToArray(); // This is only called when we can't avoid copying
             }
             
             public bool Equals(SegmentMemory other) => ReferenceEquals(_segment, other._segment);
@@ -610,7 +663,8 @@ namespace Akka.IO.Memory
             if (index < 0 || index >= buffer.Length) throw new ArgumentOutOfRangeException(nameof(index), "Provided index is outside the bounds of the buffer to copy to.");
             if (count > buffer.Length - index) throw new ArgumentException("Provided number of bytes to copy won't fit into provided buffer", nameof(count));
 
-            return CopyTo(buffer.AsSpan(index, count));
+            byte[] arr = buffer;
+            return CopyTo(arr, index, count);
         }
 
         /// <summary>
@@ -620,7 +674,13 @@ namespace Akka.IO.Memory
         /// <returns>The number of bytes copied</returns>
         public int CopyTo(Memory<byte> buffer)
         {
-            return CopyTo(buffer.Span);
+            // We need to use a new byte array and copy it to the memory
+            byte[] result = GetBytes();
+            int bytesToCopy = Math.Min(result.Length, buffer.Length);
+            if (bytesToCopy == 0) return 0;
+            
+            result.AsSpan(0, bytesToCopy).CopyTo(buffer.Span);
+            return bytesToCopy;
         }
 
         /// <summary>
@@ -633,30 +693,13 @@ namespace Akka.IO.Memory
             if (buffer.IsEmpty && _count == 0) return 0; // edge case for no-copy
             if (buffer.IsEmpty) throw new ArgumentException("Buffer is empty", nameof(buffer));
 
-            // Fast path for compact ByteStrings
-            if (IsCompact && _segments[0].TryGetReadOnlyMemory(out var memory))
-            {
-                int bytesToCopy = Math.Min(memory.Length, buffer.Length);
-                memory.Span.Slice(0, bytesToCopy).CopyTo(buffer);
-                return bytesToCopy;
-            }
-
-            // Normal path for multi-segment ByteStrings
-            int position = 0;
-            int bytesRemaining = Math.Min(_count, buffer.Length);
-
-            foreach (var segment in _segments)
-            {
-                if (bytesRemaining <= 0) break;
-                
-                int segmentBytesToCopy = Math.Min(segment.Length, bytesRemaining);
-                segment.AsSpan().Slice(0, segmentBytesToCopy).CopyTo(buffer.Slice(position, segmentBytesToCopy));
-                
-                position += segmentBytesToCopy;
-                bytesRemaining -= segmentBytesToCopy;
-            }
-
-            return position; // Total bytes copied
+            // Use a new byte array and copy it to the span
+            byte[] result = GetBytes();
+            int bytesToCopy = Math.Min(result.Length, buffer.Length);
+            if (bytesToCopy == 0) return 0;
+            
+            new ReadOnlySpan<byte>(result, 0, bytesToCopy).CopyTo(buffer);
+            return bytesToCopy;
         }
 
         /// <summary>
@@ -669,8 +712,7 @@ namespace Akka.IO.Memory
             if (stream == null) throw new ArgumentNullException(nameof(stream));
 
             // Use a reasonable buffer size for segments that need copying
-            Span<byte> tempBuffer = stackalloc byte[512]; // Try to use stack for small buffers
-            byte[] heapBuffer = null;
+            byte[] tempBuffer = new byte[512]; // Fixed size buffer for small segments
 
             try
             {
@@ -680,35 +722,34 @@ namespace Akka.IO.Memory
                     {
                         // Direct memory access - no copying needed
                         if (memory.Length > 0)
-                            stream.Write(memory.Span);
+                        {
+                            var array = memory.ToArray();
+                            stream.Write(array, 0, array.Length);
+                        }
                     }
                     else
                     {
-                        // Need to copy through a buffer
-                        var span = segment.AsSpan();
-                        if (span.Length <= tempBuffer.Length)
+                        // Need to copy through a buffer - get the bytes as an array
+                        var bytes = segment.ToArray();
+                        if (bytes.Length <= tempBuffer.Length)
                         {
-                            // Use stack-allocated buffer for small segments
-                            span.CopyTo(tempBuffer);
-                            stream.Write(tempBuffer.Slice(0, span.Length));
+                            // Use the bytes directly
+                            if (bytes.Length > 0)
+                            {
+                                stream.Write(bytes, 0, bytes.Length);
+                            }
                         }
                         else
                         {
-                            // For larger segments, use a heap buffer (allocated only once and reused)
-                            if (heapBuffer == null || heapBuffer.Length < span.Length)
-                                heapBuffer = new byte[Math.Max(span.Length, 4096)]; // Allocate with some room to grow
-                            
-                            var bufferSpan = heapBuffer.AsSpan(0, span.Length);
-                            span.CopyTo(bufferSpan);
-                            stream.Write(bufferSpan);
+                            // For larger segments, just use the array we already have
+                            stream.Write(bytes, 0, bytes.Length);
                         }
                     }
                 }
             }
             finally
             {
-                // Help GC by clearing reference to large buffer
-                heapBuffer = null;
+                // No resources to clean up
             }
         }
 
@@ -721,9 +762,6 @@ namespace Akka.IO.Memory
         {
             if (stream == null) throw new ArgumentNullException(nameof(stream));
 
-            // Use a buffer for segments that need copying, but allocate only once
-            byte[] buffer = null;
-            
             try
             {
                 foreach (var segment in _segments)
@@ -732,26 +770,25 @@ namespace Akka.IO.Memory
                     {
                         // Direct memory access - no copying needed
                         if (memory.Length > 0)
-                            await stream.WriteAsync(memory);
+                        {
+                            // Convert to array for compatibility with older frameworks
+                            byte[] tempBuffer = memory.ToArray();
+                            await stream.WriteAsync(tempBuffer, 0, tempBuffer.Length);
+                        }
                     }
                     else
                     {
-                        // Need to copy through a buffer
-                        var span = segment.AsSpan();
+                        // Use the array from the segment directly
+                        byte[] tempArray = segment.ToArray();
                         
-                        // Allocate the buffer only once and reuse it
-                        if (buffer == null || buffer.Length < span.Length)
-                            buffer = new byte[Math.Max(span.Length, 4096)]; // Allocate with some room to grow
-                        
-                        span.CopyTo(buffer.AsSpan(0, span.Length));
-                        await stream.WriteAsync(buffer.AsMemory(0, span.Length));
+                        // We have the data in an array now, write it
+                        await stream.WriteAsync(tempArray, 0, tempArray.Length);
                     }
                 }
             }
             finally
             {
-                // Help GC by clearing reference to large buffer
-                buffer = null;
+                // No cleanup needed
             }
         }
 
@@ -801,10 +838,10 @@ namespace Akka.IO.Memory
         {
             foreach (var segment in _segments)
             {
-                var span = segment.AsSpan();
-                for (int i = 0; i < span.Length; i++)
+                byte[] array = segment.ToArray();
+                for (int i = 0; i < array.Length; i++)
                 {
-                    yield return span[i];
+                    yield return array[i];
                 }
             }
         }
@@ -828,10 +865,13 @@ namespace Akka.IO.Memory
             if (IsCompact)
             {
                 var segment = _segments[0];
-                if (segment.TryGetReadOnlyMemory(out var memory))
-                    return encoding.GetString(memory.Span);
-                
-                return encoding.GetString(segment.AsSpan());
+                // Convert to array regardless of the type for compatibility
+                byte[] array = new byte[segment.Length];
+                for (int i = 0; i < segment.Length; i++)
+                {
+                    array[i] = segment[i];
+                }
+                return encoding.GetString(array);
             }
             
             // For multi-segment strings, we have a few options

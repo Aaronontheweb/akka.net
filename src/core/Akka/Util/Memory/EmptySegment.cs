@@ -13,7 +13,7 @@ namespace Akka.IO.Memory
     /// A singleton implementation of <see cref="IMemorySegment"/> that represents an empty memory segment.
     /// This is used to optimize the case where a ByteString is empty.
     /// </summary>
-    internal sealed class EmptySegment : IMemorySegment
+    public sealed class EmptySegment : IMemorySegment
     {
         /// <summary>
         /// Gets the singleton instance of the <see cref="EmptySegment"/> class.
@@ -29,10 +29,10 @@ namespace Akka.IO.Memory
         public byte this[int index] => throw new IndexOutOfRangeException("Cannot access elements in an empty segment.");
 
         /// <inheritdoc />
-        public ReadOnlySpan<byte> AsSpan() => ReadOnlySpan<byte>.Empty;
+        public byte[] ToArray() => Array.Empty<byte>();
 
         /// <inheritdoc />
-        public void CopyTo(Span<byte> destination) { /* Nothing to copy */ }
+        public void CopyTo(byte[] destination, int destinationIndex) { /* Nothing to copy */ }
 
         /// <inheritdoc />
         public IMemorySegment Slice(int start, int length)

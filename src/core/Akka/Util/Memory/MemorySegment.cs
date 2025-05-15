@@ -13,7 +13,7 @@ namespace Akka.IO.Memory
     /// An implementation of <see cref="IMemorySegment"/> that wraps a <see cref="ReadOnlyMemory{T}"/> of bytes.
     /// This provides efficient memory sharing and slicing without copying.
     /// </summary>
-    internal sealed class MemorySegment : IMemorySegment
+    public sealed class MemorySegment : IMemorySegment
     {
         private readonly ReadOnlyMemory<byte> _memory;
 
@@ -51,15 +51,22 @@ namespace Akka.IO.Memory
         }
 
         /// <inheritdoc />
-        public ReadOnlySpan<byte> AsSpan() => _memory.Span;
+        public byte[] ToArray() => _memory.ToArray();
 
         /// <inheritdoc />
-        public void CopyTo(Span<byte> destination)
+        public void CopyTo(byte[] destination, int destinationIndex)
         {
-            if (destination.Length < _memory.Length)
-                throw new ArgumentException($"Destination span is too small. Required {_memory.Length}, but got {destination.Length}", nameof(destination));
+            if (destination == null)
+                throw new ArgumentNullException(nameof(destination));
+                
+            if (destinationIndex < 0)
+                throw new ArgumentOutOfRangeException(nameof(destinationIndex), "Index cannot be negative");
+                
+            if (destination.Length - destinationIndex < _memory.Length)
+                throw new ArgumentException($"Destination array is too small. Required {_memory.Length}, but got {destination.Length - destinationIndex}", nameof(destination));
 
-            _memory.Span.CopyTo(destination);
+            var array = _memory.ToArray();
+            Array.Copy(array, 0, destination, destinationIndex, _memory.Length);
         }
 
         /// <inheritdoc />

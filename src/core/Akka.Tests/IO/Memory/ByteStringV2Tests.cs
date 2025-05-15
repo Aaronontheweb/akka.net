@@ -168,14 +168,17 @@ namespace Akka.Tests.IO.Memory
             
             // Check we can read correct values from the sequence
             var position = sequence.Start;
-            for (int i = 1; i <= 6; i++)
-            {
-                sequence.TryGet(ref position, out var memory).Should().BeTrue();
-                if (i <= 3)
-                    memory.Span[0].Should().Be((byte)i);
-                else
-                    memory.Span[i - 4].Should().Be((byte)i);
-            }
+            sequence.TryGet(ref position, out var memory1).Should().BeTrue();
+            memory1.Length.Should().Be(3);
+            memory1.Span[0].Should().Be(1);
+            memory1.Span[1].Should().Be(2);
+            memory1.Span[2].Should().Be(3);
+            
+            sequence.TryGet(ref position, out var memory2).Should().BeTrue();
+            memory2.Length.Should().Be(3);
+            memory2.Span[0].Should().Be(4);
+            memory2.Span[1].Should().Be(5);
+            memory2.Span[2].Should().Be(6);
         }
 
         [Fact]
@@ -272,8 +275,6 @@ namespace Akka.Tests.IO.Memory
             while (sequence.TryGet(ref position, out var memory))
             {
                 count++;
-                if (!sequence.End.Equals(position))
-                    sequence.GetPosition(0, position);
             }
             
             // There should be exactly 2 segments

@@ -12,9 +12,9 @@ namespace Akka.IO.Memory
     /// <summary>
     /// Represents a segment of memory that can be accessed in a read-only manner.
     /// This interface abstracts away the underlying memory source, which could be
-    /// an array, Memory<byte>, ReadOnlyMemory<byte>, etc.
+    /// an array, Memory&lt;byte&gt;, ReadOnlyMemory&lt;byte&gt;, etc.
     /// </summary>
-    internal interface IMemorySegment
+    public interface IMemorySegment
     {
         /// <summary>
         /// Gets the length of the memory segment in bytes.
@@ -30,17 +30,18 @@ namespace Akka.IO.Memory
         byte this[int index] { get; }
         
         /// <summary>
-        /// Returns the memory segment as a read-only span.
+        /// Returns the memory segment content as a new array.
         /// </summary>
-        /// <returns>A read-only span representing the memory segment.</returns>
-        ReadOnlySpan<byte> AsSpan();
+        /// <returns>A new array containing the segment data.</returns>
+        byte[] ToArray();
         
         /// <summary>
-        /// Copies the contents of the memory segment to the specified destination span.
+        /// Copies the contents of the memory segment to the specified destination byte array.
         /// </summary>
-        /// <param name="destination">The destination span to copy to.</param>
-        /// <exception cref="ArgumentException">Thrown when the destination span is too small.</exception>
-        void CopyTo(Span<byte> destination);
+        /// <param name="destination">The destination byte array to copy to.</param>
+        /// <param name="destinationIndex">The index in the destination array at which to start copying.</param>
+        /// <exception cref="ArgumentException">Thrown when the destination array is too small.</exception>
+        void CopyTo(byte[] destination, int destinationIndex);
         
         /// <summary>
         /// Creates a new memory segment that represents a slice of this memory segment.
@@ -52,10 +53,10 @@ namespace Akka.IO.Memory
         IMemorySegment Slice(int start, int length);
         
         /// <summary>
-        /// Attempts to get the underlying memory as a ReadOnlyMemory<byte>.
+        /// Attempts to get the underlying memory as a ReadOnlyMemory&lt;byte&gt;.
         /// </summary>
-        /// <param name="memory">When this method returns, contains the ReadOnlyMemory<byte> if successful; otherwise, default.</param>
-        /// <returns>true if the memory segment can be represented as a ReadOnlyMemory<byte>; otherwise, false.</returns>
+        /// <param name="memory">When this method returns, contains the ReadOnlyMemory&lt;byte&gt; if successful; otherwise, default.</param>
+        /// <returns>true if the memory segment can be represented as a ReadOnlyMemory&lt;byte&gt;; otherwise, false.</returns>
         bool TryGetReadOnlyMemory(out ReadOnlyMemory<byte> memory);
     }
 }

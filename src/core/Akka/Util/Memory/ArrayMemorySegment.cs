@@ -13,7 +13,7 @@ namespace Akka.IO.Memory
     /// An implementation of <see cref="IMemorySegment"/> that wraps an <see cref="ArraySegment{T}"/> of bytes.
     /// This is primarily used for backward compatibility with existing ByteString implementations.
     /// </summary>
-    internal sealed class ArrayMemorySegment : IMemorySegment
+    public sealed class ArrayMemorySegment : IMemorySegment
     {
         private readonly ArraySegment<byte> _segment;
 
@@ -53,15 +53,26 @@ namespace Akka.IO.Memory
         }
 
         /// <inheritdoc />
-        public ReadOnlySpan<byte> AsSpan() => _segment.AsSpan();
+        public byte[] ToArray()
+        {
+            var result = new byte[_segment.Count];
+            Array.Copy(_segment.Array, _segment.Offset, result, 0, _segment.Count);
+            return result;
+        }
 
         /// <inheritdoc />
-        public void CopyTo(Span<byte> destination)
+        public void CopyTo(byte[] destination, int destinationIndex)
         {
-            if (destination.Length < _segment.Count)
-                throw new ArgumentException($"Destination span is too small. Required {_segment.Count}, but got {destination.Length}", nameof(destination));
+            if (destination == null)
+                throw new ArgumentNullException(nameof(destination));
+                
+            if (destinationIndex < 0)
+                throw new ArgumentOutOfRangeException(nameof(destinationIndex), "Index cannot be negative");
+                
+            if (destination.Length - destinationIndex < _segment.Count)
+                throw new ArgumentException($"Destination array is too small. Required {_segment.Count}, but got {destination.Length - destinationIndex}", nameof(destination));
 
-            _segment.AsSpan().CopyTo(destination);
+            Array.Copy(_segment.Array, _segment.Offset, destination, destinationIndex, _segment.Count);
         }
 
         /// <inheritdoc />
