@@ -492,6 +492,89 @@ namespace Akka.Streams.Tests.Dsl
                 return new ValueTask();
             }
         }
+
+        /// <summary>
+        /// Test for https://github.com/akkadotnet/akka.net/issues/7381
+        /// Verifies that NotSupportedException during IAsyncEnumerator disposal is handled gracefully
+        /// </summary>
+        [Fact(DisplayName = "AsyncEnumerable Source should handle NotSupportedException during disposal gracefully")]
+        public async Task AsyncEnumerableSource_BugFix7381_NotSupportedExceptionHandling()
+        {
+            await this.AssertAllStagesStoppedAsync(async () =>
+            {
+                var enumerable = new NotSupportedDisposeAsyncEnumerable();
+                var subscriber = this.CreateManualSubscriberProbe<int>();
+
+                Source.From(() => enumerable)
+                    .RunWith(Sink.FromSubscriber(subscriber), Materializer);
+
+                var subscription = await subscriber.ExpectSubscriptionAsync();
+                subscription.Request(5);
+
+                // Get a few elements
+                await subscriber.ExpectNextNAsync(Enumerable.Range(0, 5));
+                
+                // Cancel the subscription to trigger disposal
+                subscription.Cancel();
+                
+                // Should complete without throwing NotSupportedException
+                await Task.Delay(100); // Give some time for disposal
+                
+                // Verify that the enumerator attempted disposal
+                enumerable.DisposeAsyncCalled.Should().BeTrue();
+                enumerable.DisposeCalled.Should().BeTrue(); // Should fall back to synchronous disposal
+            }, Materializer);
+        }
+
+        /// <summary>
+        /// Test enumerator that throws NotSupportedException on DisposeAsync
+        /// </summary>
+        private class NotSupportedDisposeAsyncEnumerable : IAsyncEnumerable<int>
+        {
+            public bool DisposeAsyncCalled { get; private set; }
+            public bool DisposeCalled { get; private set; }
+
+            public IAsyncEnumerator<int> GetAsyncEnumerator(CancellationToken token = default)
+            {
+                return new NotSupportedDisposeAsyncEnumerator(this);
+            }
+
+            private class NotSupportedDisposeAsyncEnumerator : IAsyncEnumerator<int>, IDisposable
+            {
+                private readonly NotSupportedDisposeAsyncEnumerable _parent;
+                private int _current = -1;
+                private bool _disposed = false;
+
+                public NotSupportedDisposeAsyncEnumerator(NotSupportedDisposeAsyncEnumerable parent)
+                {
+                    _parent = parent;
+                }
+
+                public int Current => _current;
+
+                public ValueTask<bool> MoveNextAsync()
+                {
+                    if (_disposed)
+                        return new ValueTask<bool>(false);
+                    
+                    _current++;
+                    return new ValueTask<bool>(_current < 100);
+                }
+
+                public ValueTask DisposeAsync()
+                {
+                    _parent.DisposeAsyncCalled = true;
+                    // Simulate an IAsyncEnumerator that doesn't support async disposal
+                    throw new NotSupportedException("DisposeAsync is not supported by this enumerator");
+                }
+
+                public void Dispose()
+                {
+                    _parent.DisposeCalled = true;
+                    _disposed = true;
+                }
+            }
+        }
     }
 #endif
 }

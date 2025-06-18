@@ -3938,17 +3938,22 @@ namespace Akka.Streams.Implementation.Fusing
                     Log.Debug(ex, "AsyncEnumerable threw while cancelling CancellationTokenSource");
                 }
 
-                try
+                // Dispose the enumerator if it exists
+                if (_enumerator != null)
                 {
+                    try
+                    {
 #pragma warning disable CS4014 // Because this call is not awaited, execution of the current method continues before the call is completed
-                    // Intentionally creating a detached dispose task
-                    DisposeEnumeratorAsync();
+                        // Intentionally creating a detached dispose task
+                        DisposeEnumeratorAsync();
 #pragma warning restore CS4014 // Because this call is not awaited, execution of the current method continues before the call is completed
+                    }
+                    catch(Exception ex)
+                    {
+                        Log.Debug(ex, "Underlying async enumerator threw an exception while being disposed.");
+                    }
                 }
-                catch(Exception ex)
-                {
-                    Log.Debug(ex, "Underlying async enumerator threw an exception while being disposed.");
-                }
+                
                 base.PostStop();
                 return;
 
@@ -3957,6 +3962,23 @@ namespace Akka.Streams.Implementation.Fusing
                     try
                     {
                         await _enumerator.DisposeAsync();
+                    }
+                    catch (NotSupportedException ex)
+                    {
+                        // Some IAsyncEnumerator implementations may not support DisposeAsync properly
+                        // Fall back to synchronous disposal if available
+                        Log.Debug(ex, "Async disposal not supported for IAsyncEnumerator, attempting synchronous disposal");
+                        try
+                        {
+                            if (_enumerator is IDisposable disposableEnumerator)
+                            {
+                                disposableEnumerator.Dispose();
+                            }
+                        }
+                        catch (Exception syncEx)
+                        {
+                            Log.Debug(syncEx, "Synchronous disposal of IAsyncEnumerator also failed");
+                        }
                     }
                     catch (Exception ex)
                     {
