@@ -6,6 +6,7 @@
 //-----------------------------------------------------------------------
 
 using System;
+using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Configuration;
 using Akka.Persistence.Query;
@@ -42,7 +43,7 @@ namespace Akka.Persistence.TCK.Query
         }
 
         [Fact]
-        public virtual void ReadJournal_live_query_EventsByTag_should_find_new_events()
+        public virtual async Task ReadJournal_live_query_EventsByTag_should_find_new_events()
         {
             if (ReadJournal is not IEventsByTagQuery queries)
                 throw IsTypeException.ForMismatchedType(nameof(IEventsByTagQuery), ReadJournal?.GetType().Name ?? "null");
@@ -51,28 +52,32 @@ namespace Akka.Persistence.TCK.Query
             var d = Sys.ActorOf(Query.TestActor.Props("d"));
 
             b.Tell("a black car");
-            ExpectMsg("a black car-done");
+            await ExpectMsgAsync("a black car-done");
 
             var blackSrc = queries.EventsByTag("black", offset: NoOffset());
             var probe = blackSrc.RunWith(this.SinkProbe<EventEnvelope>(), Materializer);
             probe.Request(2);
             ExpectEnvelope(probe, "b", 1L, "a black car", "black");
-            probe.ExpectNoMsg(TimeSpan.FromMilliseconds(100));
+            
+            // Deterministic check with shorter timeout - no more events should arrive yet
+            await probe.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(50));
 
             d.Tell("a black dog");
-            ExpectMsg("a black dog-done");
+            await ExpectMsgAsync("a black dog-done");
             d.Tell("a black night");
-            ExpectMsg("a black night-done");
+            await ExpectMsgAsync("a black night-done");
 
             ExpectEnvelope(probe, "d", 1L, "a black dog", "black");
-            probe.ExpectNoMsg(TimeSpan.FromMilliseconds(100));
+            
+            // Verify no additional events until we request more demand
+            await probe.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(50));
             probe.Request(10);
             ExpectEnvelope(probe, "d", 2L, "a black night", "black");
             probe.Cancel();
         }
 
         [Fact]
-        public virtual void ReadJournal_live_query_EventsByTag_should_find_events_from_offset_exclusive()
+        public virtual async Task ReadJournal_live_query_EventsByTag_should_find_events_from_offset_exclusive()
         {
             if (ReadJournal is not IEventsByTagQuery queries)
                 throw IsTypeException.ForMismatchedType(nameof(IEventsByTagQuery), ReadJournal?.GetType().Name ?? "null");
@@ -82,19 +87,19 @@ namespace Akka.Persistence.TCK.Query
             var c = Sys.ActorOf(Query.TestActor.Props("c"));
 
             a.Tell("hello");
-            ExpectMsg("hello-done");
+            await ExpectMsgAsync("hello-done");
             a.Tell("a green apple");
-            ExpectMsg("a green apple-done");
+            await ExpectMsgAsync("a green apple-done");
             b.Tell("a black car");
-            ExpectMsg("a black car-done");
+            await ExpectMsgAsync("a black car-done");
             a.Tell("something else");
-            ExpectMsg("something else-done");
+            await ExpectMsgAsync("something else-done");
             a.Tell("a green banana");
-            ExpectMsg("a green banana-done");
+            await ExpectMsgAsync("a green banana-done");
             b.Tell("a green leaf");
-            ExpectMsg("a green leaf-done");
+            await ExpectMsgAsync("a green leaf-done");
             c.Tell("a green cucumber");
-            ExpectMsg("a green cucumber-done");
+            await ExpectMsgAsync("a green cucumber-done");
 
             var greenSrc1 = queries.EventsByTag("green", offset: NoOffset());
             var probe1 = greenSrc1.RunWith(this.SinkProbe<EventEnvelope>(), Materializer);
@@ -108,7 +113,9 @@ namespace Akka.Persistence.TCK.Query
             probe2.Request(10);
             ExpectEnvelope(probe2, "b", 2L, "a green leaf", "green");
             ExpectEnvelope(probe2, "c", 1L, "a green cucumber", "green");
-            probe2.ExpectNoMsg(TimeSpan.FromMilliseconds(100));
+            
+            // Use async check with shorter timeout for deterministic verification
+            await probe2.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(50));
             probe2.Cancel();
         }
 

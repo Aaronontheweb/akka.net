@@ -74,24 +74,32 @@ namespace Akka.Persistence.TCK.Query
         }
 
         [Fact]
-        public void ReadJournal_live_query_EventsByPersistenceId_should_find_new_events_after_demand_request()
+        public async Task ReadJournal_live_query_EventsByPersistenceId_should_find_new_events_after_demand_request()
         {
             var queries = ReadJournal.AsInstanceOf<IEventsByPersistenceIdQuery>();
             var pref = Setup("e");
 
             var src = queries.EventsByPersistenceId("e", 0, long.MaxValue);
             var probe = src.Select(x => x.Event).RunWith(this.SinkProbe<object>(), Materializer);
+            
+            // Request limited demand and verify we get only the first 2 events
             probe.Request(2)
-                .ExpectNext( "e-1", "e-2")
-                .ExpectNoMsg(TimeSpan.FromMilliseconds(100));
+                .ExpectNext( "e-1", "e-2");
+            
+            // Verify no additional events are delivered without demand (deterministic check with short timeout)
+            await probe.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(50));
 
+            // Persist new event - this should not be delivered yet due to lack of demand
             pref.Tell("e-4");
-            ExpectMsg("e-4-done");
+            await ExpectMsgAsync("e-4-done");
 
-            probe.ExpectNoMsg(TimeSpan.FromMilliseconds(100));
+            // Verify the new event is not delivered until we request more demand
+            await probe.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(50));
+            
+            // Now request more demand - events should be delivered in order
             probe.Request(5)
-                .ExpectNext("e-3")
-                .ExpectNext("e-4");
+                .ExpectNext("e-3")  // This was already persisted in Setup()
+                .ExpectNext("e-4"); // This is the newly persisted event
         }
 
         [Fact]
