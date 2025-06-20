@@ -15,6 +15,7 @@ using System.Linq;
 using Akka.Util.Internal;
 using Xunit;
 using System.Threading.Tasks;
+using FluentAssertions;
 
 namespace Akka.Tests.Event
 {
@@ -105,13 +106,24 @@ namespace Akka.Tests.Event
         {
             using (var system = ActorSystem.Create("EventStreamSpecUnhandled", GetDebugUnhandledMessagesConfig()))
             {
+                // Ensure the UnhandledMessageForwarder is ready by waiting for a successful actor resolution
+                var forwarderPath = "/system/UnhandledMessageForwarder";
+                IActorRef forwarder = null;
+                
+                // Wait for the UnhandledMessageForwarder to be created and available
+                await AwaitAssertAsync(async () =>
+                {
+                    forwarder = await system.ActorSelection(forwarderPath).ResolveOne(TimeSpan.FromMilliseconds(100));
+                    forwarder.Should().NotBeNull();
+                }, TimeSpan.FromSeconds(3), TimeSpan.FromMilliseconds(100));
+
                 system.EventStream.Subscribe(TestActor, typeof(Debug));
 
                 var msg = new UnhandledMessage(42, system.DeadLetters, system.DeadLetters);
 
                 system.EventStream.Publish(msg);
 
-                var debugMsg = await ExpectMsgAsync<Debug>(TimeSpan.FromSeconds(5));
+                var debugMsg = await ExpectMsgAsync<Debug>();
 
                 debugMsg.Message.ToString().StartsWith("Unhandled message from").ShouldBeTrue();
                 debugMsg.Message.ToString().EndsWith(": 42").ShouldBeTrue();
@@ -126,6 +138,17 @@ namespace Akka.Tests.Event
         {
             using (var system = ActorSystem.Create("EventStreamSpecUnhandled", GetDebugUnhandledMessagesConfig()))
             {
+                // Ensure the UnhandledMessageForwarder is ready by waiting for a successful actor resolution
+                var forwarderPath = "/system/UnhandledMessageForwarder";
+                IActorRef forwarder = null;
+                
+                // Wait for the UnhandledMessageForwarder to be created and available
+                await AwaitAssertAsync(async () =>
+                {
+                    forwarder = await system.ActorSelection(forwarderPath).ResolveOne(TimeSpan.FromMilliseconds(100));
+                    forwarder.Should().NotBeNull();
+                }, TimeSpan.FromSeconds(3), TimeSpan.FromMilliseconds(100));
+
                 system.EventStream.Subscribe(TestActor, typeof(Debug));
 
                 // sender is NoSender
@@ -133,9 +156,7 @@ namespace Akka.Tests.Event
 
                 system.EventStream.Publish(msg);
 
-                // Add explicit timeout to handle the async message processing chain:
-                // UnhandledMessage -> UnhandledMessageForwarder -> Debug message  
-                var debugMsg = await ExpectMsgAsync<Debug>(TimeSpan.FromSeconds(5));
+                var debugMsg = await ExpectMsgAsync<Debug>();
 
                 debugMsg.Message.ToString().StartsWith("Unhandled message from").ShouldBeTrue();
                 debugMsg.Message.ToString().EndsWith(": 42").ShouldBeTrue();
