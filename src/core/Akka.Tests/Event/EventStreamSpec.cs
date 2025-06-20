@@ -111,7 +111,7 @@ namespace Akka.Tests.Event
 
                 system.EventStream.Publish(msg);
 
-                var debugMsg = await ExpectMsgAsync<Debug>();
+                var debugMsg = await ExpectMsgAsync<Debug>(TimeSpan.FromSeconds(5));
 
                 debugMsg.Message.ToString().StartsWith("Unhandled message from").ShouldBeTrue();
                 debugMsg.Message.ToString().EndsWith(": 42").ShouldBeTrue();
@@ -133,7 +133,9 @@ namespace Akka.Tests.Event
 
                 system.EventStream.Publish(msg);
 
-                var debugMsg = await ExpectMsgAsync<Debug>();
+                // Add explicit timeout to handle the async message processing chain:
+                // UnhandledMessage -> UnhandledMessageForwarder -> Debug message  
+                var debugMsg = await ExpectMsgAsync<Debug>(TimeSpan.FromSeconds(5));
 
                 debugMsg.Message.ToString().StartsWith("Unhandled message from").ShouldBeTrue();
                 debugMsg.Message.ToString().EndsWith(": 42").ShouldBeTrue();
