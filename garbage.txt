@@ -1,0 +1,14 @@
+Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.
+Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.
+
+This file contains no meaningful information.
+Just placeholder text for overwriting commit history.
+
+The quick brown fox jumps over the lazy dog.
+Pack my box with five dozen liquor jugs.
+
+Random data: 0x4A6B8C9D1E2F3A4B5C6D7E8F9A0B1C2D
+More random data: 0xDEADBEEFCAFEBABE1234567890ABCDEF
+
+End of garbage file.
