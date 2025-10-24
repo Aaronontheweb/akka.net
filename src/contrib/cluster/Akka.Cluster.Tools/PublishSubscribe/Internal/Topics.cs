@@ -68,7 +68,7 @@ namespace Akka.Cluster.Tools.PublishSubscribe.Internal
         ///  * Reset to <c>null</c> when a new subscriber arrived.
         ///  * Deadline checked regularly every <see cref="PruneInterval"/> interval.
         /// </summary>
-        protected Deadline PruneDeadline = null;
+        protected Deadline? PruneDeadline = null;
 
         /// <summary>
         /// Used to toggle what we do during publication when there are no subscribers

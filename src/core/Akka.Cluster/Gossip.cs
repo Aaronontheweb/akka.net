@@ -444,7 +444,7 @@ namespace Akka.Cluster
     /// </summary>
     internal class GossipEnvelope : IClusterMessage
     {
-        public GossipEnvelope(UniqueAddress from, UniqueAddress to, Gossip gossip, Deadline deadline = null)
+        public GossipEnvelope(UniqueAddress from, UniqueAddress to, Gossip gossip, Deadline? deadline = null)
         {
             From = from;
             To = to;
@@ -470,7 +470,7 @@ namespace Akka.Cluster
         /// <summary>
         /// The deadline for the gossip.
         /// </summary>
-        public Deadline Deadline { get; set; }
+        public Deadline? Deadline { get; set; }
 
         public override string ToString()
         {

@@ -947,7 +947,7 @@ namespace Akka.Cluster
         private ImmutableList<Address> _seedNodes;
         private IActorRef _seedNodeProcess;
         private int _seedNodeProcessCounter = 0; //for unique names
-        private Deadline _joinSeedNodesDeadline;
+        private Deadline? _joinSeedNodesDeadline;
 
         private readonly IActorRef _publisher;
         private int _leaderActionCounter = 0;
@@ -1184,7 +1184,7 @@ namespace Akka.Cluster
                     _publisher.Forward(isub);
                     break;
                 case InternalClusterAction.ITick _:
-                    if (_joinSeedNodesDeadline != null && _joinSeedNodesDeadline.IsOverdue) JoinSeedNodesWasUnsuccessful();
+                    if (_joinSeedNodesDeadline != null && _joinSeedNodesDeadline.Value.IsOverdue) JoinSeedNodesWasUnsuccessful();
                     break;
                 default:
                     if (!ReceiveExitingCompleted(message)) Unhandled(message);
@@ -1192,7 +1192,7 @@ namespace Akka.Cluster
             }
         }
 
-        private void TryingToJoin(object message, Address joinWith, Deadline deadline)
+        private void TryingToJoin(object message, Address joinWith, Deadline? deadline)
         {
             switch (message)
             {
@@ -1224,11 +1224,11 @@ namespace Akka.Cluster
                     break;
                 case InternalClusterAction.ITick _:
                     {
-                        if (_joinSeedNodesDeadline != null && _joinSeedNodesDeadline.IsOverdue)
+                        if (_joinSeedNodesDeadline != null && _joinSeedNodesDeadline.Value.IsOverdue)
                         {
                             JoinSeedNodesWasUnsuccessful();
                         }
-                        else if (deadline != null && deadline.IsOverdue)
+                        else if (deadline != null && deadline.Value.IsOverdue)
                         {
                             // join attempt failed, retry
                             BecomeUninitialized();
@@ -1468,7 +1468,7 @@ namespace Akka.Cluster
                 }
                 else
                 {
-                    var joinDeadline = _cluster.Settings.RetryUnsuccessfulJoinAfter == null
+                    Deadline? joinDeadline = _cluster.Settings.RetryUnsuccessfulJoinAfter == null
                         ? null
                         : Deadline.Now + _cluster.Settings.RetryUnsuccessfulJoinAfter;
 

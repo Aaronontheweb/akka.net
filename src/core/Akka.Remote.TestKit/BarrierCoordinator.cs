@@ -49,7 +49,7 @@ namespace Akka.Remote.TestKit
 
         public sealed class Data
         {
-            public Data(ImmutableHashSet<Controller.NodeInfo> clients, string barrier, ImmutableHashSet<IActorRef> arrived, Deadline deadline)
+            public Data(ImmutableHashSet<Controller.NodeInfo> clients, string barrier, ImmutableHashSet<IActorRef> arrived, Deadline? deadline)
             {
                 Deadline = deadline;
                 Arrived = arrived;
@@ -63,10 +63,10 @@ namespace Akka.Remote.TestKit
 
             public ImmutableHashSet<IActorRef> Arrived { get; }
 
-            public Deadline Deadline { get; }
+            public Deadline? Deadline { get; }
 
             public Data Copy(ImmutableHashSet<Controller.NodeInfo> clients = null, string barrier = null,
-                ImmutableHashSet<IActorRef> arrived = null, Deadline deadline = null)
+                ImmutableHashSet<IActorRef> arrived = null, Deadline? deadline = null)
             {
                 return new Data(clients ?? Clients,
                     barrier ?? Barrier,
@@ -561,7 +561,7 @@ namespace Akka.Remote.TestKit
                             : @event.StateData.Arrived;
                         var enterDeadline = GetDeadline(barrier.Timeout);
                         //we only allow the deadlines to get shorter
-                        if (enterDeadline.TimeLeft < @event.StateData.Deadline.TimeLeft)
+                        if (enterDeadline.TimeLeft < @event.StateData.Deadline.Value.TimeLeft)
                         {
                             SetTimer("Timeout", StateTimeout.Instance, enterDeadline.TimeLeft, false);
                             return HandleBarrier(@event.StateData.Copy(arrived: together, deadline: enterDeadline));
@@ -592,7 +592,7 @@ namespace Akka.Remote.TestKit
 
             OnTransition((state, nextState) =>
             {
-                if (state == State.Idle && nextState == State.Waiting) SetTimer("Timeout", StateTimeout.Instance, NextStateData.Deadline.TimeLeft, false);
+                if (state == State.Idle && nextState == State.Waiting) SetTimer("Timeout", StateTimeout.Instance, NextStateData.Deadline.Value.TimeLeft, false);
                 else if(state == State.Waiting && nextState == State.Idle) CancelTimer("Timeout");
             });
 

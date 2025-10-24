@@ -507,7 +507,7 @@ namespace Akka.Remote
         /// </summary>
         public bool UidConfirmed { get; private set; }
 
-        private Deadline _bailoutAt = null;
+        private Deadline? _bailoutAt = null;
 
         /// <summary>
         /// TBD

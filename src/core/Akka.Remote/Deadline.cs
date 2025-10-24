@@ -10,12 +10,12 @@ using System;
 namespace Akka.Remote
 {
     /// <summary>
-    /// This class represents the latest date or time by which an operation should be completed.
+    /// This readonly record struct represents the latest date or time by which an operation should be completed.
     /// </summary>
-    public class Deadline
+    public readonly record struct Deadline
     {
         /// <summary>
-        /// Initializes a new instance of the <see cref="Deadline"/> class.
+        /// Initializes a new instance of the <see cref="Deadline"/> struct.
         /// </summary>
         /// <param name="when">The <see cref="DateTime"/> that the deadline is due.</param>
         public Deadline(DateTime when)
@@ -26,23 +26,17 @@ namespace Akka.Remote
         /// <summary>
         /// Determines whether the deadline has past.
         /// </summary>
-        public bool IsOverdue
-        {
-            get { return DateTime.UtcNow > When; }
-        }
+        public bool IsOverdue => DateTime.UtcNow > When;
 
         /// <summary>
         /// Determines whether there is still time left until the deadline.
         /// </summary>
-        public bool HasTimeLeft
-        {
-            get { return DateTime.UtcNow < When; }
-        }
+        public bool HasTimeLeft => DateTime.UtcNow < When;
 
         /// <summary>
         /// The <see cref="DateTime"/> that the deadline is due.
         /// </summary>
-        public DateTime When { get; private set; }
+        public DateTime When { get; init; }
 
         /// <summary>
         /// <para>
@@ -52,29 +46,7 @@ namespace Akka.Remote
         /// Warning: creates a new <see cref="TimeSpan"/> instance each time it's used
         /// </note>
         /// </summary>
-        public TimeSpan TimeLeft { get { return When - DateTime.UtcNow; } }
-
-        #region Overrides
-
-       
-        public override bool Equals(object obj)
-        {
-            var deadlineObj = ((Deadline) obj);
-            if (deadlineObj == null)
-            {
-                return false;
-            }
-
-            return When.Equals(deadlineObj.When);
-        }
-
-      
-        public override int GetHashCode()
-        {
-            return When.GetHashCode();
-        }
-
-        #endregion
+        public TimeSpan TimeLeft => When - DateTime.UtcNow;
 
 
         #region Static members
