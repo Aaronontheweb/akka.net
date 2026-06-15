@@ -2013,11 +2013,20 @@ namespace Akka.Remote
             }
         }
 
+        // [EXPERIMENT TOGGLE] DecodeMessageFast is the hand-rolled tag-dispatch decoder (lever B2a):
+        // byte-identical results to DecodeMessage (asserted by AkkaPduCodecFastDecodeDifferentialSpec)
+        // with ~28% less allocation, by not materializing the protobuf wrapper-object graph.
+        // AKKA_FAST_DECODE=0 forces the generated-protobuf path for A/B measurement; default = fast.
+        private static readonly bool UseFastDecode =
+            Environment.GetEnvironmentVariable("AKKA_FAST_DECODE") != "0";
+
         private AckAndMessage TryDecodeMessageAndAck(ByteString pdu)
         {
             try
             {
-                return _codec.DecodeMessage(pdu, _provider, LocalAddress);
+                return UseFastDecode
+                    ? _codec.DecodeMessageFast(new ReadOnlySequence<byte>(pdu.Memory), _provider, LocalAddress)
+                    : _codec.DecodeMessage(pdu, _provider, LocalAddress);
             }
             catch (Exception ex)
             {
@@ -2029,7 +2038,9 @@ namespace Akka.Remote
         {
             try
             {
-                return _codec.DecodeMessage(pdu, _provider, LocalAddress);
+                return UseFastDecode
+                    ? _codec.DecodeMessageFast(pdu, _provider, LocalAddress)
+                    : _codec.DecodeMessage(pdu, _provider, LocalAddress);
             }
             catch (Exception ex)
             {

@@ -241,6 +241,15 @@ namespace Akka.Benchmarks.Remoting
         }
 
         [Benchmark(OperationsPerInvoke = Operations)]
+        public void DecodeMessageOnlyFast()
+        {
+            for (var i = 0; i < Operations; i++)
+            {
+                var msg = _recvCodec.DecodeMessageFast(_pduDecodedSequence, _rarp, _addr1);
+            }
+        }
+
+        [Benchmark(OperationsPerInvoke = Operations)]
         public void DeserializePayloadOnly()
         {
             for (var i = 0; i < Operations; i++)
