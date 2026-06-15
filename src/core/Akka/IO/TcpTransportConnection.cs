@@ -29,6 +29,19 @@ namespace Akka.IO
         private readonly Pipe _outputPipe;
         private readonly CancellationTokenSource _cts = new();
 
+        // [Lever A — Stage 0] The OUTPUT pipe was using PipeOptions.Default (a small default segment), so
+        // the actor's per-message PipeWriter.Write hit the GetSpan segment-allocation slow path (which
+        // locks Pipe._sync) roughly every ~(segmentSize/messageSize) writes — the dominant slice of the
+        // ~27% write-path lock contention measured under RemotePingPong. A large segment makes that lock
+        // fire far less often; pauseWriterThreshold bounds output buffering under a slow socket (the stream
+        // credit window + no-ack write batching are the real upstream backpressure). PROTOTYPE values —
+        // tune for production memory footprint (per-connection: ~one segment + up to pauseWriterThreshold).
+        private static readonly PipeOptions DefaultOutputPipeOptions = new(
+            minimumSegmentSize: 64 * 1024,
+            pauseWriterThreshold: 1024 * 1024,
+            resumeWriterThreshold: 512 * 1024,
+            useSynchronizationContext: false);
+
         /// <summary>
         /// Creates a transport connection from an already-connected socket.
         /// Starts the read and write pump loops immediately.
@@ -40,7 +53,7 @@ namespace Akka.IO
             _stream = new NetworkStream(socket, ownsSocket: false);
 
             _inputPipe = new Pipe(inputPipeOptions ?? PipeOptions.Default);
-            _outputPipe = new Pipe(outputPipeOptions ?? PipeOptions.Default);
+            _outputPipe = new Pipe(outputPipeOptions ?? DefaultOutputPipeOptions);
 
             ReadCompleted = RunReadPumpAsync(_cts.Token);
             WriteCompleted = RunWritePumpAsync(_cts.Token);
@@ -56,7 +69,7 @@ namespace Akka.IO
             _stream = stream;
 
             _inputPipe = new Pipe(inputPipeOptions ?? PipeOptions.Default);
-            _outputPipe = new Pipe(outputPipeOptions ?? PipeOptions.Default);
+            _outputPipe = new Pipe(outputPipeOptions ?? DefaultOutputPipeOptions);
 
             ReadCompleted = RunReadPumpAsync(_cts.Token);
             WriteCompleted = RunWritePumpAsync(_cts.Token);
