@@ -19,14 +19,23 @@ namespace Akka.IO
 {
     /// <summary>
     /// Plaintext TCP implementation of <see cref="ITransportConnection"/>.
-    /// Owns two pipes (input + output) and two pump loops that bridge them to a NetworkStream.
+    /// Owns an input <c>Pipe</c> (read pump → actor) and a lock-free output hand-off
+    /// (<see cref="LockFreeOutputQueue"/>, actor → write pump), each driven by a pump loop that
+    /// bridges to a NetworkStream.
     /// </summary>
+    /// <remarks>
+    /// The output side previously used a second <c>System.IO.Pipelines.Pipe</c> whose single
+    /// <c>_sync</c> Monitor lock was taken by both the producing actor thread and the consuming
+    /// write-pump thread; under load that contended lock dominated CPU. It has been replaced with
+    /// <see cref="LockFreeOutputQueue"/>, a lock-free single-producer/single-consumer byte hand-off.
+    /// The input side is unchanged.
+    /// </remarks>
     public sealed class TcpTransportConnection : ITransportConnection
     {
         private readonly Socket _socket;
         private readonly Stream _stream;
         private readonly Pipe _inputPipe;
-        private readonly Pipe _outputPipe;
+        private readonly LockFreeOutputQueue _output = new();
         private readonly CancellationTokenSource _cts = new();
 
         /// <summary>
@@ -40,7 +49,9 @@ namespace Akka.IO
             _stream = new NetworkStream(socket, ownsSocket: false);
 
             _inputPipe = new Pipe(inputPipeOptions ?? PipeOptions.Default);
-            _outputPipe = new Pipe(outputPipeOptions ?? PipeOptions.Default);
+            // Output uses the lock-free SPSC hand-off. outputPipeOptions is retained for API
+            // compatibility but no longer used now that the output Pipe has been removed.
+            _ = outputPipeOptions;
 
             ReadCompleted = RunReadPumpAsync(_cts.Token);
             WriteCompleted = RunWritePumpAsync(_cts.Token);
@@ -56,7 +67,9 @@ namespace Akka.IO
             _stream = stream;
 
             _inputPipe = new Pipe(inputPipeOptions ?? PipeOptions.Default);
-            _outputPipe = new Pipe(outputPipeOptions ?? PipeOptions.Default);
+            // Output uses the lock-free SPSC hand-off. outputPipeOptions is retained for API
+            // compatibility but no longer used now that the output Pipe has been removed.
+            _ = outputPipeOptions;
 
             ReadCompleted = RunReadPumpAsync(_cts.Token);
             WriteCompleted = RunWritePumpAsync(_cts.Token);
@@ -81,15 +94,14 @@ namespace Akka.IO
 
         internal void WriteUnflushed(ReadOnlyMemory<byte> data)
         {
-            _outputPipe.Writer.Write(data.Span);
+            _output.Write(data.Span);
         }
 
         internal void WriteUnflushed(ReadOnlySequence<byte> data)
         {
-            var writer = _outputPipe.Writer;
             foreach (var segment in data)
             {
-                writer.Write(segment.Span);
+                _output.Write(segment.Span);
             }
         }
 
@@ -107,13 +119,16 @@ namespace Akka.IO
 
         public ValueTask<FlushResult> FlushAsync(CancellationToken ct = default)
         {
-            return _outputPipe.Writer.FlushAsync(ct);
+            // Publish accumulated writes to the consumer and wake it. Callers (TcpConnection) fire flush
+            // fire-and-forget and do not observe the FlushResult, so return an "accepted more data" result.
+            _output.Flush();
+            return new ValueTask<FlushResult>(new FlushResult(isCanceled: false, isCompleted: false));
         }
 
         public async Task ShutdownAsync()
         {
-            // Complete the output pipe — write pump will drain and exit
-            await _outputPipe.Writer.CompleteAsync().ConfigureAwait(false);
+            // Signal completion to the output hand-off — the write pump drains remaining data and exits.
+            _output.CompleteWriter();
 
             // Wait for write pump to finish flushing
             await WriteCompleted.ConfigureAwait(false);
@@ -129,8 +144,8 @@ namespace Akka.IO
 
         public async Task CloseAsync()
         {
-            // Complete the output pipe — write pump will drain and exit
-            await _outputPipe.Writer.CompleteAsync().ConfigureAwait(false);
+            // Signal completion to the output hand-off — the write pump drains remaining data and exits.
+            _output.CompleteWriter();
 
             // Wait for write pump to finish flushing
             await WriteCompleted.ConfigureAwait(false);
@@ -153,9 +168,9 @@ namespace Akka.IO
             // Cancel pumps immediately
             _cts.Cancel();
 
-            // Complete pipes to unblock any pending reads/writes on them.
-            // InvalidOperationException if already completed — safe to ignore.
-            try { _outputPipe.Writer.Complete(); } catch (InvalidOperationException) { } // slopwatch-ignore: SW003 pipe may already be completed
+            // Abort the output hand-off (discard unflushed data, no flush) and complete the input pipe,
+            // waking/unblocking any parked pump. InvalidOperationException if already completed — safe to ignore.
+            _output.Abort();
             try { _inputPipe.Writer.Complete(); } catch (InvalidOperationException) { } // slopwatch-ignore: SW003 pipe may already be completed
 
             // RST the socket — SocketException/ObjectDisposedException if already closed.
@@ -175,7 +190,8 @@ namespace Akka.IO
         {
             _cts.Cancel();
 
-            await _outputPipe.Writer.CompleteAsync().ConfigureAwait(false);
+            // Abort the output hand-off (wakes a parked write pump, no flush) and complete the input pipe.
+            _output.Abort();
             await _inputPipe.Writer.CompleteAsync().ConfigureAwait(false);
 
             // Wait for pump tasks — they may throw OperationCanceledException or I/O errors during shutdown.
@@ -247,36 +263,44 @@ namespace Akka.IO
         }
 
         /* ================================================================= */
-        /*  Write pump: Output Pipe → Stream                                 */
+        /*  Write pump: Output queue → Stream                                */
         /* ================================================================= */
 
         private async Task RunWritePumpAsync(CancellationToken ct)
         {
-            var reader = _outputPipe.Reader;
             Exception? error = null;
 
             try
             {
-                while (!ct.IsCancellationRequested)
+                while (true)
                 {
-                    var readResult = await reader.ReadAsync(ct).ConfigureAwait(false);
-                    var buffer = readResult.Buffer;
+                    // Hard abort: exit immediately without flushing queued data.
+                    if (_output.IsAborted)
+                        break;
 
-                    if (buffer.Length > 0)
+                    if (_output.TryDequeue(out var segment))
                     {
-                        // Write each contiguous segment to the stream.
-                        // Pipe segments are typically large (4KB+), so this is
-                        // usually 1 WriteAsync call per ReadAsync wake-up.
-                        foreach (var segment in buffer)
+                        try
                         {
-                            await _stream.WriteAsync(segment, ct).ConfigureAwait(false);
+                            await _stream.WriteAsync(segment.AsMemory(), ct).ConfigureAwait(false);
                         }
+                        finally
+                        {
+                            _output.ReturnBuffer(segment);
+                        }
+
+                        continue;
                     }
 
-                    reader.AdvanceTo(buffer.End);
+                    // Graceful completion: producer finished and the queue is fully drained.
+                    if (_output.IsCompletedAndDrained)
+                        break;
 
-                    if (readResult.IsCompleted)
-                        break; // Writer (actor) completed the pipe
+                    if (ct.IsCancellationRequested)
+                        break;
+
+                    // Nothing queued — park until the producer signals (data / completion / abort).
+                    await _output.WaitAsync().ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { } // slopwatch-ignore: SW003 normal CTS-driven shutdown
@@ -286,8 +310,13 @@ namespace Akka.IO
             }
             finally
             {
-                await reader.CompleteAsync(error).ConfigureAwait(false);
+                // Return any still-queued buffers to the pool (faulted/aborted teardown).
+                _output.OnConsumerExit();
             }
+
+            // If there was a write error, surface it so WriteCompleted faults and the actor observes it.
+            if (error != null)
+                throw error;
         }
     }
 }
