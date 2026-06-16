@@ -2013,20 +2013,16 @@ namespace Akka.Remote
             }
         }
 
-        // [EXPERIMENT TOGGLE] DecodeMessageFast is the hand-rolled tag-dispatch decoder (lever B2a):
-        // byte-identical results to DecodeMessage (asserted by AkkaPduCodecFastDecodeDifferentialSpec)
-        // with ~28% less allocation, by not materializing the protobuf wrapper-object graph.
-        // AKKA_FAST_DECODE=0 forces the generated-protobuf path for A/B measurement; default = fast.
-        private static readonly bool UseFastDecode =
-            Environment.GetEnvironmentVariable("AKKA_FAST_DECODE") != "0";
-
+        // DecodeMessageFast is the hand-rolled tag-dispatch decoder (levers B0/B2a/B2b): byte-identical
+        // results to the generated-protobuf DecodeMessage (asserted by AkkaPduCodecFastDecodeDifferentialSpec)
+        // with ~39% less CPU and ~60% less allocation, by not materializing the protobuf wrapper-object graph
+        // and resolving recipient/sender refs from a byte-keyed cache. It is always used in production;
+        // DecodeMessage (the generated path) is retained as the differential-test oracle.
         private AckAndMessage TryDecodeMessageAndAck(ByteString pdu)
         {
             try
             {
-                return UseFastDecode
-                    ? _codec.DecodeMessageFast(new ReadOnlySequence<byte>(pdu.Memory), _provider, LocalAddress)
-                    : _codec.DecodeMessage(pdu, _provider, LocalAddress);
+                return _codec.DecodeMessageFast(new ReadOnlySequence<byte>(pdu.Memory), _provider, LocalAddress);
             }
             catch (Exception ex)
             {
@@ -2038,9 +2034,7 @@ namespace Akka.Remote
         {
             try
             {
-                return UseFastDecode
-                    ? _codec.DecodeMessageFast(pdu, _provider, LocalAddress)
-                    : _codec.DecodeMessage(pdu, _provider, LocalAddress);
+                return _codec.DecodeMessageFast(pdu, _provider, LocalAddress);
             }
             catch (Exception ex)
             {
