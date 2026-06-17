@@ -701,7 +701,23 @@ namespace Akka.IO
 
                 try
                 {
-                    return await read.ConfigureAwait(false);
+                    // CRITICAL: do the copy-out + AdvanceTo on the underlying StreamPipeReader
+                    // HERE, while this read is still tracked as in-flight (_inflightRead == read).
+                    // The StreamPipeReader's BufferSegments are pooled and get recycled the moment
+                    // Complete() runs. If we returned the raw ReadResult and let the consumer copy
+                    // it out and AdvanceTo *outside* the gate, a teardown that observed
+                    // _inflightRead == null (because this read already returned) could call
+                    // _inner.Complete() and recycle those segments while the consumer is mid-CopyTo
+                    // — throwing ArgumentOutOfRangeException out of BuffersExtensions.CopyTo /
+                    // BufferSegment.set_End and surfacing to the peer as a spurious ErrorClosed.
+                    //
+                    // By snapshotting the bytes into a fresh, segment-independent array and calling
+                    // _inner.AdvanceTo before we clear _inflightRead, the consumer never touches the
+                    // recyclable segments and Complete() can never race them. The single copy here
+                    // replaces the one the consumer used to do, so per-message allocation is
+                    // unchanged.
+                    var result = await read.ConfigureAwait(false);
+                    return SnapshotAndAdvance(result);
                 }
                 finally
                 {
@@ -729,6 +745,36 @@ namespace Akka.IO
                 }
             }
 
+            /// <summary>
+            /// Copies the just-read bytes out of the underlying <c>StreamPipeReader</c>'s pooled
+            /// segments into a fresh, segment-independent array and advances the underlying reader
+            /// past them — all while the read is still tracked in-flight so a concurrent
+            /// <see cref="Complete"/> cannot recycle the segments out from under the copy. The
+            /// returned <see cref="ReadResult"/> is backed by the copied array, so the consumer
+            /// never touches the recyclable segments. Empty reads (EOF / cancellation) return a
+            /// default-buffer result without allocating.
+            /// </summary>
+            private ReadResult SnapshotAndAdvance(ReadResult result)
+            {
+                var buffer = result.Buffer;
+                if (buffer.Length == 0)
+                {
+                    // Nothing to copy. Still advance the underlying reader so it does not see the
+                    // same (empty) segment again, then surface the completion/cancel flags.
+                    _inner.AdvanceTo(buffer.Start, buffer.End);
+                    return new ReadResult(ReadOnlySequence<byte>.Empty, result.IsCanceled, result.IsCompleted);
+                }
+
+                var array = new byte[checked((int)buffer.Length)];
+                buffer.CopyTo(array);
+
+                // Consume everything we copied. We are still inside the gate (this read is still
+                // _inflightRead), so this AdvanceTo cannot race a Complete() on _inner.
+                _inner.AdvanceTo(buffer.End);
+
+                return new ReadResult(new ReadOnlySequence<byte>(array), result.IsCanceled, result.IsCompleted);
+            }
+
             public override bool TryRead(out ReadResult result)
             {
                 lock (_sync)
@@ -738,15 +784,32 @@ namespace Akka.IO
                         result = new ReadResult(default, isCanceled: true, isCompleted: true);
                         return true;
                     }
-                }
 
-                return _inner.TryRead(out result);
+                    if (!_inner.TryRead(out var inner))
+                    {
+                        result = default;
+                        return false;
+                    }
+
+                    // Snapshot + advance under _sync (same lock Complete() takes) so the segments
+                    // can't be recycled out from under the copy. Mirrors SnapshotAndAdvance so a
+                    // TryRead consumer also gets a segment-independent ReadResult, even though no
+                    // current caller uses TryRead on this reader.
+                    result = SnapshotAndAdvance(inner);
+                    return true;
+                }
             }
 
-            public override void AdvanceTo(SequencePosition consumed) => _inner.AdvanceTo(consumed);
+            // No-ops: ReadAsync already copied the bytes out of the underlying reader's pooled
+            // segments and advanced _inner past them (see SnapshotAndAdvance), so the ReadResult
+            // the consumer holds is segment-independent. The consumer's AdvanceTo therefore refers
+            // to the synthetic snapshot buffer, not _inner — forwarding it would double-advance the
+            // underlying StreamPipeReader. Keeping these as no-ops preserves the PipeReader
+            // contract for the consumer while ensuring _inner is advanced exactly once, inside the
+            // gate, before _inflightRead is cleared.
+            public override void AdvanceTo(SequencePosition consumed) { }
 
-            public override void AdvanceTo(SequencePosition consumed, SequencePosition examined)
-                => _inner.AdvanceTo(consumed, examined);
+            public override void AdvanceTo(SequencePosition consumed, SequencePosition examined) { }
 
             public override void CancelPendingRead()
             {
