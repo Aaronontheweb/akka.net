@@ -39,3 +39,8 @@ using System.Runtime.InteropServices;
 [assembly: InternalsVisibleTo("Akka.Cluster.Metrics")]
 [assembly: InternalsVisibleTo("Akka.Benchmarks")]
 [assembly: InternalsVisibleTo("Akka.Persistence.Tests")]
+// G5-entry lane-mechanism re-baseline harness (openspec/changes/artery-tcp-remoting/design.md):
+// needs ArteryEnvelopeCodec / ArteryEnvelopeHeader (internal) to encode/decode real Artery
+// frames on the real code path instead of a synthetic wire format. See
+// src/benchmark/LaneMechanismBenchmark.
+[assembly: InternalsVisibleTo("LaneMechanismBenchmark")]

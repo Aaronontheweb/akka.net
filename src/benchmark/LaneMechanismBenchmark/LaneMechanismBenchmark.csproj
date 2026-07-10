@@ -1,0 +1,27 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+<PropertyGroup>
+  <Description>
+    G5-entry inbound-lane fan-out mechanism re-baseline (openspec/changes/artery-tcp-remoting/design.md):
+    compares a fused single-consumer baseline against bounded-Channel and Akka.Streams PartitionHub
+    lane fan-out, on the real ArteryEnvelopeCodec + real Akka Serialization code paths.
+  </Description>
+  <Copyright>Copyright (c) Akka.NET Team</Copyright>
+  <Authors>Akka.NET Team</Authors>
+  <TargetFramework>$(NetTestVersion)</TargetFramework>
+  <OutputType>Exe</OutputType>
+  <IsPackable>false</IsPackable>
+  <Nullable>enable</Nullable>
+</PropertyGroup>
+
+<PropertyGroup>
+  <ServerGarbageCollection>true</ServerGarbageCollection>
+  <TieredPGO>true</TieredPGO>
+</PropertyGroup>
+
+<ItemGroup>
+  <ProjectReference Include="..\..\core\Akka\Akka.csproj" />
+  <ProjectReference Include="..\..\core\Akka.Remote\Akka.Remote.csproj" />
+  <ProjectReference Include="..\..\core\Akka.Streams\Akka.Streams.csproj" />
+</ItemGroup>
+
+</Project>
