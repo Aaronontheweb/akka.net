@@ -8,6 +8,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -280,10 +281,42 @@ namespace Akka.Actor.Internal
             return ActorRefFactoryShared.ActorSelection(actorPath, this, _provider.RootGuardian);
         }
 
+        /// <summary>
+        /// The scheduler implementations shipped in Akka.dll, constructed directly so that neither the
+        /// trimmer nor the Native AOT compiler has to see through a <see cref="Type.GetType(string)"/> call.
+        /// Keyed on both the bare and assembly-qualified spellings HOCON uses in the wild.
+        /// </summary>
+        private static readonly Dictionary<string, Func<Config, ILoggingAdapter, IScheduler>> BuiltInSchedulers =
+            new(StringComparer.Ordinal)
+            {
+                ["Akka.Actor.HashedWheelTimerScheduler"] = static (config, log) => new HashedWheelTimerScheduler(config, log),
+                ["Akka.Actor.HashedWheelTimerScheduler, Akka"] = static (config, log) => new HashedWheelTimerScheduler(config, log)
+            };
+
         private void ConfigureScheduler()
         {
-            var schedulerType = Type.GetType(_settings.SchedulerClass, true);
-            _scheduler = (IScheduler) Activator.CreateInstance(schedulerType, _settings.Config, Log);
+            var schedulerClass = _settings.SchedulerClass;
+            if (BuiltInSchedulers.TryGetValue(schedulerClass.Trim(), out var factory))
+            {
+                _scheduler = factory(_settings.Config, Log);
+            }
+            else if (AkkaFeatures.IsDynamicTypeLoadingSupported)
+            {
+                _scheduler = CreateScheduler(schedulerClass, _settings.Config, Log);
+            }
+            else
+            {
+                throw new ConfigurationException(
+                    $"[akka.scheduler.implementation] [{schedulerClass}] is not built in and dynamic type loading is disabled. " +
+                    "Use one of the built-in schedulers or enable the [Akka.DynamicTypeLoading] feature switch.");
+            }
+        }
+
+        [RequiresUnreferencedCode("Loads the [akka.scheduler.implementation] type by name. The trimmer cannot tell which type that is, so it may have been removed.")]
+        private static IScheduler CreateScheduler(string schedulerClass, Config config, ILoggingAdapter log)
+        {
+            var schedulerType = Type.GetType(schedulerClass, true);
+            return (IScheduler)Activator.CreateInstance(schedulerType, config, log);
         }
 
         private void StopScheduler()
