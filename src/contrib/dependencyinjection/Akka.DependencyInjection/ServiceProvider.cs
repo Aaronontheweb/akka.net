@@ -6,6 +6,7 @@
 //-----------------------------------------------------------------------
 
 using System;
+using System.Diagnostics.CodeAnalysis;
 using Akka.Actor;
 using Akka.Configuration;
 using Akka.Event;
@@ -61,7 +62,7 @@ namespace Akka.DependencyInjection
         /// <typeparam name="T">The type of actor to instantiate.</typeparam>
         /// <param name="args">Optional. Any constructor arguments that will be passed into the actor's constructor directly without being resolved by DI first.</param>
         /// <returns>A new <see cref="Akka.Actor.Props"/> instance which uses DI internally.</returns>
-        public Props Props<T>(params object[] args) where T : ActorBase
+        public Props Props<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.Interfaces)] T>(params object[] args) where T : ActorBase
         {
             return Akka.Actor.Props.CreateBy(new ServiceProviderActorProducer<T>(Provider, args));
         }
@@ -98,7 +99,7 @@ namespace Akka.DependencyInjection
         private readonly IServiceProvider _provider;
         private readonly object[] _args;
 
-        public ServiceProviderActorProducer(IServiceProvider provider, Type actorType, object[] args)
+        public ServiceProviderActorProducer(IServiceProvider provider, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.Interfaces)] Type actorType, object[] args)
         {
             _provider = provider;
             _args = args;
@@ -110,6 +111,7 @@ namespace Akka.DependencyInjection
             return (ActorBase)ActivatorUtilities.CreateInstance(_provider, ActorType, _args);
         }
 
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.Interfaces)]
         public Type ActorType { get; }
 
         public void Release(ActorBase actor)
@@ -124,7 +126,7 @@ namespace Akka.DependencyInjection
     /// Used to create actors via the <see cref="ActivatorUtilities"/>.
     /// </summary>
     /// <typeparam name="TActor">the actor type</typeparam>
-    internal class ServiceProviderActorProducer<TActor> : ServiceProviderActorProducer where TActor:ActorBase
+    internal class ServiceProviderActorProducer<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.Interfaces)] TActor> : ServiceProviderActorProducer where TActor:ActorBase
     {
 
         public ServiceProviderActorProducer(IServiceProvider provider, object[] args)
