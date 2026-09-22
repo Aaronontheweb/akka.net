@@ -113,10 +113,14 @@ namespace Akka.Util.Reflection
                     try
                     {
                         {
-                            _jobArgs[i] = Expression.Lambda(
+                            // Typed lambda + direct invoke instead of the non-generic
+                            // Lambda(...).Compile().DynamicInvoke(): DynamicInvoke needs runtime code
+                            // generation (IL3050) that Native AOT cannot provide, and the result is
+                            // identical here because the body is already converted to object.
+                            _jobArgs[i] = Expression.Lambda<Func<object>>(
                                     Expression.Convert(theArg, _objectType)
                                 )
-                                .Compile().DynamicInvoke();
+                                .Compile()();
                         }
 
                     }
