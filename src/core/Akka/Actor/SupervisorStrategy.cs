@@ -7,6 +7,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
@@ -1001,22 +1002,35 @@ namespace Akka.Actor
         /// <returns>TBD</returns>
         public static SupervisorStrategyConfigurator CreateConfigurator(string typeName)
         {
-            switch (typeName)
+            switch (typeName?.Trim())
             {
                 case "Akka.Actor.DefaultSupervisorStrategy":
+                case "Akka.Actor.DefaultSupervisorStrategy, Akka":
                     return new DefaultSupervisorStrategy();
                 case "Akka.Actor.StoppingSupervisorStrategy":
+                case "Akka.Actor.StoppingSupervisorStrategy, Akka":
                     return new StoppingSupervisorStrategy();
                 case null:
                     throw new ConfigurationException("Could not resolve SupervisorStrategyConfigurator. typeName is null");
                 default:
-                    Type configuratorType = Type.GetType(typeName);
+                    if (!AkkaFeatures.IsDynamicTypeLoadingSupported)
+                        throw new ConfigurationException(
+                            $"SupervisorStrategyConfigurator [{typeName}] is not built in and dynamic type loading is disabled. " +
+                            "Use one of the built-in supervisor strategy configurators or enable the [Akka.DynamicTypeLoading] feature switch.");
 
-                    if (configuratorType == null)
-                        throw new ConfigurationException($"Could not resolve SupervisorStrategyConfigurator type {typeName}");
-
-                    return (SupervisorStrategyConfigurator)Activator.CreateInstance(configuratorType);
+                    return CreateConfiguratorFromTypeName(typeName);
             }
+        }
+
+        [RequiresUnreferencedCode("Resolves a SupervisorStrategyConfigurator named in HOCON by name. The trimmer cannot tell which type that is, so it may have been removed.")]
+        private static SupervisorStrategyConfigurator CreateConfiguratorFromTypeName(string typeName)
+        {
+            var configuratorType = Type.GetType(typeName);
+
+            if (configuratorType == null)
+                throw new ConfigurationException($"Could not resolve SupervisorStrategyConfigurator type {typeName}");
+
+            return (SupervisorStrategyConfigurator)Activator.CreateInstance(configuratorType);
         }
     }
 

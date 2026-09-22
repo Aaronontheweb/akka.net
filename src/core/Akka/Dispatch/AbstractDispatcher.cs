@@ -6,6 +6,7 @@
 //-----------------------------------------------------------------------
 
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -340,16 +341,28 @@ channel-executor.priority = normal");
                 case "channel-executor":
                     return new ChannelExecutorConfigurator(Config, Prerequisites);
                 default:
-                    Type executorConfiguratorType = Type.GetType(executor);
-                    if (executorConfiguratorType == null)
-                    {
+                    if (!AkkaFeatures.IsDynamicTypeLoadingSupported)
                         throw new ConfigurationException(
-                            $"Could not resolve executor service configurator type {executor} for path {Config.GetString("id", "unknown")}");
-                    }
+                            $"Executor service configurator [{executor}] for path {Config.GetString("id", "unknown")} is not built in and " +
+                            "dynamic type loading is disabled. Use one of the built-in executors or enable the [Akka.DynamicTypeLoading] feature switch.");
 
-                    var args = new object[] { Config, Prerequisites };
-                    return (ExecutorServiceConfigurator)Activator.CreateInstance(executorConfiguratorType, args);
+                    return CreateExecutorServiceConfiguratorFromTypeName(executor, Config, Prerequisites);
             }
+        }
+
+        [RequiresUnreferencedCode("Resolves an executor service configurator named in HOCON by name. The trimmer cannot tell which type that is, so it may have been removed.")]
+        private static ExecutorServiceConfigurator CreateExecutorServiceConfiguratorFromTypeName(
+            string executor, Config config, IDispatcherPrerequisites prerequisites)
+        {
+            var executorConfiguratorType = Type.GetType(executor);
+            if (executorConfiguratorType == null)
+            {
+                throw new ConfigurationException(
+                    $"Could not resolve executor service configurator type {executor} for path {config.GetString("id", "unknown")}");
+            }
+
+            var args = new object[] { config, prerequisites };
+            return (ExecutorServiceConfigurator)Activator.CreateInstance(executorConfiguratorType, args);
         }
     }
 

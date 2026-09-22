@@ -8,6 +8,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using Akka.Configuration;
 using Akka.Routing;
@@ -150,6 +151,54 @@ namespace Akka.Actor
                 throw new ConfigurationException(message);
             }
 
+            if (TryCreateBuiltInRouterConfig(routerTypeName.Trim(), deployment, out var builtInRouterConfig))
+                return builtInRouterConfig;
+
+            if (!AkkaFeatures.IsDynamicTypeLoadingSupported)
+                throw new ConfigurationException(
+                    $"Router type [{routerTypeName}] mapped from alias [{routerTypeAlias}] is not built in and dynamic type loading is disabled. " +
+                    "Use one of the built-in routers or enable the [Akka.DynamicTypeLoading] feature switch.");
+
+            return CreateRouterConfigFromTypeName(routerTypeName, routerTypeAlias, deployment);
+        }
+
+        /// <summary>
+        /// The routers Akka.NET's own <c>akka.conf</c> maps under <c>akka.actor.router.type-mapping</c>,
+        /// constructed directly so the trimmer and Native AOT compiler keep them without a
+        /// <see cref="Type.GetType(string)"/> call. Matches both the bare and assembly-qualified spellings.
+        /// </summary>
+        private static bool TryCreateBuiltInRouterConfig(string routerTypeName, Config deployment, out RouterConfig routerConfig)
+        {
+            routerConfig = StripAkkaAssembly(routerTypeName) switch
+            {
+                "Akka.Routing.NoRouter" => NoRouter.Instance,
+                "Akka.Routing.RoundRobinPool" => new RoundRobinPool(deployment),
+                "Akka.Routing.RoundRobinGroup" => new RoundRobinGroup(deployment),
+                "Akka.Routing.RandomPool" => new RandomPool(deployment),
+                "Akka.Routing.RandomGroup" => new RandomGroup(deployment),
+                "Akka.Routing.SmallestMailboxPool" => new SmallestMailboxPool(deployment),
+                "Akka.Routing.BroadcastPool" => new BroadcastPool(deployment),
+                "Akka.Routing.BroadcastGroup" => new BroadcastGroup(deployment),
+                "Akka.Routing.ScatterGatherFirstCompletedPool" => new ScatterGatherFirstCompletedPool(deployment),
+                "Akka.Routing.ScatterGatherFirstCompletedGroup" => new ScatterGatherFirstCompletedGroup(deployment),
+                "Akka.Routing.ConsistentHashingPool" => new ConsistentHashingPool(deployment),
+                "Akka.Routing.ConsistentHashingGroup" => new ConsistentHashingGroup(deployment),
+                "Akka.Routing.TailChoppingPool" => new TailChoppingPool(deployment),
+                "Akka.Routing.TailChoppingGroup" => new TailChoppingGroup(deployment),
+                _ => null
+            };
+
+            return routerConfig != null;
+        }
+
+        private static string StripAkkaAssembly(string routerTypeName)
+            => routerTypeName.EndsWith(", Akka", StringComparison.Ordinal)
+                ? routerTypeName.Substring(0, routerTypeName.Length - ", Akka".Length)
+                : routerTypeName;
+
+        [RequiresUnreferencedCode("Resolves a router type mapped in HOCON by name. The trimmer cannot tell which type that is, so it may have been removed.")]
+        private static RouterConfig CreateRouterConfigFromTypeName(string routerTypeName, string routerTypeAlias, Config deployment)
+        {
             Type routerType;
             try
             {
@@ -167,9 +216,7 @@ namespace Akka.Actor
             }
 
             Debug.Assert(routerType != null, "routerType != null");
-            var routerConfig = (RouterConfig)Activator.CreateInstance(routerType, deployment);
-
-            return routerConfig;
+            return (RouterConfig)Activator.CreateInstance(routerType, deployment);
         }
     }
 }

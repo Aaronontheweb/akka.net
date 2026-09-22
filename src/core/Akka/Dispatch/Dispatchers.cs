@@ -8,12 +8,14 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Annotations;
 using Akka.Configuration;
 using Akka.Event;
+using Akka.Util;
 using Helios.Concurrency;
 using ConfigurationFactory = Akka.Configuration.ConfigurationFactory;
 
@@ -604,18 +606,27 @@ namespace Akka.Dispatch
                 case null:
                     throw new ConfigurationException($"Could not resolve dispatcher for path {id}. type is null");
                 default:
-                    Type dispatcherType = Type.GetType(type);
-                    if (dispatcherType == null)
-                    {
-                        throw new ConfigurationException($"Could not resolve dispatcher type {type} for path {id}");
-                    }
+                    if (!AkkaFeatures.IsDynamicTypeLoadingSupported)
+                        throw new ConfigurationException(
+                            $"Dispatcher type [{type}] for path {id} is not built in and dynamic type loading is disabled. " +
+                            "Use one of the built-in dispatcher types or enable the [Akka.DynamicTypeLoading] feature switch.");
 
-                    dispatcher =
-                        (MessageDispatcherConfigurator)Activator.CreateInstance(dispatcherType, cfg, Prerequisites);
+                    dispatcher = CreateDispatcherConfiguratorFromTypeName(type, id, cfg, Prerequisites);
                     break;
             }
 
             return dispatcher;
+        }
+
+        [RequiresUnreferencedCode("Resolves a dispatcher configurator named in HOCON by name. The trimmer cannot tell which type that is, so it may have been removed.")]
+        private static MessageDispatcherConfigurator CreateDispatcherConfiguratorFromTypeName(
+            string type, string id, Config cfg, IDispatcherPrerequisites prerequisites)
+        {
+            var dispatcherType = Type.GetType(type);
+            if (dispatcherType == null)
+                throw new ConfigurationException($"Could not resolve dispatcher type {type} for path {id}");
+
+            return (MessageDispatcherConfigurator)Activator.CreateInstance(dispatcherType, cfg, prerequisites);
         }
     }
 
