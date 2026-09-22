@@ -1,0 +1,42 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>$(NetTestVersion)</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <PropertyGroup Label="AotSettings">
+    <PublishAot>true</PublishAot>
+    <TrimmerSingleWarn>false</TrimmerSingleWarn>
+    <SelfContained>true</SelfContained>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\core\Akka\Akka.csproj"/>
+  </ItemGroup>
+
+  <!--
+    Turns the Akka.DynamicTypeLoading feature switch OFF for this app. ILLink substitutes
+    AkkaFeatures.IsDynamicTypeLoadingSupported with 'false' and trims every reflection
+    fallback behind it - which is the whole point of the canary: a local ActorSystem has to
+    boot with dynamic type loading disabled.
+  -->
+  <ItemGroup>
+    <RuntimeHostConfigurationOption Include="Akka.DynamicTypeLoading" Value="false" Trim="true" />
+  </ItemGroup>
+
+  <!--
+    Opt-in: roots the entire Akka assembly so ILC analyzes every code path, not just the
+    handful the two toy actors in this app happen to reach. Publish with -p:RootAkka=true
+    to get a realistic warning count for the library as a whole.
+  -->
+  <ItemGroup Condition="'$(RootAkka)' == 'true'">
+    <TrimmerRootAssembly Include="Akka" />
+  </ItemGroup>
+
+</Project>
