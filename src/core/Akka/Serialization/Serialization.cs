@@ -10,6 +10,7 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Reflection;
@@ -229,18 +230,30 @@ namespace Akka.Serialization
             foreach (var kvp in serializersConfig)
             {
                 var serializerTypeName = kvp.Value.GetString();
-                var serializerType = Type.GetType(serializerTypeName);
-                if (serializerType == null)
+                var serializerConfig = serializerSettingsConfig.GetConfig(kvp.Key);
+
+                if (TryCreateBuiltInSerializer(serializerTypeName, system, serializerConfig, out var builtIn))
+                {
+                    if (builtIn is null) // built-in, but unavailable under the current feature switches
+                        continue;
+
+                    AddSerializer(kvp.Key, AdaptSerializer(builtIn));
+                    continue;
+                }
+
+                if (!AkkaFeatures.IsDynamicTypeLoadingSupported)
+                {
+                    throw new ConfigurationException(
+                        $"Serializer '{kvp.Key}' = [{serializerTypeName}] under [akka.actor.serializers] is not built in and dynamic type loading " +
+                        "is disabled. Register the serializer through a SerializationSetup or enable the [Akka.DynamicTypeLoading] feature switch.");
+                }
+
+                var serializer = CreateSerializerFromTypeName(serializerTypeName, system, serializerConfig);
+                if (serializer == null)
                 {
                     system.Log.Warning("The type name for serializer '{0}' did not resolve to an actual Type: '{1}'", kvp.Key, serializerTypeName);
                     continue;
                 }
-
-                var serializerConfig = serializerSettingsConfig.GetConfig(kvp.Key);
-
-                var serializer = !serializerConfig.IsNullOrEmpty()
-                    ? Activator.CreateInstance(serializerType, system, serializerConfig)
-                    : Activator.CreateInstance(serializerType, system);
 
                 AddSerializer(kvp.Key, AdaptSerializer(serializer));
             }
@@ -256,7 +269,22 @@ namespace Akka.Serialization
             {
                 var typename = kvp.Key;
                 var serializerName = kvp.Value.GetString();
-                var messageType = Type.GetType(typename);
+
+                var messageType = GetBuiltInBindingType(typename.Trim());
+                if (messageType == null)
+                {
+                    if (IsBuiltInBindingName(typename.Trim()))
+                        continue; // built-in binding that is unavailable under the current feature switches
+
+                    if (!AkkaFeatures.IsDynamicTypeLoadingSupported)
+                    {
+                        throw new ConfigurationException(
+                            $"Serialization binding [{typename}] under [akka.actor.serialization-bindings] is not built in and dynamic type loading " +
+                            "is disabled. Register the binding through a SerializationSetup or enable the [Akka.DynamicTypeLoading] feature switch.");
+                    }
+
+                    messageType = ResolveBindingType(typename);
+                }
 
                 if (messageType == null)
                 {
@@ -283,6 +311,88 @@ namespace Akka.Serialization
                     AddSerializationMap(t, details.SerializerV2);
                 }
             }
+        }
+
+        /// <summary>
+        /// The two serializers Akka.NET's own <c>akka.conf</c> registers, constructed directly instead of
+        /// through <see cref="Type.GetType(string)"/>. Matches both the bare and the assembly-qualified
+        /// spelling HOCON uses.
+        /// </summary>
+        /// <returns>
+        /// <c>true</c> when <paramref name="serializerTypeName"/> names a built-in serializer. In that case
+        /// <paramref name="serializer"/> holds the instance, or <c>null</c> when the serializer is built in
+        /// but unavailable - which is what happens to the Newtonsoft.Json serializer once dynamic type
+        /// loading is turned off, since it cannot work without reflection.
+        /// </returns>
+        private static bool TryCreateBuiltInSerializer(
+            string serializerTypeName,
+            ExtendedActorSystem system,
+            Config serializerConfig,
+            out object serializer)
+        {
+            serializer = null;
+            switch (serializerTypeName?.Trim())
+            {
+                case "Akka.Serialization.ByteArraySerializer":
+                case "Akka.Serialization.ByteArraySerializer, Akka":
+                    serializer = new ByteArraySerializer(system);
+                    return true;
+
+                case "Akka.Serialization.NewtonSoftJsonSerializer":
+                case "Akka.Serialization.NewtonSoftJsonSerializer, Akka":
+                    // Newtonsoft.Json is reflection-driven from top to bottom, so it is not registered at
+                    // all when dynamic type loading is off. Leaving it out is better than registering a
+                    // serializer that throws the first time anything is actually serialized.
+                    if (AkkaFeatures.IsDynamicTypeLoadingSupported)
+                    {
+                        serializer = !serializerConfig.IsNullOrEmpty()
+                            ? new NewtonSoftJsonSerializer(system, serializerConfig)
+                            : new NewtonSoftJsonSerializer(system);
+                    }
+
+                    return true;
+
+                default:
+                    return false;
+            }
+        }
+
+        [RequiresUnreferencedCode("Resolves a serializer named under [akka.actor.serializers] by name and activates it. The trimmer cannot tell which type that is, so it may have been removed.")]
+        private static object CreateSerializerFromTypeName(string serializerTypeName, ExtendedActorSystem system, Config serializerConfig)
+        {
+            var serializerType = Type.GetType(serializerTypeName);
+            if (serializerType == null)
+                return null;
+
+            return !serializerConfig.IsNullOrEmpty()
+                ? Activator.CreateInstance(serializerType, system, serializerConfig)
+                : Activator.CreateInstance(serializerType, system);
+        }
+
+        /// <summary>
+        /// The serialization bindings Akka.NET's own <c>akka.conf</c> declares. <c>System.Object</c> maps to
+        /// the Newtonsoft.Json serializer, so it goes away with it when dynamic type loading is off.
+        /// </summary>
+        private static Type GetBuiltInBindingType(string typeName)
+        {
+            switch (typeName)
+            {
+                case "System.Byte[]":
+                    return typeof(byte[]);
+                case "System.Object":
+                    return AkkaFeatures.IsDynamicTypeLoadingSupported ? typeof(object) : null;
+                default:
+                    return null;
+            }
+        }
+
+        private static bool IsBuiltInBindingName(string typeName)
+            => typeName is "System.Byte[]" or "System.Object";
+
+        [RequiresUnreferencedCode("Resolves a message type named under [akka.actor.serialization-bindings] by name. The trimmer cannot tell which type that is, so it may have been removed.")]
+        private static Type ResolveBindingType(string typeName)
+        {
+            return Type.GetType(typeName);
         }
 
         private Information SerializationInfo => System.Provider.SerializationInformation;

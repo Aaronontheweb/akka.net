@@ -10,6 +10,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.Serialization;
+using System.Text.RegularExpressions;
 using Akka.Actor;
 using Akka.Annotations;
 using Akka.Util;
@@ -228,13 +229,32 @@ namespace Akka.Serialization
             if (config.IsNullOrEmpty())
                 throw new ConfigurationException($"Cannot retrieve serialization identifier informations: {SerializationIdentifiers} configuration node not found");
             */
-            var identifiers = config.AsEnumerable()
-                .ToDictionary(pair => Type.GetType(pair.Key, true), pair => pair.Value.GetInt());
 
-            if (!identifiers.TryGetValue(type, out int value))
-                throw new ArgumentException($"Couldn't find serializer id for [{type}] under [{SerializationIdentifiers}] HOCON path", nameof(type));
+            // Match on names rather than resolving every configured key back into a Type: we already
+            // hold the Type, so formatting it is both cheaper and something the trimmer can follow.
+            // Keys are compared with the assembly version/culture/public key stripped, which is what
+            // TypeQualifiedName produces, and against the bare namespace-qualified name.
+            var qualifiedName = type.TypeQualifiedName();
+            var fullName = type.FullName;
 
-            return value;
+            foreach (var pair in config.AsEnumerable())
+            {
+                var key = CleanAssemblyVersion(pair.Key.Trim());
+                if (string.Equals(key, qualifiedName, StringComparison.Ordinal) ||
+                    string.Equals(key, fullName, StringComparison.Ordinal))
+                {
+                    return pair.Value.GetInt();
+                }
+            }
+
+            throw new ArgumentException($"Couldn't find serializer id for [{type}] under [{SerializationIdentifiers}] HOCON path", nameof(type));
         }
+
+        private static readonly Regex CleanAssemblyVersionRegex = new(
+            @"(, Version=([\d\.]+))?(, Culture=[^,\] \t]+)?(, PublicKeyToken=(null|[\da-f]+))?",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+        private static string CleanAssemblyVersion(string typeName)
+            => CleanAssemblyVersionRegex.Replace(typeName, string.Empty);
     }
 }
