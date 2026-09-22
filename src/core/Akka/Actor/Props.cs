@@ -362,7 +362,7 @@ namespace Akka.Actor
         /// <param name="supervisorStrategy">Optional: The supervisor strategy used to manage the actor.</param>
         /// <returns>The newly created <see cref="Akka.Actor.Props" />.</returns>
         /// <exception cref="ArgumentException">The create function must be a 'new T (args)' expression</exception>
-        public static Props Create<TActor>(Expression<Func<TActor>> factory,
+        public static Props Create<[DynamicallyAccessedMembers(ActorTypeMembers)] TActor>(Expression<Func<TActor>> factory,
             SupervisorStrategy supervisorStrategy = null) where TActor : ActorBase
         {
             if (factory.Body is UnaryExpression)
@@ -383,7 +383,7 @@ namespace Akka.Actor
         /// <typeparam name="TActor">The type of the actor to create.</typeparam>
         /// <param name="args">The arguments needed to create the actor.</param>
         /// <returns>The newly created <see cref="Akka.Actor.Props" />.</returns>
-        public static Props Create<TActor>(params object[] args) where TActor : ActorBase
+        public static Props Create<[DynamicallyAccessedMembers(ActorTypeMembers)] TActor>(params object[] args) where TActor : ActorBase
         {
             return new Props(new ActivatorProducer(typeof(TActor), args), DefaultDeploy, args);
         }
@@ -395,7 +395,7 @@ namespace Akka.Actor
         /// <param name="args">The arguments needed to create the actor.</param>
         /// <returns>The newly created <see cref="Akka.Actor.Props" />.</returns>
         [Obsolete("Do not use this method. Call CreateBy(IIndirectActorProducer, params object[] args) instead")]
-        public static Props CreateBy<TProducer>(params object[] args) where TProducer : class, IIndirectActorProducer
+        public static Props CreateBy<[DynamicallyAccessedMembers(ActorTypeMembers)] TProducer>(params object[] args) where TProducer : class, IIndirectActorProducer
         {
             return new Props(typeof(TProducer), args);
         }
@@ -417,7 +417,7 @@ namespace Akka.Actor
         /// <typeparam name="TActor">The type of the actor to create.</typeparam>
         /// <param name="supervisorStrategy">The supervisor strategy used to manage the actor.</param>
         /// <returns>The newly created <see cref="Akka.Actor.Props" />.</returns>
-        public static Props Create<TActor>(SupervisorStrategy supervisorStrategy) where TActor : ActorBase, new()
+        public static Props Create<[DynamicallyAccessedMembers(ActorTypeMembers)] TActor>(SupervisorStrategy supervisorStrategy) where TActor : ActorBase, new()
         {
             return new Props(new ActivatorProducer(typeof(TActor), NoArgs), DefaultDeploy, NoArgs){ SupervisorStrategy = supervisorStrategy };
         }

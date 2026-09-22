@@ -7,6 +7,7 @@
 
 using System;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -591,6 +592,9 @@ namespace Akka.Dispatch
     ///
     /// Implemented as an abstract class in order to enforce constructor requirements.
     /// </remarks>
+    // Mailboxes.ProducesMessageQueue / GetProducedMessageQueueType reflect over the interface list of
+    // whatever MailboxType they are handed, so the trimmer has to keep that list on every subclass.
+    [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)]
     public abstract class MailboxType
     {
         /// <summary>
