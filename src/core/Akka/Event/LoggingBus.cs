@@ -7,6 +7,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Linq;
 using System.Threading;
@@ -14,6 +15,7 @@ using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Actor.Internal;
 using Akka.Configuration;
+using Akka.Util;
 
 namespace Akka.Event
 {
@@ -114,7 +116,17 @@ namespace Akka.Event
             var taskInfos = new Dictionary<Task, string>();
             foreach (var strLoggerType in loggerTypes)
             {
-                var loggerType = Type.GetType(strLoggerType);
+                var loggerType = GetBuiltInLoggerType(strLoggerType.Trim());
+                if (loggerType == null)
+                {
+                    if (!AkkaFeatures.IsDynamicTypeLoadingSupported)
+                        throw new ConfigurationException(
+                            $@"Logger [{strLoggerType}] listed in [akka.loggers] is not built in and dynamic type loading is disabled. " +
+                            "Use one of the built-in loggers or enable the [Akka.DynamicTypeLoading] feature switch.");
+
+                    loggerType = ResolveLoggerType(strLoggerType);
+                }
+
                 if (loggerType == null)
                 {
                     throw new ConfigurationException($@"Logger specified in config cannot be found: ""{strLoggerType}""");
@@ -198,7 +210,37 @@ namespace Akka.Event
             }
         }
 
-        private (Task task, string name) AddLogger(ActorSystemImpl system, Type loggerType, string loggingBusName)
+        /// <summary>
+        /// The loggers shipped in Akka.dll, returned from constant <c>typeof</c> expressions so the trimmer keeps
+        /// them and their constructors. Matches both the bare and the assembly-qualified spelling HOCON uses.
+        /// </summary>
+        [return: DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.Interfaces)]
+        private static Type GetBuiltInLoggerType(string loggerTypeName)
+        {
+            switch (loggerTypeName)
+            {
+                case "Akka.Event.DefaultLogger":
+                case "Akka.Event.DefaultLogger, Akka":
+                    return typeof(DefaultLogger);
+                case "Akka.Event.StandardOutLogger":
+                case "Akka.Event.StandardOutLogger, Akka":
+                    return typeof(StandardOutLogger);
+                default:
+                    return null;
+            }
+        }
+
+        [RequiresUnreferencedCode("Resolves a logger listed in [akka.loggers] by name. The trimmer cannot tell which type that is, so it may have been removed.")]
+        [return: DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.Interfaces)]
+        private static Type ResolveLoggerType(string loggerTypeName)
+        {
+            return Type.GetType(loggerTypeName);
+        }
+
+        private (Task task, string name) AddLogger(
+            ActorSystemImpl system,
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.Interfaces)] Type loggerType,
+            string loggingBusName)
         {
             var loggerName = CreateLoggerName(loggerType);
             var fullLoggerName = $"{loggerName} [{loggerType.FullName}]";
