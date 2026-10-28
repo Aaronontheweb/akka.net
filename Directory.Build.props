@@ -65,7 +65,9 @@
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
   <PropertyGroup>
-    <PackageReleaseNotes>Akka.NET 1.6.0-beta4 simplifies source-generated serializer registration, adds three generator diagnostics that catch schema mistakes earlier, and cuts allocations across Artery, TCP and Akka.Streams. Read the [v1.6 getting started guide](https://github.com/akkadotnet/akka.net/blob/dev/GETTING_STARTED_V1.6.md) for the full upgrade path.
+    <PackageReleaseNotes>Akka.NET 1.6.0-beta4 simplifies source-generated serializer registration, adds three generator diagnostics that catch schema mistakes earlier, and cuts allocations across Artery, TCP and Akka.Streams.
+
+Start here: [Akka.NET v1.6 getting started guide](https://github.com/akkadotnet/akka.net/blob/1.6.0-beta4/GETTING_STARTED_V1.6.md)
 
 **Serialization V2**
 
@@ -99,11 +101,12 @@
 
 * MessagePack 3.1.12, Google.Protobuf 3.36.2, LightningDB 0.23.1, Microsoft.Data.Sqlite, Grpc.Tools 2.84.0, FsCheck.Xunit 3.6.0. ([#8803](https://github.com/akkadotnet/akka.net/pull/8803), [#8776](https://github.com/akkadotnet/akka.net/pull/8776), [#8797](https://github.com/akkadotnet/akka.net/pull/8797), [#8801](https://github.com/akkadotnet/akka.net/pull/8801), [#8593](https://github.com/akkadotnet/akka.net/pull/8593), [#8833](https://github.com/akkadotnet/akka.net/pull/8833))
 
-2 contributors since release 1.6.0-beta3
+3 contributors since release 1.6.0-beta3
 
 | COMMITS | LOC+ | LOC- | AUTHOR          |
 |---------|------|------|-----------------|
 | 21      | 7970 | 1605 | Aaron Stannard  |
+| 7       | 8    | 8    | dependabot[bot] |
 | 1       | 61   | 2    | Ariel Fischer   |</PackageReleaseNotes>
   </PropertyGroup>
   <ItemGroup Label="Analyzers" Condition="'$(MSBuildProjectName)' != 'Akka'">
