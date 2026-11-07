@@ -38,6 +38,7 @@ internal static class PubSubProbe
     internal static async Task<int> RunAsync()
     {
         var cases = 0;
+        var nativeWrites = 0;
         foreach (var mode in new[] { "off", "on", "pinned" })
         {
             var pins = mode == "pinned" ? """
@@ -59,7 +60,7 @@ internal static class PubSubProbe
                 {
                     var historical = Convert.FromHexString(fixture.LegacyHex);
                     var message = system.Serialization.Deserialize(historical, 9, fixture.Manifest);
-                    Verify(message, historical, fixture.Manifest, fixture.Name, legacy, system, mode);
+                    nativeWrites += Verify(message, historical, fixture.Manifest, fixture.Name, legacy, system, mode);
                     cases++;
                 }
 
@@ -68,7 +69,7 @@ internal static class PubSubProbe
                 foreach (var payload in new object[] { new byte[] { 0, 1, 127, 255 }, actor })
                 {
                     var message = new Send("/user/target", payload, true);
-                    Verify(message, legacy.ToBinary(message), "C", "public-payload", legacy, system, mode);
+                    nativeWrites += Verify(message, legacy.ToBinary(message), "C", "public-payload", legacy, system, mode);
                     cases++;
                 }
             }
@@ -78,12 +79,12 @@ internal static class PubSubProbe
             }
             watchdog.ThrowIfAnyProblems(mode, "shutdown");
         }
-        Require(cases == 39, "Incomplete PubSub corpus.");
-        Console.WriteLine("[pubsub-native] OK cases=39");
+        Require(cases == 39 && nativeWrites == 13, "Incomplete PubSub corpus or native writes.");
+        Console.WriteLine("[pubsub-native] OK cases=39 native-writes=13");
         return cases;
     }
 
-    private static void Verify(object message, byte[] historical, string manifest, string name,
+    private static int Verify(object message, byte[] historical, string manifest, string name,
         DistributedPubSubMessageSerializer legacy, ActorSystem system, string mode)
     {
         var writer = system.Serialization.FindSerializerFor(message);
@@ -93,15 +94,18 @@ internal static class PubSubProbe
         var restored = system.Serialization.Deserialize(bytes, writer.Identifier, manifest);
         Require(restored.GetType() == message.GetType(), $"{name}: runtime type.");
         Require(legacy.ToBinary(restored).AsSpan().SequenceEqual(historical), $"{name}: round-trip lost fields.");
-        if (writer is SerializerV2 v2)
+        if (mode == "on")
         {
+            var v2 = writer as SerializerV2 ?? throw new InvalidOperationException("PubSub id49 requires native buffer writes.");
             var buffer = new ArrayBufferWriter<byte>();
             Require(v2.Serialize(message, buffer) == buffer.WrittenCount, $"{name}: written count.");
             Require(buffer.WrittenSpan.SequenceEqual(bytes), $"{name}: native writer bytes.");
             var fromSequence = v2.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), manifest);
             Require(fromSequence.GetType() == message.GetType(), $"{name}: sequence runtime type.");
             Require(legacy.ToBinary(fromSequence).AsSpan().SequenceEqual(historical), $"{name}: native reader lost fields.");
+            return 1;
         }
+        return 0;
     }
 
     private static void Require(bool condition, string message)

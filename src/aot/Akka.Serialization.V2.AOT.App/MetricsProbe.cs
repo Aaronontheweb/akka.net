@@ -44,6 +44,7 @@ internal static class MetricsProbe
         ];
         string[] manifests = ["a", "b", "b", "b", "c", "c", "d", "e"];
         var cases = 0;
+        var nativeWrites = 0;
         foreach (var mode in new[] { "off", "on", "pinned" })
         {
             var pin = mode == "pinned" ? """
@@ -71,12 +72,14 @@ internal static class MetricsProbe
                     var bytes = writer.ToBinary(message);
                     var restored = system.Serialization.Deserialize(bytes, writer.Identifier, manifests[i]);
                     Compare(message, restored);
-                    if (writer is SerializerV2 v2)
+                    if (mode == "on")
                     {
+                        var v2 = writer as SerializerV2 ?? throw new InvalidOperationException("Metrics id50 requires native buffer writes.");
                         var buffer = new ArrayBufferWriter<byte>();
                         Require(v2.Serialize(message, buffer) == buffer.WrittenCount, "Written count");
                         Require(buffer.WrittenSpan.SequenceEqual(bytes), "Native writer bytes");
                         Compare(message, v2.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), manifests[i]));
+                        nativeWrites++;
                     }
                     cases++;
                 }
@@ -87,8 +90,8 @@ internal static class MetricsProbe
             }
             watchdog.ThrowIfAnyProblems(mode, "shutdown");
         }
-        Require(cases == 24, "Complete corpus");
-        Console.WriteLine("[metrics-native] OK cases=24");
+        Require(cases == 24 && nativeWrites == 8, "Complete corpus including all native writes");
+        Console.WriteLine("[metrics-native] OK cases=24 native-writes=8");
         return cases;
     }
     static void Compare(object expected, object actual)

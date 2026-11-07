@@ -7,8 +7,8 @@ provider; transport, cluster activation and generic reconstruction are separate 
 | Protocol | Legacy / V2 ids | Executed fixture cases |
 |---|---|---|
 | Singleton | 14 / 54 | 12; identity, native buffer writes, nine expected rejections |
-| Metrics | 10 / 50 | 24; every numeric kind/value, timestamps, EWMA, router selectors and all five pins |
-| PubSub | 9 / 49 | 39; eleven frozen legacy shapes, bytes and live actor-reference payloads |
+| Metrics | 10 / 50 | 24; eight required native writes, every numeric kind/value, timestamps, EWMA, router selectors and all five pins |
+| PubSub | 9 / 49 | 39; thirteen required native writes, eleven frozen legacy shapes, bytes and live actor-reference payloads |
 | Cluster Client | 15 / 55 | 39; thirteen frozen reader pairs, nine custom payload envelopes and nine rejections |
 | Actor-selection containers | 6 / 46 | 27; nine reader pairs, six actor-reference payloads, wildcard flag and seven rejections |
 
