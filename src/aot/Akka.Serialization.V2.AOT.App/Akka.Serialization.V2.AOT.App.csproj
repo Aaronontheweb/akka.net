@@ -21,5 +21,6 @@
   <ItemGroup>
     <ProjectReference Include="..\..\contrib\cluster\Akka.Cluster.Tools\Akka.Cluster.Tools.csproj" />
     <ProjectReference Include="..\..\contrib\cluster\Akka.Cluster.Metrics\Akka.Cluster.Metrics.csproj" />
+    <ProjectReference Include="..\..\core\Akka.Persistence\Akka.Persistence.csproj" />
   </ItemGroup>
 </Project>
