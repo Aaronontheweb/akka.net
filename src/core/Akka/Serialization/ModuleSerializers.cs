@@ -43,6 +43,14 @@ namespace Akka.Serialization
         /// legacy row's default bindings; when it is off, nothing moves. Both ids stay registered either way.
         /// </summary>
         public virtual ImmutableDictionary<string, string> Supersedes => ImmutableDictionary<string, string>.Empty;
+
+        /// <summary>
+        /// Optional exact binding set for a declared V2 takeover. Omitted entries move the full
+        /// legacy row. Streams uses this to move its protocol while bare generic refs stay legacy.
+        /// This is module metadata, not an application configuration setting.
+        /// </summary>
+        public virtual ImmutableDictionary<string, ImmutableHashSet<Type>> SupersedesBindings =>
+            ImmutableDictionary<string, ImmutableHashSet<Type>>.Empty;
     }
 
     /// <summary>
@@ -56,15 +64,17 @@ namespace Akka.Serialization
         // V2 row -> the legacy row it supersedes, and the reverse, both by alias
         private readonly Dictionary<string, SerializerDetails> _supersededBy = new(StringComparer.Ordinal);
         private readonly Dictionary<string, SerializerDetails> _supersedes = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, ImmutableHashSet<Type>> _takeoverBindings = new(StringComparer.Ordinal);
 
         /// <summary>Every row <see cref="ModuleSerializers.Create"/> returned, for registering the module's defaults.</summary>
         internal ImmutableHashSet<SerializerDetails> Details { get; }
 
         /// <summary>Each V2 row with the legacy row it supersedes, as <see cref="ModuleSerializers.Supersedes"/> declared them.</summary>
-        internal List<(SerializerDetails V2, SerializerDetails Legacy)> Takeovers { get; } = new();
+        internal List<(SerializerDetails V2, SerializerDetails Legacy, ImmutableHashSet<Type> Bindings)> Takeovers { get; } = new();
 
         private LoadedModule(ImmutableHashSet<SerializerDetails> details, ImmutableDictionary<string, string> supersedes,
-            ImmutableDictionary<Type, string> serializerTypeAliases, string moduleName)
+            ImmutableDictionary<Type, string> serializerTypeAliases,
+            ImmutableDictionary<string, ImmutableHashSet<Type>> supersedesBindings, string moduleName)
         {
             Details = details;
             foreach (var entry in details)
@@ -103,6 +113,9 @@ namespace Akka.Serialization
                         $"Module [{moduleName}] maps serializer type [{typeAlias.Key}] more than once with conflicting targets or assemblies.");
                 _serializers[key] = (target, assembly, IsAkka(typeAlias.Key));
             }
+            foreach (var subset in supersedesBindings)
+                if (!supersedes.ContainsKey(subset.Key))
+                    throw new InvalidOperationException($"Module [{moduleName}] declares bindings for undeclared V2 takeover [{subset.Key}].");
 
             if (supersedes.IsEmpty)
                 return;
@@ -125,9 +138,15 @@ namespace Akka.Serialization
                     throw new InvalidOperationException(
                         $"Module [{moduleName}] declares that [{kv.Key}] supersedes [{kv.Value}], but [{kv.Key}] binds types of its own; a V2 row ships read-only.");
 
+                var bindings = supersedesBindings.TryGetValue(kv.Key, out var subset) ? subset : legacy.UseFor;
+                if (supersedesBindings.ContainsKey(kv.Key) && (bindings.IsEmpty || !bindings.IsSubsetOf(legacy.UseFor)))
+                    throw new InvalidOperationException(
+                        $"Module [{moduleName}] declares an empty or non-legacy binding set for V2 takeover [{kv.Key}].");
+
                 _supersedes[kv.Key] = legacy;
                 _supersededBy[kv.Value] = v2;
-                Takeovers.Add((v2, legacy));
+                _takeoverBindings[kv.Key] = bindings;
+                Takeovers.Add((v2, legacy, bindings));
             }
         }
 
@@ -140,9 +159,9 @@ namespace Akka.Serialization
         {
             if (!serializationV2)
                 return row.UseFor;
-            if (_supersededBy.ContainsKey(row.Alias))
-                return ImmutableHashSet<Type>.Empty;
-            return _supersedes.TryGetValue(row.Alias, out var legacy) ? row.UseFor.Union(legacy.UseFor) : row.UseFor;
+            if (_supersededBy.TryGetValue(row.Alias, out var replacement))
+                return row.UseFor.Except(_takeoverBindings[replacement.Alias]);
+            return _supersedes.ContainsKey(row.Alias) ? row.UseFor.Union(_takeoverBindings[row.Alias]) : row.UseFor;
         }
 
         /// <summary>
@@ -155,7 +174,7 @@ namespace Akka.Serialization
             try
             {
                 skewError = null;
-                return new LoadedModule(module.Create(system), module.Supersedes, module.SerializerTypeAliases,
+                return new LoadedModule(module.Create(system), module.Supersedes, module.SerializerTypeAliases, module.SupersedesBindings,
                     module.GetType().FullName ?? module.GetType().Name);
             }
             catch (Exception e) when (ModuleSerializerTable.IsVersionSkew(e))
