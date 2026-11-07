@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Benchmarks.Configurations;
 using Akka.Streams;
+using Akka.Remote;
 using Akka.Streams.Serialization;
 using Akka.Configuration;
 using Akka.Serialization;
@@ -81,7 +82,7 @@ public class StreamRefProtocolSerializerBenchmarks
     private static Config Config(bool v2) => ConfigurationFactory.ParseString($$"""
         akka.actor.provider = local
         akka.actor.serialization-v2 = {{(v2 ? "on" : "off")}}
-        """).WithFallback(ActorMaterializer.DefaultConfig());
+        """).WithFallback(ActorMaterializer.DefaultConfig()).WithFallback(RemoteConfigFactory.Default());
 
     [GlobalCleanup]
     public async Task Cleanup()

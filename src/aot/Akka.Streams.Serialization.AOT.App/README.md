@@ -23,9 +23,9 @@ dotnet run scripts/CheckAotWarnings.cs -- \
 ```
 
 The executable requires native execution and `Akka.DynamicTypeLoading=false`; it must print
-`[streams-native] OK cases=36 native-writes=12 segmented-reads=36 rejected=12` and exit zero.
+`[streams-native] OK cases=36 native-writes=14 segmented-reads=36 user-payloads=6 rejected=12` and exit zero.
 It checks default/off, global/on and explicit protocol pin, both frozen readers, every sequence
-split, exact native writer counts, nested primitive payloads and empty/unresolved handshake
+split, exact native writer counts, nested primitive and independently registered V1/V2 user payloads, and empty/unresolved handshake
 canonicalization. Both old bare-ref E/F reads retain their explicit native rejection; id 70
 also rejects those tokens. Existing Remote warnings remain visible and are not waived by the
 empty Streams/probe baseline. Complete subsystem Native AOT support is not established.

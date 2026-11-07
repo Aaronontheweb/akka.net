@@ -1,6 +1,7 @@
 // Copyright (C) 2013-2026 .NET Foundation <https://github.com/akkadotnet/akka.net>
 #nullable enable
 using System.Buffers;
+using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using System.Runtime.Serialization;
 using System.Text;
@@ -12,12 +13,14 @@ using Akka.Event;
 using Akka.Serialization;
 using Akka.Remote.Serialization;
 using Akka.Streams.Serialization;
+using Google.Protobuf;
 using AkkaSerialization = Akka.Serialization.Serialization;
 
 var cases = 0;
 var nativeWrites = 0;
 var segmentedReads = 0;
 var rejected = 0;
+var userPayloads = 0;
 try
 {
     Require(!RuntimeFeature.IsDynamicCodeSupported, "A native executable is required.");
@@ -35,7 +38,11 @@ try
                 """;
         var watchdog = new LogWatchdogFilter();
         var system = ActorSystem.Create("streams-native-" + mode.Name,
-            ActorSystemSetup.Create(BootstrapSetup.Create().WithConfig(ConfigurationFactory.ParseString(settings)), new LogFilterSetup([watchdog])));
+            ActorSystemSetup.Create(BootstrapSetup.Create().WithConfig(ConfigurationFactory.ParseString(settings)),
+                new LogFilterSetup([watchdog]),
+                SerializationSetup.Create(owner => ImmutableHashSet.Create(
+                    SerializerDetails.Create("stream-native-user-v1", new UserV1Serializer(owner), ImmutableHashSet.Create(typeof(UserV1))),
+                    SerializerDetails.Create("stream-native-user-v2", new UserV2Serializer(owner), ImmutableHashSet.Create(typeof(UserV2)))))));
         try
         {
             // The public legacy codec bootstraps private protocol shapes from frozen bytes.
@@ -74,6 +81,25 @@ try
                 segmentedReads++;
                 cases++;
             }
+            foreach (var payload in new object[] { new UserV1("one"), new UserV2("two") })
+            {
+                var payloadCodec = system.Serialization.FindSerializerFor(payload);
+                Require(payloadCodec.Identifier == (payload is UserV1 ? 70701 : 70702), "Incorrect user payload writer.");
+                var message = system.Serialization.Deserialize(LegacyNext(payloadCodec, payload), 30, "A");
+                var writer = system.Serialization.FindSerializerFor(message);
+                Require(writer.Identifier == mode.Id, "User payload changed the protocol writer.");
+                Compare(message, system.Serialization.Deserialize(writer.ToBinary(message), mode.Id, "A"), "A", legacy);
+                if (mode.Id == 70)
+                {
+                    var modern = writer as SerializerV2 ?? throw new InvalidOperationException("User envelopes need native writes.");
+                    var buffer = new ArrayBufferWriter<byte>();
+                    Require(modern.Serialize(message, buffer) == buffer.WrittenCount, "User envelope byte count differs.");
+                    Compare(message, modern.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), "A"), "A", legacy);
+                    nativeWrites++;
+                }
+                userPayloads++;
+            }
+
             // The wire format of bare refs is unchanged; native reads still reject their
             // runtime generic reconstruction. Neither E nor F belongs to the new codec.
             var typeName = Encoding.UTF8.GetBytes("System.Int32, System.Private.CoreLib");
@@ -86,7 +112,7 @@ try
                 rejected += 2;
             }
             watchdog.ThrowIfAnyProblems(mode.Name, "serialization");
-            Console.WriteLine($"[streams-native] mode={mode.Name} writer={mode.Id} cases=12 rejected=4");
+            Console.WriteLine($"[streams-native] mode={mode.Name} writer={mode.Id} cases=12 user-payloads=2 rejected=4");
         }
         finally
         {
@@ -94,14 +120,39 @@ try
         }
         watchdog.ThrowIfAnyProblems(mode.Name, "shutdown");
     }
-    Require(cases == 36 && nativeWrites == 12 && segmentedReads == 36 && rejected == 12, "Incomplete corpus.");
-    Console.WriteLine("[streams-native] OK cases=36 native-writes=12 segmented-reads=36 rejected=12");
+    Require(cases == 36 && nativeWrites == 14 && segmentedReads == 36 && userPayloads == 6 && rejected == 12, "Incomplete corpus.");
+    Console.WriteLine("[streams-native] OK cases=36 native-writes=14 segmented-reads=36 user-payloads=6 rejected=12");
     return 0;
 }
 catch (Exception error)
 {
     Console.Error.WriteLine("[streams-native] FAILED: " + error);
     return 1;
+}
+
+// Construct the documented legacy protobuf envelope around independently registered user
+// codecs. This bootstraps the private domain type without accessing it or using reflection.
+static byte[] LegacyNext(Serializer payloadCodec, object payload)
+{
+    using var payloadBytes = new MemoryStream();
+    using (var output = new CodedOutputStream(payloadBytes, leaveOpen: true))
+    {
+        output.WriteTag(1, WireFormat.WireType.LengthDelimited);
+        output.WriteBytes(ByteString.CopyFrom(payloadCodec.ToBinary(payload)));
+        output.WriteTag(2, WireFormat.WireType.Varint);
+        output.WriteInt32(payloadCodec.Identifier);
+        output.WriteTag(3, WireFormat.WireType.LengthDelimited);
+        output.WriteBytes(ByteString.CopyFromUtf8(AkkaSerialization.ManifestFor(payloadCodec, payload)));
+    }
+    using var envelope = new MemoryStream();
+    using (var output = new CodedOutputStream(envelope, leaveOpen: true))
+    {
+        output.WriteTag(1, WireFormat.WireType.Varint);
+        output.WriteInt64(42);
+        output.WriteTag(2, WireFormat.WireType.LengthDelimited);
+        output.WriteBytes(ByteString.CopyFrom(payloadBytes.ToArray()));
+    }
+    return envelope.ToArray();
 }
 
 static void Compare(object expected, object actual, string manifest, StreamRefSerializer legacy)
@@ -146,4 +197,31 @@ sealed class Segment : ReadOnlySequenceSegment<byte>
         Next = next;
         return next;
     }
+}
+
+
+sealed record UserV1(string Value);
+sealed record UserV2(string Value);
+
+sealed class UserV1Serializer(ExtendedActorSystem owner) : SerializerWithStringManifest(owner)
+{
+    public override int Identifier => 70701;
+    public override string Manifest(object obj) => "u1";
+    public override byte[] ToBinary(object obj) => Encoding.UTF8.GetBytes(((UserV1)obj).Value);
+    public override object FromBinary(byte[] bytes, string manifest) => manifest == "u1"
+        ? new UserV1(Encoding.UTF8.GetString(bytes)) : throw new SerializationException("Unknown user V1 manifest.");
+}
+
+sealed class UserV2Serializer(ExtendedActorSystem owner) : SerializerV2(owner)
+{
+    public override int Identifier => 70702;
+    public override string Manifest(object obj) => "u2";
+    public override int Serialize(object obj, IBufferWriter<byte> writer)
+    {
+        var bytes = Encoding.UTF8.GetBytes(((UserV2)obj).Value);
+        writer.Write(bytes);
+        return bytes.Length;
+    }
+    public override object Deserialize(ReadOnlySequence<byte> bytes, string manifest) => manifest == "u2"
+        ? new UserV2(Encoding.UTF8.GetString(bytes.ToArray())) : throw new SerializationException("Unknown user V2 manifest.");
 }

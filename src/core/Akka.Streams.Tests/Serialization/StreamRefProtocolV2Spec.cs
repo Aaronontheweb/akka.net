@@ -1,11 +1,15 @@
 // Copyright (C) 2013-2026 .NET Foundation <https://github.com/akkadotnet/akka.net>
 #nullable enable
-using System;
+using System.Buffers;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Linq;
 using System.Runtime.Serialization;
+using System.Text;
 using System.Threading.Tasks;
+using System;
 using Akka.Actor;
+using Akka.Actor.Setup;
 using Akka.Configuration;
 using Akka.Serialization;
 using Akka.Streams.Implementation.StreamRef;
@@ -140,6 +144,46 @@ public sealed class StreamRefProtocolV2Spec : V2PortSpec
         }
     }
 
+    [Fact(DisplayName = "Should_UseIndependentUserCodecs_When_TheProtocolWrapsV1AndV2Payloads")]
+    public async Task Should_UseIndependentUserCodecs_When_TheProtocolWrapsV1AndV2Payloads()
+    {
+        var setup = ActorSystemSetup.Create(
+            BootstrapSetup.Create().WithConfig(ConfigurationFactory.ParseString("akka.actor.serialization-v2 = on")
+                .WithFallback(ActorMaterializer.DefaultConfig())),
+            SerializationSetup.Create(owner => ImmutableHashSet.Create(
+                SerializerDetails.Create("stream-user-v1", new UserV1Serializer(owner), ImmutableHashSet.Create(typeof(UserV1))),
+                SerializerDetails.Create("stream-user-v2", new UserV2Serializer(owner), ImmutableHashSet.Create(typeof(UserV2))))));
+        var system = ActorSystem.Create("stream-user-codecs", setup);
+        InitializeLogger(system);
+        try
+        {
+            var legacy = CreateLegacy((ExtendedActorSystem)system);
+            var modern = CreateV2((ExtendedActorSystem)system);
+            foreach (var payload in new object[] { new UserV1("one"), new UserV2("two") })
+            {
+                var message = new SequencedOnNext(42, payload);
+                system.Serialization.FindSerializerFor(message).Identifier.Should().Be(70);
+                system.Serialization.FindSerializerFor(payload).Identifier.Should().Be(payload is UserV1 ? 70701 : 70702);
+                foreach (var serializer in new[] { legacy, modern })
+                {
+                    var bytes = serializer.ToBinary(message);
+                    var restored = (SequencedOnNext)system.Serialization.Deserialize(bytes, serializer.Identifier, "A");
+                    restored.SeqNr.Should().Be(42);
+                    restored.Payload.Should().BeOfType(payload.GetType()).And.Be(payload);
+                }
+                var buffer = new ArrayBufferWriter<byte>();
+                modern.Serialize(message, buffer).Should().Be(buffer.WrittenCount);
+                var direct = (SequencedOnNext)modern.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), "A");
+                direct.Payload.Should().BeOfType(payload.GetType()).And.Be(payload);
+                direct.SeqNr.Should().Be(42);
+            }
+        }
+        finally
+        {
+            await system.Terminate().WaitAsync(TimeSpan.FromSeconds(10));
+        }
+    }
+
     [Fact(DisplayName = "Should_RejectBareRefsAndUnknownTokens_When_TheProtocolCodecIsUsedDirectly")]
     public void Should_RejectBareRefsAndUnknownTokens_When_TheProtocolCodecIsUsedDirectly()
     {
@@ -151,4 +195,29 @@ public sealed class StreamRefProtocolV2Spec : V2PortSpec
         sink.Should().Throw<ArgumentException>();
         unknown.Should().Throw<SerializationException>();
     }
+
+    private sealed record UserV1(string Value);
+    private sealed record UserV2(string Value);
+
+    private sealed class UserV1Serializer(ExtendedActorSystem owner) : SerializerWithStringManifest(owner)
+    {
+        public override int Identifier => 70701;
+        public override string Manifest(object obj) => "u1";
+        public override byte[] ToBinary(object obj) => Encoding.UTF8.GetBytes(((UserV1)obj).Value);
+        public override object FromBinary(byte[] bytes, string manifest) => new UserV1(Encoding.UTF8.GetString(bytes));
+    }
+
+    private sealed class UserV2Serializer(ExtendedActorSystem owner) : SerializerV2(owner)
+    {
+        public override int Identifier => 70702;
+        public override string Manifest(object obj) => "u2";
+        public override int Serialize(object obj, IBufferWriter<byte> writer)
+        {
+            var bytes = Encoding.UTF8.GetBytes(((UserV2)obj).Value);
+            writer.Write(bytes);
+            return bytes.Length;
+        }
+        public override object Deserialize(ReadOnlySequence<byte> bytes, string manifest) => new UserV2(Encoding.UTF8.GetString(bytes.ToArray()));
+    }
+
 }
