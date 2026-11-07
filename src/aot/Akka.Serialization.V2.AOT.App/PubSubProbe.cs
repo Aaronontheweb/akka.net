@@ -33,6 +33,10 @@ internal static class PubSubProbe
         new("SendToOneSubscriber", "F", "0a300a0568656c6c6f10111a2553797374656d2e537472696e672c2053797374656d2e507269766174652e436f72654c6962"),
         new("StatusEmpty", "A", ""),
         new("StatusReply", "A", "0a240a200a0670756273756212093132372e302e302e3118f8132208616b6b612e74637010111001"),
+        new("PublishNull", "E", "0a05746f7069631a002001"),
+        new("SendNull", "C", "0a0c2f757365722f74617267657410011a00"),
+        new("SendToAllNull", "D", "0a0c2f757365722f74617267657410011a00"),
+        new("SendToOneSubscriberNull", "F", "0a00"),
     ];
 
     internal static async Task<int> RunAsync()
@@ -79,8 +83,8 @@ internal static class PubSubProbe
             }
             watchdog.ThrowIfAnyProblems(mode, "shutdown");
         }
-        Require(cases == 39 && nativeWrites == 13, "Incomplete PubSub corpus or native writes.");
-        Console.WriteLine("[pubsub-native] OK cases=39 native-writes=13");
+        Require(cases == 51 && nativeWrites == 17, "Incomplete PubSub corpus or native writes.");
+        Console.WriteLine("[pubsub-native] OK cases=51 native-writes=17");
         return cases;
     }
 

@@ -121,10 +121,10 @@ try
     Require(selectedIds.SetEquals([LegacyId, V2Id]), "The probe did not exercise both distinct serializer ids.");
     var metricsCases = await MetricsProbe.RunAsync();
     var pubSubCases = await PubSubProbe.RunAsync();
-    Require(metricsCases == 24 && pubSubCases == 39, "Incomplete module corpus.");
+    Require(metricsCases == 24 && pubSubCases == 51, "Incomplete module corpus.");
     Require(await ClientProbe.RunAsync() == 0, "Cluster Client native corpus failed.");
     Require(await ContainersProbe.RunAsync() == 0, "Actor-selection native corpus failed.");
-    Console.WriteLine("[canary-v2] OK cases=12 metrics=24 pubsub=39 client=39 containers=27 native-writes=4 rejected=9");
+    Console.WriteLine("[canary-v2] OK cases=12 metrics=24 pubsub=51 client=48 containers=30 native-writes=4 rejected=9");
     return 0;
 }
 catch (Exception exception)

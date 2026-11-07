@@ -117,7 +117,7 @@ internal static class ContainersProbe
                     Reject(() => system.Serialization.Deserialize(Array.Empty<byte>(), int.MaxValue, "a"));
                     rejected += 2;
                     watchdog.ThrowIfAnyProblems(mode.Name, "serialization");
-                    Console.WriteLine($"[containers-native] mode={mode.Name} writer={mode.Id} fixtures=9 actorref-payloads=2 flag-read=true");
+                    Console.WriteLine($"[containers-native] mode={mode.Name} writer={mode.Id} fixtures=10 actorref-payloads=2 flag-read=true");
                 }
                 finally
                 {
@@ -125,8 +125,8 @@ internal static class ContainersProbe
                 }
                 watchdog.ThrowIfAnyProblems(mode.Name, "shutdown");
             }
-            Require(cases == 27 && nativeWrites == 9 && actorRefPayloads == 6 && rejected == 7, "Incomplete native corpus.");
-            Console.WriteLine("[containers-native] OK cases=27 native-writes=9 actorref-payloads=6 rejected=7");
+            Require(cases == 30 && nativeWrites == 10 && actorRefPayloads == 6 && rejected == 7, "Incomplete native corpus.");
+            Console.WriteLine("[containers-native] OK cases=30 native-writes=10 actorref-payloads=6 rejected=7");
             return 0;
         }
         catch (Exception error)
@@ -138,6 +138,7 @@ internal static class ContainersProbe
         static ActorSelectionMessage Create(string name) => name switch
         {
             "empty-path" => new ActorSelectionMessage("hello", []),
+            "null-payload" => new ActorSelectionMessage(null!, []),
             "empty-payload" => new ActorSelectionMessage("", [new SelectChildName("user")]),
             "child-names" => new ActorSelectionMessage("hello", [new SelectChildName("user"), new SelectChildName("target")]),
             "child-pattern" => new ActorSelectionMessage("hello", [new SelectChildPattern("worker-*")]),

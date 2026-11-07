@@ -380,7 +380,7 @@ jobs:
             echo "##vso[task.logissue type=error]The built-in V2 serializer AOT canary failed with exit code $rc."
             exit 1
           fi
-          if ! grep -qF '[canary-v2] OK cases=12 metrics=24 pubsub=39 client=39 containers=27 native-writes=4 rejected=9' "$(Agent.TempDirectory)/v2-aot-run.log"; then
+          if ! grep -qF '[canary-v2] OK cases=12 metrics=24 pubsub=51 client=48 containers=30 native-writes=4 rejected=9' "$(Agent.TempDirectory)/v2-aot-run.log"; then
             echo "##vso[task.logissue type=error]The built-in V2 serializer AOT canary did not complete its corpus."
             exit 1
           fi

@@ -8,9 +8,9 @@ provider; transport, cluster activation and generic reconstruction are separate 
 |---|---|---|
 | Singleton | 14 / 54 | 12; identity, native buffer writes, nine expected rejections |
 | Metrics | 10 / 50 | 24; eight required native writes, every numeric kind/value, timestamps, EWMA, router selectors and all five pins |
-| PubSub | 9 / 49 | 39; thirteen required native writes, eleven frozen legacy shapes, bytes and live actor-reference payloads |
-| Cluster Client | 15 / 55 | 39; thirteen frozen reader pairs, nine custom payload envelopes and nine rejections |
-| Actor-selection containers | 6 / 46 | 27; nine reader pairs, six actor-reference payloads, wildcard flag and seven rejections |
+| PubSub | 9 / 49 | 51; seventeen required native writes, fifteen frozen legacy shapes including nulls, bytes and live actor-reference payloads |
+| Cluster Client | 15 / 55 | 48; sixteen frozen reader pairs including nulls, nine custom payload envelopes and nine rejections |
+| Actor-selection containers | 6 / 46 | 30; ten reader pairs including nulls, six actor-reference payloads, wildcard flag and seven rejections |
 
 These consumers use public serialization APIs without a test assembly identity or blanket
 assembly roots. PubSub's private domain types are obtained from frozen legacy records; their
@@ -38,7 +38,7 @@ dotnet publish src/aot/Akka.Serialization.V2.AOT.App -r linux-x64 -c Release \
 timeout 300 /tmp/v2-aot-publish/Akka.Serialization.V2.AOT.App
 ```
 
-The run must exit 0 and print `[canary-v2] OK cases=12 metrics=24 pubsub=39 client=39 containers=27 native-writes=4 rejected=9`.
+The run must exit 0 and print `[canary-v2] OK cases=12 metrics=24 pubsub=51 client=48 containers=30 native-writes=4 rejected=9`.
 The runtime guard deliberately rejects managed execution; ordinary solution builds still
 compile this app without native publishing.
 

@@ -37,6 +37,9 @@ internal static class ClientProbe
             ("send-local-affinity", "AA", "0a0c2f757365722f776f726b657210011a320a077061796c6f616410111a2553797374656d2e537472696e672c2053797374656d2e507269766174652e436f72654c6962", "8301ac2f757365722f776f726b65720283011102d92553797374656d2e537472696e672c2053797374656d2e507269766174652e436f72654c696203c4077061796c6f616403c3", false),
             ("send-to-all", "AB", "0a0c2f757365722f776f726b65721a320a077061796c6f616410111a2553797374656d2e537472696e672c2053797374656d2e507269766174652e436f72654c6962", "8201ac2f757365722f776f726b65720283011102d92553797374656d2e537472696e672c2053797374656d2e507269766174652e436f72654c696203c4077061796c6f6164", false),
             ("send", "AA", "0a0c2f757365722f776f726b65721a320a077061796c6f616410111a2553797374656d2e537472696e672c2053797374656d2e507269766174652e436f72654c6962", "8301ac2f757365722f776f726b65720283011102d92553797374656d2e537472696e672c2053797374656d2e507269766174652e436f72654c696203c4077061796c6f616403c2", false),
+            ("publish-null", "AC", "0a05746f7069631a00", "8201a5746f70696302c0", false),
+            ("send-null", "AA", "0a0c2f757365722f776f726b657210011a00", "8301ac2f757365722f776f726b657202c003c3", false),
+            ("send-to-all-null", "AB", "0a0c2f757365722f776f726b65721a00", "8201ac2f757365722f776f726b657202c0", false),
         ];
         var cases = 0;
         var nativeWrites = 0;
@@ -117,7 +120,7 @@ internal static class ClientProbe
                     Reject(() => system.Serialization.Deserialize(Array.Empty<byte>(), int.MaxValue, "A"));
                     rejected += 3;
                     watchdog.ThrowIfAnyProblems(mode.Name, "serialization");
-                    Console.WriteLine($"[client-native] mode={mode.Name} writer={mode.Id} fixtures=13 user-payloads=3");
+                    Console.WriteLine($"[client-native] mode={mode.Name} writer={mode.Id} fixtures=16 user-payloads=3");
                 }
                 finally
                 {
@@ -125,9 +128,9 @@ internal static class ClientProbe
                 }
                 watchdog.ThrowIfAnyProblems(mode.Name, "shutdown");
             }
-            Require(cases == 39 && nativeWrites == 13 && userPayloads == 9 && rejected == 9,
+            Require(cases == 48 && nativeWrites == 16 && userPayloads == 9 && rejected == 9,
                 $"Incomplete corpus: {cases}/{nativeWrites}/{userPayloads}/{rejected}.");
-            Console.WriteLine("[client-native] OK cases=39 native-writes=13 user-payloads=9 rejected=9");
+            Console.WriteLine("[client-native] OK cases=48 native-writes=16 user-payloads=9 rejected=9");
             return 0;
         }
         catch (Exception exception)
