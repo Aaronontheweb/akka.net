@@ -369,6 +369,26 @@ and FSM state-change envelopes support the native contract, while user payloads 
 independent serializers. This does not establish native support for every journal or all
 PersistentFSM applications.
 
+### Built-in stream-ref protocol serialization
+
+The opt-in generated stream-ref protocol uses id 70 (`akka-stream-ref-v2`) beside the
+unchanged protobuf reader at id 30 (`akka-stream-ref`). Its first reader release is
+unreleased, tracked by [#8693](https://github.com/akkadotnet/akka.net/issues/8693).
+Upgrade every participating reader before enabling `akka.actor.serialization-v2 = on`.
+To retain legacy protocol writers while other modules use V2:
+
+```hocon
+akka.actor.serialization-bindings {
+    "Akka.Streams.Implementation.StreamRef.IStreamRefsProtocol, Akka.Streams" = akka-stream-ref
+}
+```
+
+Only the five protocol messages move. Bare `SourceRefImpl<T>` and `SinkRefImpl<T>` keep id 30
+and their existing guards when dynamic type loading is disabled. Source-generated typed
+stream-ref fields are separate work under [#8673](https://github.com/akkadotnet/akka.net/issues/8673);
+this port adds no element-type registry. A native local codec probe and JIT network streaming
+are separate evidence; neither establishes native remote stream materialization.
+
 ## Enabling Artery
 
 Artery is experimental. Don't use it in production - Akka.NET logs that warning itself the
