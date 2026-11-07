@@ -4,5 +4,7 @@
   href: source-generated-serialization.md
 - name: Enabling Built-in Serialization V2
   href: built-in-v2.md
+- name: Exception Fields
+  href: exception-messagepack-formatter.md
 - name: Built-in Serializer Ids
   href: codes.md
