@@ -135,7 +135,20 @@ public sealed class StreamRefProtocolV2Spec : V2PortSpec
                 var message = new OnSubscribeHandshake(target);
                 var expected = (OnSubscribeHandshake)legacy.FromBinary(legacy.ToBinary(message), "G");
                 var actual = (OnSubscribeHandshake)modern.FromBinary(modern.ToBinary(message), "G");
-                actual.TargetRef.Should().BeSameAs(expected.TargetRef);
+                if (expected.TargetRef is null)
+                {
+                    actual.TargetRef.Should().BeNull();
+                }
+                else
+                {
+                    actual.TargetRef.Should().NotBeNull();
+                    actual.TargetRef.GetType().Should().Be(expected.TargetRef.GetType());
+                    actual.TargetRef.Path.ToSerializationFormat().Should().Be(expected.TargetRef.Path.ToSerializationFormat());
+                    // Resolving an unknown serialized path can allocate an EmptyLocalActorRef on
+                    // each read. Preserve identity only where the legacy reader returns an existing ref.
+                    if (ReferenceEquals(expected.TargetRef, actor) || ReferenceEquals(expected.TargetRef, system.DeadLetters))
+                        actual.TargetRef.Should().BeSameAs(expected.TargetRef);
+                }
             }
         }
         finally
