@@ -18,10 +18,12 @@ namespace Akka.Persistence.Serialization
     internal sealed class PersistenceSerializers : ModuleSerializers
     {
         public override ImmutableDictionary<System.Type, string> SerializerTypeAliases { get; } =
-            ImmutableDictionary<System.Type, string>.Empty.Add(typeof(PersistenceSnapshotSerializer), "akka-persistence-snapshot");
+            ImmutableDictionary<System.Type, string>.Empty
+                .Add(typeof(PersistenceSnapshotSerializer), "akka-persistence-snapshot")
+                .Add(typeof(PersistenceMessageSerializer), "akka-persistence-message");
 
         public override ImmutableHashSet<SerializerDetails> Create(ExtendedActorSystem system) => ImmutableHashSet.Create(
-            SerializerDetails.Create("akka-persistence-message", new PersistenceMessageSerializer(system),
+            SerializerDetails.Create("akka-persistence-message", new NativePersistenceMessageSerializer(system),
                 ImmutableHashSet.Create(typeof(IMessage))),
             SerializerDetails.Create("akka-persistence-snapshot", new NativePersistenceSnapshotSerializer(system),
                 ImmutableHashSet.Create(typeof(Snapshot)))

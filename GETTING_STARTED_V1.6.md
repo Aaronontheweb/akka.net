@@ -349,6 +349,26 @@ that continue to exchange `byte[]` retain that boundary. Inner snapshot data sti
 independently registered serializer, and this change does not establish Native AOT support
 for every persistence plugin or arbitrary snapshot payload.
 
+### Native persistence-message envelopes
+
+The built-in event envelope now uses native buffer writes and segmented reads for its fixed
+message shapes, retaining protobuf bytes, id 7, aliases and manifests. Existing journals and
+plugins that recover by type binding need no record rewrite. This native implementation is
+independent of the global MessagePack serialization opt-in.
+
+The module returns a new internal concrete serializer. Use `Serializer`/`SerializerV2`
+contracts instead of casting it to `PersistenceMessageSerializer`. The public sealed legacy
+class remains available unchanged, and copied legacy type-name configuration resolves
+statically to the native default, including with dynamic type loading disabled.
+
+`PersistentFSM.PersistentFSMSnapshot<T>` retains its existing reflection-based JIT codec.
+With `Akka.DynamicTypeLoading` disabled, the native default explicitly rejects generic FSM
+snapshot reads and writes before producing output; it does not infer a native constructor
+for an arbitrary `T`. The fixed `Persistent`, `AtomicWrite`, at-least-once delivery snapshot
+and FSM state-change envelopes support the native contract, while user payloads still need
+independent serializers. This does not establish native support for every journal or all
+PersistentFSM applications.
+
 ## Enabling Artery
 
 Artery is experimental. Don't use it in production - Akka.NET logs that warning itself the
