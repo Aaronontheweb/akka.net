@@ -149,6 +149,10 @@ internal static class PersistenceMessageProbe
         // well, so re-encoding cannot hide a wrong negative timestamp in the native reader.
         if (actual is IPersistentRepresentation persistent)
             Require(persistent.Timestamp == ((IPersistentRepresentation)expected).Timestamp, "Decoded timestamp differs.");
+        // The old writer omits an explicit zero timeout. Verify the decoded nullable value
+        // directly so re-encoding cannot hide an incorrect zero instead of the legacy null.
+        if (actual is PersistentFSM.StateChangeEvent state)
+            Require(state.Timeout == ((PersistentFSM.StateChangeEvent)expected).Timeout, "Decoded state timeout differs.");
         if (actual is AtomicWrite atomic)
         {
             var expectedEvents = (IEnumerable<IPersistentRepresentation>)((AtomicWrite)expected).Payload;
