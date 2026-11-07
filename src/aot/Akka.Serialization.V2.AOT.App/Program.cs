@@ -11,6 +11,7 @@ using System.Runtime.Serialization;
 using Akka.Actor;
 using Akka.Actor.Setup;
 using Akka.AOT.Shared;
+using Akka.AOT.SerializationV2;
 using Akka.Event;
 using Akka.Configuration;
 using Akka.Serialization;
@@ -118,7 +119,12 @@ try
     Require(cases == 12 && nativeWriterCases == 4 && rejectedCases == 9,
         $"Incomplete probe: cases={cases}, native-writes={nativeWriterCases}, rejected={rejectedCases}.");
     Require(selectedIds.SetEquals([LegacyId, V2Id]), "The probe did not exercise both distinct serializer ids.");
-    Console.WriteLine("[canary-v2] OK cases=12 native-writes=4 rejected=9");
+    var metricsCases = await MetricsProbe.RunAsync();
+    var pubSubCases = await PubSubProbe.RunAsync();
+    Require(metricsCases == 24 && pubSubCases == 39, "Incomplete module corpus.");
+    Require(await ClientProbe.RunAsync() == 0, "Cluster Client native corpus failed.");
+    Require(await ContainersProbe.RunAsync() == 0, "Actor-selection native corpus failed.");
+    Console.WriteLine("[canary-v2] OK cases=12 metrics=24 pubsub=39 client=39 containers=27 native-writes=4 rejected=9");
     return 0;
 }
 catch (Exception exception)

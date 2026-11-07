@@ -1,11 +1,22 @@
 # Built-in Serialization V2 native canary
 
-Incremental proof for [#8718](https://github.com/akkadotnet/akka.net/issues/8718). The initial
-corpus is the four Cluster Singleton hand-over messages, legacy id 14 and V2 id 54. A local
-ActorSystem resolves both ids from the real module table with dynamic type loading disabled.
-The canary checks all manifests with the global write switch off, on, and on with a legacy
-protocol pin. It preserves domain singleton identity, exercises the native buffer contract,
-rejects unknown manifests/ids, and requires exact case counts before reporting success.
+Incremental proof for [#8718](https://github.com/akkadotnet/akka.net/issues/8718), run with
+`Akka.DynamicTypeLoading=false` as an actual native executable. All actor systems use a local
+provider; transport, cluster activation and generic reconstruction are separate claims.
+
+| Protocol | Legacy / V2 ids | Executed fixture cases |
+|---|---|---|
+| Singleton | 14 / 54 | 12; identity, native buffer writes, nine expected rejections |
+| Metrics | 10 / 50 | 24; every numeric kind/value, timestamps, EWMA, router selectors and all five pins |
+| PubSub | 9 / 49 | 39; eleven frozen legacy shapes, bytes and live actor-reference payloads |
+| Cluster Client | 15 / 55 | 39; thirteen frozen reader pairs, nine custom payload envelopes and nine rejections |
+| Actor-selection containers | 6 / 46 | 27; nine reader pairs, six actor-reference payloads, wildcard flag and seven rejections |
+
+These consumers use public serialization APIs without a test assembly identity or blanket
+assembly roots. PubSub's private domain types are obtained from frozen legacy records; their
+fields are checked by re-encoding with the unchanged legacy writer. The client explicitly sets
+its existing legacy-serialization setting off; bare stream refs and whole client delivery are
+not claimed. Unknown paths must fail before the completion marker is printed.
 
 This app is separate from the plain-core canary so adding a module does not change the
 core-only boot and warning surface. It reuses `Shared/LogWatchdogFilter.cs`; runtime warnings
@@ -27,13 +38,13 @@ dotnet publish src/aot/Akka.Serialization.V2.AOT.App -r linux-x64 -c Release \
 timeout 300 /tmp/v2-aot-publish/Akka.Serialization.V2.AOT.App
 ```
 
-The run must exit 0 and print `[canary-v2] OK cases=12 native-writes=4 rejected=9`.
+The run must exit 0 and print `[canary-v2] OK cases=12 metrics=24 pubsub=39 client=39 containers=27 native-writes=4 rejected=9`.
 The runtime guard deliberately rejects managed execution; ordinary solution builds still
 compile this app without native publishing.
 
 ## Warning and coverage boundaries
 
-The cold-publish warning baseline covers Remote, Cluster, Cluster.Tools and this app. Existing
+The cold-publish warning baseline covers Remote, Cluster, Cluster.Tools, Cluster.Metrics and this app. Existing
 legacy reflection warnings remain visible and are tracked individually; the Singleton port
 adds none. Core's separate rooted canary owns the Akka.dll baseline. Dependencies without source
 locations are counted separately by the checker and are not approved by this baseline.
@@ -42,10 +53,10 @@ locations are counted separately by the checker and are not approved by this bas
 dotnet run scripts/CheckAotWarnings.cs -- \
   --log /tmp/v2-aot-publish.log \
   --baseline src/aot/Akka.Serialization.V2.AOT.App/aot-warnings.baseline.txt \
-  --scope "src/core/Akka.Remote/,src/core/Akka.Cluster/,src/contrib/cluster/Akka.Cluster.Tools/,src/aot/Akka.Serialization.V2.AOT.App/" \
+  --scope "src/core/Akka.Remote/,src/core/Akka.Cluster/,src/contrib/cluster/Akka.Cluster.Tools/,src/contrib/cluster/Akka.Cluster.Metrics/,src/aot/Akka.Serialization.V2.AOT.App/" \
   --repo-root .
 ```
 
 CI retains the full publish/run logs and checks both the exit status and completion marker.
-Passing this corpus establishes native Singleton serialization, not Remote/Cluster startup,
+Passing this corpus establishes these native codec paths, not Remote/Cluster startup,
 network interoperability, singleton ownership hand-over, or arbitrary generic payload support.
