@@ -1,10 +1,11 @@
-//-----------------------------------------------------------------------
+﻿//-----------------------------------------------------------------------
 // <copyright file="SerializerTableSpec.cs" company="Akka.NET Project">
 //     Copyright (C) 2009-2025 Lightbend Inc. <http://www.lightbend.com>
 //     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
 // </copyright>
 //-----------------------------------------------------------------------
 
+#nullable enable
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -47,7 +48,7 @@ namespace Akka.API.Tests
 
         /// <param name="Supersedes">The legacy alias this V2 row takes over when the Serialization V2 switch is on; null otherwise.</param>
         private sealed record TableRow(string Module, string Alias, Type Serializer, int Id, IReadOnlyCollection<Type> BoundTypes,
-            string Supersedes = null);
+            string? Supersedes = null, IReadOnlyCollection<Type>? SupersedesBindings = null);
 
         private static string TypeName(Type type) => $"{type.FullName}, {type.Assembly.GetName().Name}";
 
@@ -66,7 +67,8 @@ namespace Akka.API.Tests
                     // a serializer that read its id from HOCON would throw here, since the system has none of the module rows
                     foreach (var details in module.Create((ExtendedActorSystem)system))
                         rows.Add(new TableRow(assembly, details.Alias, details.Serializer.GetType(), details.Serializer.Identifier,
-                            details.UseFor.ToList(), module.Supersedes.TryGetValue(details.Alias, out var legacy) ? legacy : null));
+                            details.UseFor.ToList(), module.Supersedes.TryGetValue(details.Alias, out var legacy) ? legacy : null,
+                            module.SupersedesBindings.TryGetValue(details.Alias, out var subset) ? subset.ToList() : null));
                 }
 
                 return rows;
@@ -87,11 +89,11 @@ namespace Akka.API.Tests
             var serializers = config.GetConfig("akka.actor.serializers").AsEnumerable()
                 .ToDictionary(kv => kv.Key, kv => Type.GetType(kv.Value.GetString(), throwOnError: true));
             var bindings = config.GetConfig("akka.actor.serialization-bindings").AsEnumerable()
-                .Select(kv => (Type: Type.GetType(kv.Key, throwOnError: true), Alias: kv.Value.GetString())).ToList();
+                .Select(kv => (Type: Type.GetType(kv.Key, throwOnError: true)!, Alias: kv.Value.GetString())).ToList();
 
-            return serializers.Select(s => new TableRow("Akka", s.Key, s.Value,
+            return serializers.Select(s => new TableRow("Akka", s.Key, s.Value!,
                 // core's serializers declare their id in code, so the instance needs no constructor to answer
-                ((Serializer)RuntimeHelpers.GetUninitializedObject(s.Value)).Identifier,
+                ((Serializer)RuntimeHelpers.GetUninitializedObject(s.Value!)).Identifier,
                 bindings.Where(b => b.Alias == s.Key).Select(b => b.Type).ToList())).ToList();
         }
 
@@ -110,6 +112,9 @@ namespace Akka.API.Tests
                     if (row.Supersedes is not null)
                         text.Append(" supersedes ").Append(row.Supersedes);
                     text.Append('\n');
+                    if (row.SupersedesBindings is { } subset)
+                        foreach (var name in subset.Select(TypeName).OrderBy(n => n, StringComparer.Ordinal))
+                            text.Append("    takes over ").Append(name).Append('\n');
                     foreach (var name in row.BoundTypes.Select(TypeName).OrderBy(n => n, StringComparer.Ordinal))
                         text.Append("    ").Append(name).Append('\n');
                 }
@@ -238,7 +243,7 @@ namespace Akka.API.Tests
         }
 
         /// <summary>
-        /// With the switch on, every type a superseded legacy row binds resolves to the V2 row that supersedes it, and
+        /// With the switch on, each declared takeover binding resolves to the V2 row that supersedes it, and
         /// every other binding is unchanged. Both ids still resolve, since reads never depend on the switch.
         /// </summary>
         [Theory(DisplayName = "Should_resolve_every_table_entry_When_the_serialization_v2_switch_is_on")]
@@ -262,11 +267,15 @@ namespace Akka.API.Tests
                     {
                         Assert.IsType(row.Serializer, serialization.GetSerializerById(row.Id));
 
-                        var expected = supersededBy.TryGetValue((row.Module, row.Alias), out var v2) ? v2.Serializer : row.Serializer;
                         foreach (var type in row.BoundTypes)
+                        {
+                            var expected = supersededBy.TryGetValue((row.Module, row.Alias), out var v2) &&
+                                           (v2.SupersedesBindings is null || v2.SupersedesBindings.Contains(type))
+                                ? v2.Serializer : row.Serializer;
                             Assert.True(expected == serialization.FindSerializerForType(type).GetType(),
                                 $"{type.FullName} ({row.Module}) resolved to {serialization.FindSerializerForType(type).GetType().FullName}, " +
                                 $"not {expected.FullName}");
+                        }
                     }
                 }
                 finally

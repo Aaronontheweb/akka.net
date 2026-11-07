@@ -1,0 +1,31 @@
+# Streams protocol native consumer
+
+This ordinary consumer obtains private protocol messages from twelve frozen protobuf records
+captured from the unchanged public `StreamRefSerializer` (source blob
+`49b1656555b795a1964fb2cbb4642d9c05427e66`). The paired MessagePack records are reviewed
+fixtures. No friend assembly name, private type access or blanket assembly roots are used.
+The Remote reference supplies the independently registered primitive payload serializer 17;
+this is not a native transport or remote stream materialization test.
+
+Run from the repository with serviced SDK 10.0.114 / native compiler and runtime 10.0.14:
+
+```bash
+dotnet publish .systematize/plans/builtin-serializers-v2/evidence/streams-native-probe/StreamsNativeProbe.csproj \
+  -c Release -r linux-x64 -o /tmp/streams-native-publish \
+  > /tmp/streams-native-publish.log 2>&1
+timeout 120 /tmp/streams-native-publish/StreamsNativeProbe
+
+dotnet run scripts/CheckAotWarnings.cs -- \
+  --log /tmp/streams-native-publish.log \
+  --baseline .systematize/plans/builtin-serializers-v2/evidence/streams-native-probe/aot-warnings.baseline.txt \
+  --scope "src/core/Akka.Streams/,src/core/Akka.Serialization.V2/,.systematize/plans/builtin-serializers-v2/evidence/streams-native-probe/" \
+  --repo-root .
+```
+
+The executable requires native execution and `Akka.DynamicTypeLoading=false`; it must print
+`[streams-native] OK cases=36 native-writes=12 segmented-reads=36 rejected=12` and exit zero.
+It checks default/off, global/on and explicit protocol pin, both frozen readers, every sequence
+split, exact native writer counts, nested primitive payloads and empty/unresolved handshake
+canonicalization. Both old bare-ref E/F reads retain their explicit native rejection; id 70
+also rejects those tokens. Existing Remote warnings remain visible and are not waived by the
+empty Streams/probe baseline. Complete subsystem Native AOT support is not established.
