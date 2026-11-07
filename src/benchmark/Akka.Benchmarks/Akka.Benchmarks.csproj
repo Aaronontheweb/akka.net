@@ -39,6 +39,7 @@
     <ProjectReference Include="..\..\core\Akka.Streams\Akka.Streams.csproj" />
     <ProjectReference Include="..\..\core\Akka\Akka.csproj" />
     <ProjectReference Include="..\..\contrib\cluster\Akka.Cluster.Metrics\Akka.Cluster.Metrics.csproj" />
+    <ProjectReference Include="..\..\contrib\cluster\Akka.Cluster.Tools\Akka.Cluster.Tools.csproj" />
   </ItemGroup>
 
 </Project>

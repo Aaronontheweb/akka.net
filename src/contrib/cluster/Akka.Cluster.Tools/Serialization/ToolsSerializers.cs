@@ -28,12 +28,15 @@ namespace Akka.Cluster.Tools
     {
         public override ImmutableDictionary<string, string> Supersedes { get; } =
             ImmutableDictionary<string, string>.Empty
+                .Add("akka-cluster-client-v2", "akka-cluster-client")
                 .Add("akka-pubsub-v2", "akka-pubsub")
                 .Add("akka-singleton-v2", "akka-singleton");
 
         public override ImmutableHashSet<SerializerDetails> Create(ExtendedActorSystem system) => ImmutableHashSet.Create(
             SerializerDetails.Create("akka-cluster-client", new ClusterClientMessageSerializer(system),
                 ImmutableHashSet.Create(typeof(IClusterClientMessage), typeof(IClusterClientProtocolMessage))),
+            SerializerDetails.Create("akka-cluster-client-v2", new ClusterClientMessagePackSerializer(system),
+                ImmutableHashSet<System.Type>.Empty),
             SerializerDetails.Create("akka-pubsub", new DistributedPubSubMessageSerializer(system),
                 ImmutableHashSet.Create(typeof(IDistributedPubSubMessage), typeof(SendToOneSubscriber))),
             SerializerDetails.Create("akka-pubsub-v2", new DistributedPubSubMessagePackSerializer(system),
