@@ -23,6 +23,12 @@ structurally while keeping nested values' comparison rules; unordered protocol m
 without depending on hash-bucket enumeration order. The test kit's bounded generic dispatch supports the pinned
 FluentAssertions 5 API and runs only in JIT tests; it is not part of serializer or Native AOT product code.
 
+Manifest parity is strict by default. A legacy serializer with `IncludeManifest = false` has an empty manifest;
+its new native V2 id must declare a nonempty token. Such a case explicitly sets the optional init property
+`V2Manifest`, for example `new V2PortCase(message, "", "selection") { V2Manifest = "a" }`.
+Every reader, mixed-binding exchange and golden dump uses the corresponding writer's token. This does not
+relax native manifest validation, change the positional case constructor, or alter the legacy id's format.
+
 ## Golden snapshots
 
 The two golden tests write a hex dump of each case (`HexDumpFormatter`) and check it with [Verify](https://github.com/VerifyTests/Verify),
@@ -49,3 +55,9 @@ for f in <spec folder>/Snapshots/*.received.txt; do mv "$f" "${f%.received.txt}.
 Rules: never edit a `.verified.txt` by hand to make a test pass. If a legacy snapshot changes in `git diff`, stop: the
 legacy format must never change. A shipped V2 format only grows (add fields, never change or reuse them). CI only compares;
 a missing or stale snapshot fails the test.
+
+For a message whose nested `Equals` compares only identity (or collection instances), set
+`V2PortCase.AssertEquivalent` to a complete domain assertion. It receives expected and actual
+after the shared exact runtime-type guard, and runs even when the root's `Equals` returns true.
+Compare every serialized field, including nested versions and records; an identity-only check
+would hide lost wire state. Leave it null for the shared default comparison.
