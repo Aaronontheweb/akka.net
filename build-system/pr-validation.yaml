@@ -394,6 +394,10 @@ jobs:
             --repo-root "$(Build.SourcesDirectory)"
         displayName: 'Compare built-in V2 serializer AOT warnings against the baseline'
 
+      - bash: |
+          bash scripts/verify-packaged-aot.sh "$(Agent.TempDirectory)/packaged-aot"
+        displayName: 'Verify packaged AOT defaults, missing target and late user override'
+
       # All publish and run logs, so a failure can be diagnosed from the artifact without
       # re-running the job. always() because the interesting case is the one where a step above
       # failed.
