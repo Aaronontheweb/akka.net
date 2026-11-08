@@ -67,3 +67,36 @@ ORSet and ORDictionary fixtures include their original gzip containers. These fo
 are historical protobuf controls, not id-51 fixtures. Core fake-module tests exercise actual
 Supersedes metadata at reserved id 51. Custom Setup instances remain custom even if they use
 that id; no CRDT V2 serializer is registered by this canonical-format prerequisite.
+
+## CRDT id-11 baseline
+
+The 63 `ReplicatedDataMessagePackSerializerSpec.*.legacy.verified.txt` fixtures cover all 34
+legacy CRDT manifests: twelve full-state forms, twelve delta forms and ten key forms.
+They were captured from untouched upstream `2d6a067972bfc7c49e5e4b898c542861eae9f6d9`, including
+its original SerializationSupport helper, before any id-51 implementation. A second cold
+capture checked the same bytes and exact runtime types/domain equality without rewriting files.
+The capture used Linux x64, SDK 10.0.101 and runtime 10.0.12.
+
+`ReplicatedDataWireCases` constructs causal dots explicitly at version 17, UID `1L << 40`,
+counter 7, timestamp 123456789 and fixed actor paths with UID 42. Delta wrapper fixtures use
+their canonical group form, matching the legacy reader's reconstruction. Empty collections,
+unsigned counter maximum, signed scalar/timestamp extremes, nested/null register values and
+both multi-dictionary value-delta modes have separate records. Legacy ORSet/ORMap-family gzip
+containers and platform-endian counter bytes remain intact. No V2 format is generated from
+these bytes; the independent historical files are the compatibility baseline for the port.
+Actor-reference sets distinguish an empty set (four bytes) from a single NoSender path (six
+bytes). The latter keeps its original frozen bytes and now uses an explicit Add call instead
+of an ambiguous null params-array overload. Empty paths retain receiver-provider-specific resolution.
+
+The generated id-51 fixtures have been independently decoded to check each top-level map,
+the full-state-only gzip boundary, unsigned counter maximum, 64-bit UID, null values and
+multi-dictionary value-delta flags. The primitive set schema has more framing than legacy
+protobuf (for example, the singleton string GSet is 11→25 bytes); measurements must retain
+these wire-size tradeoffs alongside timings and allocations. Native claims are restricted to
+the statically constructed forms. Explicit dynamic-only cases must reject cold and warm
+reads/writes before nested payload callbacks when `Akka.DynamicTypeLoading` is disabled.
+The port registers `akka-replicated-data-v2` read-only at id 51 and declares its takeover of
+`akka-replicated-data`; the existing global toggle or explicit application bindings choose
+network writes. Canonical protobuf payloads still resolve the active legacy alias. This does
+not remove legacy generic reflection from canonical id-11 reconstruction or make Sharding
+Native AOT compatible. All native support statements must name the concrete static forms tested.
