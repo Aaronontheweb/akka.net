@@ -28,7 +28,8 @@ namespace Akka.Remote.Serialization
             ImmutableDictionary<string, string>.Empty
                 .Add("akka-containers-v2", "akka-containers")
                 .Add("daemon-create-v2", "daemon-create")
-                .Add("akka-system-msg-v2", "akka-system-msg");
+                .Add("akka-system-msg-v2", "akka-system-msg")
+                .Add("akka-misc-v2", "akka-misc");
 
         public override ImmutableHashSet<SerializerDetails> Create(ExtendedActorSystem system) => ImmutableHashSet.Create(
             SerializerDetails.Create("akka-containers", new MessageContainerSerializer(system),
@@ -58,6 +59,8 @@ namespace Akka.Remote.Serialization
                     typeof(RemoteWatcher.Heartbeat),
                     typeof(RemoteWatcher.HeartbeatRsp),
                     typeof(RemoteRouterConfig))),
+            SerializerDetails.Create("akka-misc-v2", new MiscMessageMessagePackSerializer(system),
+                ImmutableHashSet<System.Type>.Empty),
             // the only built-in serializer with its own settings block; without Remote.conf, use the same default Remote.conf sets
             SerializerDetails.Create("primitive",
                 new PrimitiveSerializers(system,
