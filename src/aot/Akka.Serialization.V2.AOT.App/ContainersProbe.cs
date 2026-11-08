@@ -84,7 +84,9 @@ internal static class ContainersProbe
                         var wrapper = new ActorSelectionMessage(actorRef, [new SelectChildName("refs")]);
                         var writer = system.Serialization.FindSerializerFor(wrapper);
                         Require(writer.Identifier == mode.Id, "Actor-ref wrapper binding changed.");
-                        Require(system.Serialization.FindSerializerFor(actorRef).Identifier == 16, "Actor-ref payload should retain its own serializer.");
+                        var expectedPayloadId = mode.Name == "off" ? 16 : 56;
+                        Require(system.Serialization.FindSerializerFor(actorRef).Identifier == expectedPayloadId,
+                            "Actor-ref payload must follow its own Misc binding, independently of the container pin.");
                         Compare(wrapper, system.Serialization.Deserialize(writer.ToBinary(wrapper), mode.Id, AkkaSerialization.ManifestFor(writer, wrapper)));
                         actorRefPayloads++;
                     }
