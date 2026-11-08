@@ -10,15 +10,15 @@ this is not a native transport or remote stream materialization test.
 Run from the repository with serviced SDK 10.0.114 / native compiler and runtime 10.0.14:
 
 ```bash
-dotnet publish .systematize/plans/builtin-serializers-v2/evidence/streams-native-probe/StreamsNativeProbe.csproj \
+dotnet publish src/aot/Akka.Streams.Serialization.AOT.App/StreamsNativeProbe.csproj \
   -c Release -r linux-x64 -o /tmp/streams-native-publish \
   > /tmp/streams-native-publish.log 2>&1
 timeout 120 /tmp/streams-native-publish/StreamsNativeProbe
 
 dotnet run scripts/CheckAotWarnings.cs -- \
   --log /tmp/streams-native-publish.log \
-  --baseline .systematize/plans/builtin-serializers-v2/evidence/streams-native-probe/aot-warnings.baseline.txt \
-  --scope "src/core/Akka.Streams/,src/core/Akka.Serialization.V2/,.systematize/plans/builtin-serializers-v2/evidence/streams-native-probe/" \
+  --baseline src/aot/Akka.Streams.Serialization.AOT.App/aot-warnings.baseline.txt \
+  --scope "src/core/Akka.Streams/,src/core/Akka.Serialization.V2/,src/aot/Akka.Streams.Serialization.AOT.App/" \
   --repo-root .
 ```
 

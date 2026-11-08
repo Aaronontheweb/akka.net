@@ -86,19 +86,14 @@ required installing/checking the already-linked log watchdog; the final cold exp
 replay passed with startup, serialization and shutdown checks enabled. The managed build has
 zero warnings/errors and Slopwatch reports zero issues. The initial managed compile tried
 an internal id lookup; that consumer mistake was corrected using the existing public alias
-overload, with distinct marker types to preserve cache semantics. The original failure
-receipt remains retained. No product API or registration change was made.
+overload, with distinct marker types to preserve cache semantics. The initial consumer-side lookup mistake was corrected using the existing public alias overload. No product API or registration change was made.
 
 The ordinary and retained friend publishes emit the same 70 warning lines / 69 normalized
 legacy/dependency keys, with zero added/gone keys and zero unlocated diagnostics. None is
-attributed to the new MessagePack codec, app, V2 runtime or Shared sources. The comparison
-reference is retained as evidence; it is not an approved CI warning baseline. The old
+attributed to the new MessagePack codec, app, V2 runtime or Shared sources. The comparison reference is not an approved CI warning baseline. The old
 reflection debt remains visible, and this proof does not approve it away.
 
-`evidence` retains compressed full build, publish, run, warning comparison and SDK output,
-original failure output, commands and hashes. Hosted CI execution, native Remote/Cluster
-startup, transport interoperability, arbitrary payload support and performance acceptance
-remain outside this consumer's evidence.
+The validation above does not establish hosted CI execution, native Remote/Cluster startup, transport interoperability, arbitrary payload support or performance acceptance.
 
 ## Prepared CI composition
 
