@@ -111,6 +111,4 @@ publish and expanded-command replay passed with exactly those 68 identities, zer
 keys and zero outside-scope/unlocated diagnostics. Hosted execution remains pending. The original 69-key comparison remains retained
 separately, so the dependency's warning removal cannot overwrite historical evidence.
 
-`evidence/ci-template-replay` retains the final complete native/SDK/publish/run/warning logs,
-exact expanded commands and parameters, source revisions and canonical/raw input hashes.
-The parent evidence directory also retains the exact copied-fixture audit. The completed source/CI replay did not alter the reviewed CRDT production code.
+The final expanded-command replay passed the native completion and warning assertions. The copied-fixture audit passed byte-exact comparisons. The source/CI replay did not alter the reviewed CRDT production code.

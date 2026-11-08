@@ -4,9 +4,9 @@ Incremental proof for [#8718](https://github.com/akkadotnet/akka.net/issues/8718
 `Akka.DynamicTypeLoading=false` as an actual native executable. All actor systems use a local
 provider; transport, cluster activation and generic reconstruction are separate claims.
 
-The focused follow-up [#8938](https://github.com/akkadotnet/akka.net/pull/8938) extracts this
-canary without merging other production ports into that PR. Its isolated branch builds with
-public APIs, but its full native runtime gate requires the unmerged reader ports: [Metrics #8917](https://github.com/akkadotnet/akka.net/pull/8917),
+This focused follow-up extracts the existing integration canary without merging the other
+production ports. Its isolated branch builds with public APIs, but its full native runtime
+gate requires the unmerged reader ports: [Metrics #8917](https://github.com/akkadotnet/akka.net/pull/8917),
 [PubSub #8919](https://github.com/akkadotnet/akka.net/pull/8919),
 [Client #8922](https://github.com/akkadotnet/akka.net/pull/8922),
 [Containers #8923](https://github.com/akkadotnet/akka.net/pull/8923),
@@ -14,13 +14,9 @@ public APIs, but its full native runtime gate requires the unmerged reader ports
 [Persistence #8927](https://github.com/akkadotnet/akka.net/pull/8927),
 [Streams #8929](https://github.com/akkadotnet/akka.net/pull/8929), and
 [Misc #8934](https://github.com/akkadotnet/akka.net/pull/8934) for nested actor-reference
-bindings. The combined integration preview includes these prerequisites. Missing registrations fail; no module or assertion is skipped. The branch includes
+bindings. Missing registrations fail; no module or assertion is skipped. The branch includes
 the existing Singleton canary and the reviewed Legacy exception/SDK prerequisite #8935/#8914.
-The retained positive 249-case native evidence is the composed source at `053480698`,
-recorded in `652b9c83a`, under
-`.systematize/plans/builtin-serializers-v2/evidence/integration-053480698`. It is not an
-isolated-branch runtime pass. Extraction and compile evidence is retained separately under
-`.systematize/plans/builtin-serializers-v2/evidence/module-native-kit`.
+The positive 249-case native proof passed on composed source `053480698`, originally recorded in `652b9c83a`. This is not an isolated-branch runtime pass. The isolated extraction compiles with SDK 10.0.114 with zero warnings/errors; it has no isolated complete native run.
 
 | Protocol | Legacy / V2 ids | Executed fixture cases |
 |---|---|---|
