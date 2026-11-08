@@ -126,7 +126,8 @@ try
     Require(await ContainersProbe.RunAsync() == 0, "Actor-selection native corpus failed.");
     Require(await SnapshotProbe.RunAsync() == 0, "Snapshot native corpus failed.");
     Require(await PersistenceMessageProbe.RunAsync() == 0, "Persistence-message native corpus failed.");
-    Console.WriteLine("[canary-v2] OK cases=12 metrics=24 pubsub=51 client=48 containers=30 snapshot=15 persistence=33 native-writes=4 rejected=9");
+    Require(await StreamsProbe.RunAsync() == 0, "Stream protocol native corpus failed.");
+    Console.WriteLine("[canary-v2] OK cases=12 metrics=24 pubsub=51 client=48 containers=30 snapshot=15 persistence=33 streams=36 native-writes=4 rejected=9");
     return 0;
 }
 catch (Exception exception)

@@ -1,5 +1,6 @@
 # Exact warning baseline for the incremental built-in V2 serializer canary (#8718).
-# The corpus has 213 local-provider fixture cases, including same-byte Persistence ids 7/8.
+# The corpus has 249 local-provider fixture cases, including same-byte Persistence ids 7/8.
+# Streams protocol is included in scope with no approved warning entries.
 # Cold SDK 10.0.114 / runtime 10.0.14 publishing emitted the 19 legacy dependency warning keys
 # below and none from the new codecs or app. The two Persistence keys already appear in the
 # Persistence canary baseline. These entries do not claim Remote/Cluster startup, generic
