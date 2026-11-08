@@ -22,13 +22,13 @@ namespace Akka.Remote.Serialization
     /// </summary>
     internal sealed class RemoteSerializers : ModuleSerializers
     {
-        public override ImmutableDictionary<string, string> Supersedes { get; } =
-            ImmutableDictionary<string, string>.Empty.Add("daemon-create-v2", "daemon-create");
-
         private static readonly Config PrimitiveDefaults = ConfigurationFactory.ParseString("use-legacy-behavior = on");
 
         public override ImmutableDictionary<string, string> Supersedes { get; } =
-            ImmutableDictionary<string, string>.Empty.Add("akka-containers-v2", "akka-containers");
+            ImmutableDictionary<string, string>.Empty
+                .Add("akka-containers-v2", "akka-containers")
+                .Add("daemon-create-v2", "daemon-create")
+                .Add("akka-system-msg-v2", "akka-system-msg");
 
         public override ImmutableHashSet<SerializerDetails> Create(ExtendedActorSystem system) => ImmutableHashSet.Create(
             SerializerDetails.Create("akka-containers", new MessageContainerSerializer(system),
@@ -71,6 +71,8 @@ namespace Akka.Remote.Serialization
                 ImmutableHashSet<System.Type>.Empty),
             SerializerDetails.Create("akka-system-msg", new SystemMessageSerializer(system),
                 ImmutableHashSet.Create(typeof(SystemMessage))),
+            SerializerDetails.Create("akka-system-msg-v2", new SystemMessageMessagePackSerializer(system),
+                ImmutableHashSet<System.Type>.Empty),
             SerializerDetails.Create("artery-control", new ArteryControlMessageSerializer(system),
                 ImmutableHashSet.Create(typeof(IArteryControlMessage)))
         );
