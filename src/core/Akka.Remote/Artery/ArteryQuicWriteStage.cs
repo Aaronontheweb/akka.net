@@ -8,7 +8,6 @@
 
 using System;
 using System.Buffers;
-using System.IO;
 using System.Net;
 using System.Runtime.Versioning;
 using System.Threading;
@@ -55,23 +54,6 @@ namespace Akka.Remote.Artery
             return new LogicAndMaterializedValue<Task<Done>>(new Logic(this, connected), connected.Task);
         }
 
-        internal static async ValueTask WriteCoalescedAsync(Stream stream, ReadOnlySequence<byte> bytes,
-            ArrayPool<byte> pool, CancellationToken cancellationToken)
-        {
-            var length = checked((int)bytes.Length);
-            var buffer = pool.Rent(length);
-            try
-            {
-                var memory = buffer.AsMemory(0, length);
-                bytes.CopyTo(memory.Span);
-                await stream.WriteAsync(memory, cancellationToken).ConfigureAwait(false);
-            }
-            finally
-            {
-                pool.Return(buffer);
-            }
-        }
-
         private sealed class Logic : GraphStageLogic, IInHandler, IOutHandler
         {
             private readonly ArteryQuicWriteStage _stage;
@@ -86,6 +68,8 @@ namespace Akka.Remote.Artery
             private Task? _monitoring;
             private Task? _writingOperation;
             private Task? _finishing;
+            private ArteryQuicOutputPipe? _output;
+            private Task? _sending;
             private Action<Exception>? _failed;
             private Action<Done>? _written;
 
@@ -116,6 +100,15 @@ namespace Akka.Remote.Artery
                 {
                     var channel = Interlocked.Exchange(ref _pendingChannel, null)!;
                     _channel = channel;
+                    if (_stage._role == ArteryStreamId.Ordinary)
+                    {
+                        _output = new ArteryQuicOutputPipe(channel.Stream, length =>
+                        {
+                            _stage._transport.RecordWrite(_stage._role, length);
+                            _written!(Done.Instance);
+                        }, _stop.Token, channel.CancellationToken);
+                        _sending = MonitorOutputAsync(_output);
+                    }
                     _connected.TrySetResult(Done.Instance);
                     if (_finished)
                         _finishing = FinishAsync();
@@ -161,7 +154,38 @@ namespace Akka.Remote.Artery
             {
                 var bytes = Grab(_stage._in);
                 _writing = true;
-                _writingOperation = WriteAsync(bytes);
+                if (_output is not null && !bytes.IsEmpty && bytes.Length <= MaximumCoalescedWriteSize)
+                {
+                    try
+                    {
+                        _output.Write(bytes);
+                    }
+                    catch (Exception ex)
+                    {
+                        FailStage(ex);
+                    }
+                    finally
+                    {
+                        // Pipe storage now owns a copy, as on the TCP output path.
+                        bytes.DisposeOwnedSegments();
+                    }
+                }
+                else
+                {
+                    _writingOperation = WriteAsync(bytes);
+                }
+            }
+
+            private async Task MonitorOutputAsync(ArteryQuicOutputPipe output)
+            {
+                try
+                {
+                    await output.Completion.ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _failed!(ex);
+                }
             }
 
             private async Task WriteAsync(ReadOnlySequence<byte> bytes)
@@ -170,19 +194,10 @@ namespace Akka.Remote.Artery
                 {
                     var channel = _channel!;
                     using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token, channel.CancellationToken);
-                    if (_stage._role == ArteryStreamId.Ordinary && !bytes.IsSingleSegment &&
-                        !bytes.IsEmpty && bytes.Length <= MaximumCoalescedWriteSize)
+                    foreach (var segment in bytes)
                     {
-                        await WriteCoalescedAsync(channel.Stream, bytes, ArrayPool<byte>.Shared, lifetime.Token).ConfigureAwait(false);
-                        _stage._transport.RecordWrite(_stage._role, (int)bytes.Length);
-                    }
-                    else
-                    {
-                        foreach (var segment in bytes)
-                        {
-                            await channel.Stream.WriteAsync(segment, lifetime.Token).ConfigureAwait(false);
-                            _stage._transport.RecordWrite(_stage._role, segment.Length);
-                        }
+                        await channel.Stream.WriteAsync(segment, lifetime.Token).ConfigureAwait(false);
+                        _stage._transport.RecordWrite(_stage._role, segment.Length);
                     }
                     _written!(Done.Instance);
                 }
@@ -215,6 +230,9 @@ namespace Akka.Remote.Artery
                 });
                 try
                 {
+                    _output?.Complete();
+                    if (_sending is not null)
+                        await _sending.ConfigureAwait(false);
                     _channel!.Stream.CompleteWrites();
                     await _channel.Stream.WritesClosed.WaitAsync(_stop.Token).ConfigureAwait(false);
                     // Peer owns native disposal; retaining this closed stream until connection
@@ -234,6 +252,7 @@ namespace Akka.Remote.Artery
             public override void PostStop()
             {
                 _stop.Cancel();
+                _output?.Complete();
                 _connected.TrySetCanceled();
                 Interlocked.Exchange(ref _pendingChannel, null)?.Retire();
                 // A stopped channel fences all sibling streams, including idle writers.
@@ -247,7 +266,8 @@ namespace Akka.Remote.Artery
                 try
                 {
                     await Task.WhenAll(_initializing ?? Task.CompletedTask, _monitoring ?? Task.CompletedTask,
-                        _writingOperation ?? Task.CompletedTask, _finishing ?? Task.CompletedTask).ConfigureAwait(false);
+                        _writingOperation ?? Task.CompletedTask, _finishing ?? Task.CompletedTask,
+                        _sending ?? Task.CompletedTask).ConfigureAwait(false);
                 }
                 finally
                 {

@@ -39,9 +39,12 @@ namespace Akka.Remote.Tests.Artery
     {
         public ArteryQuicTransportSpec(ITestOutputHelper output) : base(output) { }
 
-        [Fact(DisplayName = "QUIC sends FIN when upstream finishes before connection opening completes")]
-        public async Task Should_CompleteWrites_When_UpstreamFinishesDuringConnect()
+        [Theory(DisplayName = "QUIC sends FIN when upstream finishes before connection opening completes")]
+        [InlineData(1)]
+        [InlineData(2)]
+        public async Task Should_CompleteWrites_When_UpstreamFinishesDuringConnect(int roleValue)
         {
+            var role = (ArteryStreamId)roleValue;
             RequireTransportSupport("quic");
             using var certificate = CreateCertificate();
             var tls = ArteryTlsSettings.ServerOnly(certificate, TrustCertificate(certificate));
@@ -66,7 +69,8 @@ namespace Akka.Remote.Tests.Artery
                         },
                         DefaultCloseErrorCode = 1,
                         DefaultStreamErrorCode = 1,
-                        MaxInboundUnidirectionalStreams = 1
+                        // The sender reserves a control stream before opening ordinary.
+                        MaxInboundUnidirectionalStreams = 2
                     };
                 }
             }, deadline.Token);
@@ -74,7 +78,7 @@ namespace Akka.Remote.Tests.Artery
             {
                 var ((upstreamFinished, connected), writerFinished) = Source.Empty<ReadOnlySequence<byte>>()
                     .WatchTermination(Keep.Right)
-                    .ViaMaterialized(sender.Outgoing(listener.LocalEndPoint, ArteryStreamId.Control), Keep.Both)
+                    .ViaMaterialized(sender.Outgoing(listener.LocalEndPoint, role), Keep.Both)
                     .ToMaterialized(Sink.Ignore<ReadOnlySequence<byte>>(), Keep.Both)
                     .Run(materializer);
 
@@ -82,7 +86,14 @@ namespace Akka.Remote.Tests.Artery
                 await upstreamFinished.WaitAsync(deadline.Token);
                 allowHandshake.SetResult(Done.Instance);
                 await using var connection = await listener.AcceptConnectionAsync(deadline.Token);
-                await using var stream = await connection.AcceptInboundStreamAsync(deadline.Token);
+                await using var first = await connection.AcceptInboundStreamAsync(deadline.Token);
+                // Opening the ordinary stream also exposes the reserved, unwritten
+                // control stream to the peer. Its empty read is intentionally idle.
+                await using var ordinary = role == ArteryStreamId.Ordinary
+                    ? await connection.AcceptInboundStreamAsync(deadline.Token)
+                    : null;
+                var stream = ordinary ?? first;
+                stream.Id.Should().Be(role == ArteryStreamId.Ordinary ? 6 : 2);
                 await connected.WaitAsync(deadline.Token);
                 (await stream.ReadAsync(new byte[1], deadline.Token)).Should().Be(0, "an empty upstream still sends a graceful FIN");
                 await writerFinished.WaitAsync(deadline.Token);
@@ -148,6 +159,153 @@ namespace Akka.Remote.Tests.Artery
             }
         }
 
+        [Theory(DisplayName = "QUIC writer cancellation settles after repeated writes on one channel")]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Should_SettleWriter_When_StoppedAfterRepeatedWrites(bool closePeer)
+        {
+            RequireTransportSupport("quic");
+            using var certificate = CreateCertificate();
+            var tls = ArteryTlsSettings.Mutual(certificate, TrustCertificate(certificate));
+            var log = Logging.GetLogger(Sys, GetType());
+            var sender = new ArteryQuicTransport(tls, TimeSpan.FromSeconds(10), log, enableIoStatistics: true);
+            var receiver = new ArteryQuicTransport(tls, TimeSpan.FromSeconds(10), log);
+            var materializer = ActorMaterializer.Create(Sys);
+            var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var owners = Enumerable.Range(0, 128).Select(_ => new TrackingOwner(4096, 0x13)).ToArray();
+            var frames = owners.Select(owner => OwnedSequenceSegment.Create(owner, 4096)).ToArray();
+            var preamble = Preamble(ArteryStreamId.Ordinary);
+            var expectedBytes = preamble.Length + owners.Length * 4096;
+            var receivedBytes = 0L;
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            try
+            {
+                var endpoint = await receiver.BindAsync("127.0.0.1", 0, deadline.Token);
+                receiver.StartAccepting((source, _, admitted) =>
+                {
+                    source.RunWith(Sink.ForEach<ReadOnlySequence<byte>>(bytes =>
+                    {
+                        if (Interlocked.Add(ref receivedBytes, bytes.Length) == expectedBytes)
+                            received.TrySetResult();
+                    }), materializer);
+                    admitted();
+                });
+                var ((killSwitch, connected), writerFinished) = Source.Single(new ReadOnlySequence<byte>(preamble))
+                    .Concat(Source.From(frames))
+                    .ConcatMaterialized(Source.Maybe<ReadOnlySequence<byte>>(), Keep.Left)
+                    .ViaMaterialized(KillSwitches.Single<ReadOnlySequence<byte>>(), Keep.Right)
+                    .ViaMaterialized(sender.Outgoing(endpoint, ArteryStreamId.Ordinary), Keep.Both)
+                    .ToMaterialized(Sink.Ignore<ReadOnlySequence<byte>>(), Keep.Both)
+                    .Run(materializer);
+                await connected.WaitAsync(deadline.Token);
+                await received.Task.WaitAsync(deadline.Token);
+                await AwaitAssertAsync(() => sender.IoSnapshot.WriteOperations.Should().Be(owners.Length + 1),
+                    TimeSpan.FromSeconds(3));
+                writerFinished.IsCompleted.Should().BeFalse();
+
+                if (closePeer)
+                    await receiver.ShutdownAsync(deadline.Token);
+                else
+                    killSwitch.Abort(new IOException("Stop the writer after repeated writes."));
+
+                var stopped = async () => await writerFinished.WaitAsync(deadline.Token);
+                await stopped.Should().ThrowAsync<Exception>();
+                await sender.ShutdownAsync(deadline.Token);
+                foreach (var owner in owners)
+                    owner.DisposeCount.Should().Be(1);
+            }
+            finally
+            {
+                using var shutdown = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await sender.ShutdownAsync(shutdown.Token);
+                await receiver.ShutdownAsync(shutdown.Token);
+                materializer.Shutdown();
+            }
+        }
+
+        [Theory(DisplayName = "QUIC writer retains a frame through cancellation after the native copy begins")]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Should_ReleaseFrame_When_WriterOrPeerStopsDuringNativeWrite(bool closePeer)
+        {
+            RequireTransportSupport("quic");
+            using var certificate = CreateCertificate();
+            var tls = ArteryTlsSettings.Mutual(certificate, TrustCertificate(certificate));
+            var log = Logging.GetLogger(Sys, GetType());
+            var sender = new ArteryQuicTransport(tls, TimeSpan.FromSeconds(10), log);
+            var receiver = new ArteryQuicTransport(tls, TimeSpan.FromSeconds(10), log);
+            var materializer = ActorMaterializer.Create(Sys);
+            var pressure = new ObservedWriteOwner(32 * 1024 * 1024);
+            var owner = new ObservedWriteOwner(32 * 1024 * 1024);
+            var pressureFrame = OwnedSequenceSegment.Create(pressure, pressure.Memory.Length);
+            var frame = OwnedSequenceSegment.Create(owner, owner.Memory.Length);
+            owner.ObserveReads();
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            try
+            {
+                var endpoint = await receiver.BindAsync("127.0.0.1", 0, deadline.Token);
+                receiver.StartAccepting((_, _, admitted) => admitted());
+                var ((killSwitch, connected), writerFinished) = Source.Single(new ReadOnlySequence<byte>(Preamble(ArteryStreamId.Ordinary)))
+                    // MsQuic can buffer one request past its ideal target. Fill that buffer before
+                    // copying the next request while the peer remains unread.
+                    .Concat(Source.Single(pressureFrame))
+                    .Concat(Source.Single(frame))
+                    .ConcatMaterialized(Source.Maybe<ReadOnlySequence<byte>>(), Keep.Left)
+                    .ViaMaterialized(KillSwitches.Single<ReadOnlySequence<byte>>(), Keep.Right)
+                    .ViaMaterialized(sender.Outgoing(endpoint, ArteryStreamId.Ordinary), Keep.Both)
+                    .ToMaterialized(Sink.Ignore<ReadOnlySequence<byte>>(), Keep.Both)
+                    .Run(materializer);
+                await connected.WaitAsync(deadline.Token);
+                await owner.ReadStarted.WaitAsync(deadline.Token);
+                await AwaitAssertAsync(() => pressure.DisposeCount.Should().Be(1), TimeSpan.FromSeconds(3));
+                owner.DisposeCount.Should().Be(0, "the outstanding write must retain its owner while the peer has no reader");
+
+                if (closePeer)
+                    await receiver.ShutdownAsync(deadline.Token);
+                else
+                    killSwitch.Abort(new IOException("Stop the writer during its native write."));
+
+                var stopped = async () => await writerFinished.WaitAsync(deadline.Token);
+                await stopped.Should().ThrowAsync<Exception>();
+                await sender.ShutdownAsync(deadline.Token);
+                owner.DisposeCount.Should().Be(1);
+            }
+            finally
+            {
+                using var shutdown = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await sender.ShutdownAsync(shutdown.Token);
+                await receiver.ShutdownAsync(shutdown.Token);
+                materializer.Shutdown();
+            }
+        }
+
+        private sealed class ObservedWriteOwner(int length) : MemoryManager<byte>
+        {
+            private readonly byte[] _bytes = new byte[length];
+            private readonly TaskCompletionSource _readStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            private int _observeReads;
+            private int _disposeCount;
+
+            internal Task ReadStarted => _readStarted.Task;
+            internal int DisposeCount => Volatile.Read(ref _disposeCount);
+
+            internal void ObserveReads() => Volatile.Write(ref _observeReads, 1);
+
+            public override Span<byte> GetSpan()
+            {
+                if (Volatile.Read(ref _observeReads) != 0)
+                    _readStarted.TrySetResult();
+                return _bytes;
+            }
+
+            public override MemoryHandle Pin(int elementIndex = 0) => _bytes.AsMemory(elementIndex).Pin();
+
+            // The returned memory handle owns the array pin.
+            public override void Unpin() { }
+
+            protected override void Dispose(bool disposing) => Interlocked.Increment(ref _disposeCount);
+        }
+
         private sealed class TrackingOwner(int length, byte fill) : IMemoryOwner<byte>
         {
             private readonly byte[] _bytes = Enumerable.Repeat(fill, length).ToArray();
@@ -163,69 +321,153 @@ namespace Akka.Remote.Tests.Artery
             }
         }
 
-        [Theory(DisplayName = "QUIC coalescing returns the rental once the write settles")]
+        [Theory(DisplayName = "QUIC output pipe retains memory until a pending native write settles")]
         [InlineData("success")]
         [InlineData("cancellation")]
+        [InlineData("deferred-cancellation")]
         [InlineData("failure")]
-        public async Task Should_ReturnRentalOnlyAfterSettlement_When_CoalescedWriteIsPending(string outcome)
+        public async Task Should_RetainPipeMemory_When_NativeWriteIsPending(string outcome)
         {
             var bytes = new byte[] { 0x13, 0xB1, 0x2C };
-            var pool = new TrackingPool();
-            using var stream = new PendingWriteStream();
+            using var pool = new TrackingMemoryPool();
+            using var stream = new PendingWriteStream(outcome != "deferred-cancellation");
             using var cancellation = new CancellationTokenSource();
-            var write = ArteryQuicWriteStage.WriteCoalescedAsync(
-                stream, new ReadOnlySequence<byte>(bytes), pool, cancellation.Token).AsTask();
-
-            write.IsCompleted.Should().BeFalse();
-            pool.ReturnCount.Should().Be(0);
-            stream.Submitted.ToArray().Should().Equal(bytes);
-            stream.Submitted.Length.Should().Be(bytes.Length, "a rental can be larger than the write");
-
-            switch (outcome)
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var writes = 0;
+            var output = new ArteryQuicOutputPipe(stream, _ => Interlocked.Increment(ref writes),
+                cancellation.Token, CancellationToken.None, pool);
+            try
             {
-                case "success":
-                    stream.Completion.SetResult();
-                    await write;
-                    break;
-                case "cancellation":
-                    cancellation.Cancel();
-                    await Assert.ThrowsAnyAsync<OperationCanceledException>(() => write);
-                    break;
-                case "failure":
-                    var error = new IOException("write failed");
-                    stream.Completion.SetException(error);
-                    (await Assert.ThrowsAsync<IOException>(() => write)).Should().BeSameAs(error);
-                    break;
-            }
+                output.Write(new ReadOnlySequence<byte>(bytes));
+                await stream.SubmittedReady.Task.WaitAsync(deadline.Token);
+                output.Complete();
 
-            pool.ReturnCount.Should().Be(1);
-            pool.Returned.Should().BeSameAs(pool.Buffer);
+                output.Completion.IsCompleted.Should().BeFalse();
+                pool.ReturnCount.Should().Be(0);
+                stream.Submitted.ToArray().Should().Equal(bytes);
+                stream.Submitted.Length.Should().Be(bytes.Length, "a rental can be larger than the write");
+
+                switch (outcome)
+                {
+                    case "success":
+                        stream.Completion.SetResult();
+                        await output.Completion.WaitAsync(deadline.Token);
+                        writes.Should().Be(1);
+                        break;
+                    case "cancellation":
+                        cancellation.Cancel();
+                        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => output.Completion.WaitAsync(deadline.Token));
+                        writes.Should().Be(0);
+                        break;
+                    case "deferred-cancellation":
+                        cancellation.Cancel();
+                        output.Completion.IsCompleted.Should().BeFalse();
+                        pool.ReturnCount.Should().Be(0);
+                        stream.Submitted.ToArray().Should().Equal(bytes);
+                        stream.Completion.SetCanceled(cancellation.Token);
+                        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => output.Completion.WaitAsync(deadline.Token));
+                        writes.Should().Be(0);
+                        break;
+                    case "failure":
+                        var error = new IOException("write failed");
+                        stream.Completion.SetException(error);
+                        (await Assert.ThrowsAsync<IOException>(() => output.Completion.WaitAsync(deadline.Token))).Should().BeSameAs(error);
+                        writes.Should().Be(0);
+                        break;
+                }
+
+                pool.ReturnCount.Should().Be(1);
+            }
+            finally
+            {
+                cancellation.Cancel();
+                stream.Completion.TrySetCanceled();
+                output.Complete();
+                // Assertions above establish the expected outcome; cleanup also
+                // settles a fake write when an earlier assertion failed.
+                await output.Completion.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing | ConfigureAwaitOptions.ContinueOnCapturedContext);
+            }
         }
 
-        private sealed class PendingWriteStream : MemoryStream
+        [Fact(DisplayName = "QUIC output pipe sends successive page-edge batches once and in order")]
+        public async Task Should_PreserveBatchWriteShape_When_ReusingPipePages()
+        {
+            using var stream = new RecordingWriteStream();
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var completed = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var output = new ArteryQuicOutputPipe(stream, size => completed.TrySetResult(size),
+                cancellation.Token, CancellationToken.None);
+            var sizes = new[] { 1, 8192, 16384, 16383, 2, 10240, 6145 };
+            try
+            {
+                foreach (var size in sizes)
+                {
+                    var owner = new TrackingOwner(size, (byte)(size % 251));
+                    var input = OwnedSequenceSegment.Create(owner, size);
+                    output.Write(input);
+                    input.DisposeOwnedSegments();
+                    (await completed.Task.WaitAsync(cancellation.Token)).Should().Be(size);
+                    owner.DisposeCount.Should().Be(1);
+                    completed = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+                }
+                output.Complete();
+                await output.Completion.WaitAsync(cancellation.Token);
+                stream.Sizes.Should().Equal(sizes);
+                stream.ToArray().Should().Equal(sizes.SelectMany(size => Enumerable.Repeat((byte)(size % 251), size)));
+            }
+            finally
+            {
+                cancellation.Cancel();
+                output.Complete();
+                await output.Completion.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing | ConfigureAwaitOptions.ContinueOnCapturedContext);
+            }
+        }
+
+        private sealed class RecordingWriteStream : MemoryStream
+        {
+            internal System.Collections.Generic.List<int> Sizes { get; } = new();
+
+            public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                Sizes.Add(buffer.Length);
+                return base.WriteAsync(buffer, cancellationToken);
+            }
+        }
+
+        private sealed class PendingWriteStream(bool observeCancellation = true) : MemoryStream
         {
             public TaskCompletionSource Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            public TaskCompletionSource SubmittedReady { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
             public ReadOnlyMemory<byte> Submitted { get; private set; }
 
             public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
             {
                 Submitted = buffer;
-                return new ValueTask(Completion.Task.WaitAsync(cancellationToken));
+                SubmittedReady.TrySetResult();
+                return new ValueTask(observeCancellation ? Completion.Task.WaitAsync(cancellationToken) : Completion.Task);
             }
         }
 
-        private sealed class TrackingPool : ArrayPool<byte>
+        private sealed class TrackingMemoryPool : MemoryPool<byte>
         {
-            public byte[] Buffer { get; } = new byte[16];
-            public byte[]? Returned { get; private set; }
-            public int ReturnCount { get; private set; }
+            private int _returns;
+            public override int MaxBufferSize => int.MaxValue;
+            public int ReturnCount => Volatile.Read(ref _returns);
 
-            public override byte[] Rent(int minimumLength) => Buffer;
+            public override IMemoryOwner<byte> Rent(int minBufferSize = -1) => new Owner(this, Math.Max(16384, minBufferSize));
 
-            public override void Return(byte[] array, bool clearArray = false)
+            protected override void Dispose(bool disposing) { }
+
+            private sealed class Owner(TrackingMemoryPool pool, int size) : IMemoryOwner<byte>
             {
-                Returned = array;
-                ReturnCount++;
+                private readonly byte[] _bytes = new byte[size];
+                public Memory<byte> Memory => _bytes;
+
+                public void Dispose()
+                {
+                    Array.Fill(_bytes, (byte)0xEE);
+                    Interlocked.Increment(ref pool._returns);
+                }
             }
         }
 
