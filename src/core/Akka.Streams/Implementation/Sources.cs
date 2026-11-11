@@ -639,6 +639,9 @@ namespace Akka.Streams.Implementation
             private readonly UnfoldResourceSourceAsync<TOut, TSource> _stage;
             private readonly Lazy<Decider> _decider;
             private readonly Lazy<IAsyncCallback<Try<TSource>>> _createdCallback;
+#nullable enable
+            private Action<Try<Option<TOut>>>? _readCallback;
+#nullable restore
             private Option<TSource> _state = Option<TSource>.None;
 
             public Logic(UnfoldResourceSourceAsync<TOut, TSource> stage, Attributes inheritedAttributes)
@@ -692,7 +695,7 @@ namespace Akka.Streams.Implementation
                 }
             }
 
-            private Action<Try<Option<TOut>>> ReadCallback => GetAsyncCallback<Try<Option<TOut>>>(read =>
+            private Action<Try<Option<TOut>>> ReadCallback => _readCallback ??= GetAsyncCallback<Try<Option<TOut>>>(read =>
             {
                 if (read.IsSuccess)
                 {
