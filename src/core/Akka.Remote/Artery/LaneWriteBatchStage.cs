@@ -21,7 +21,7 @@ namespace Akka.Remote.Artery
     ///
     /// <para>
     /// <see cref="ArteryRemoting.MaterializeOrdinaryOutboundWithLanes"/> uses this stage after each
-    /// ordinary TCP lane merge. QUIC accumulates frames in its per-stream output pipe.
+    /// ordinary lane merge. Single-lane QUIC also batches before its output pipe.
     /// </para>
     /// </summary>
     internal sealed class LaneWriteBatchStage : GraphStage<FlowShape<ReadOnlySequence<byte>, ReadOnlySequence<byte>>>

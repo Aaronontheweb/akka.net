@@ -1981,7 +1981,7 @@ namespace Akka.Remote.Artery
                     // "TERMINATION SIGNAL" remarks) -> frame batching (below) -> restart-wrapped
                     // OutgoingConnection (above).
                     //
-                    // TCP FRAME BATCHING: crossing into the restart-wrapped connection flow costs
+                    // FRAME BATCHING: crossing into the restart-wrapped connection flow costs
                     // per-ELEMENT, so under load the merge tail collapses whatever already-encoded
                     // frames are immediately available into ONE multi-segment sequence of up to
                     // LaneWriteBatchMaxBytes before crossing (AppendFrameToBatch chains the segments
@@ -1992,15 +1992,13 @@ namespace Akka.Remote.Artery
                     // publishes a Dropped event, because this late in the pipeline -- after encode and
                     // the lane merge -- there is no IOutboundEnvelope left to hand back through
                     // ReturnUndelivered.
-                    // QUIC instead accumulates these encoded frames inside the stream's
-                    // bounded output pipe; both paths report retained bytes on failure.
+                    // QUIC also retains the producer batcher for this experiment, before
+                    // copying batches into its bounded per-stream output pipe.
                     var ((mergeSink, sourceFinished), writerFinished) = mergeHubSource
                         .Via(_killSwitch.Flow<ReadOnlySequence<byte>>())
                         .Via(laneKillSwitch.Flow<ReadOnlySequence<byte>>())
                         .WatchTermination(Keep.Both)
-                        .Via(_quic is null
-                            ? Flow.FromGraph(CreateOrdinaryWriteBatch(remoteAddress))
-                            : Flow.Create<ReadOnlySequence<byte>>())
+                        .Via(Flow.FromGraph(CreateOrdinaryWriteBatch(remoteAddress)))
                         .Via(connectionWithRestart)
                         .ToMaterialized(Sink.Ignore<ReadOnlySequence<byte>>(), Keep.Both)
                         .Run(_materializer!);
@@ -2473,6 +2471,8 @@ namespace Akka.Remote.Artery
                         .ViaMaterialized(KillSwitches.Single<ReadOnlySequence<byte>>(), Keep.Right)
                         .WatchTermination(Keep.Both);
                     var awaitOrdinaryQuicWriter = _quic is not null && streamId == ArteryStreamId.Ordinary;
+                    if (awaitOrdinaryQuicWriter)
+                        watchedFrames = watchedFrames.Via(Flow.FromGraph(CreateOrdinaryWriteBatch(remoteAddress)));
                     Task<Done> writerFinished;
                     ((killSwitch, terminationWatch), writerFinished) = watchedFrames
                         .Via(connectionWithRestart)
@@ -2800,7 +2800,7 @@ namespace Akka.Remote.Artery
         /// <summary>
         /// Weight cap for combining encoded frames with <see cref="LaneWriteBatchStage"/>.
         /// Matches the 16 KiB TCP connection write buffer. Oversized frames pass through
-        /// individually. QUIC uses its own bounded output pipe instead of this stage.
+        /// individually. QUIC additionally copies batches into its bounded output pipe.
         /// </summary>
         private const long LaneWriteBatchMaxBytes = 16 * 1024;
 

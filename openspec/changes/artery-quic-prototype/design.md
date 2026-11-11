@@ -23,12 +23,12 @@ flowchart TB
         H --> G["Fixed stream groups and merge"]
         R["Preamble and frame parsing"] --> I["UID checks, inbound processing and actor delivery"]
     end
-    G --> B["TCP frame batching"]
+    G --> B["Producer frame batching"]
     B --> T["TCP flow: one ordinary connection"]
     T --> TS["TcpStreamLogic write buffering"]
     TS --> IO["Akka.IO connection actor, pooled pipes and pumps"]
     IO --> TCP["NetworkStream or SslStream"]
-    G --> W["QUIC: S ArteryQuicWriteStage instances"]
+    B --> W["QUIC: S ArteryQuicWriteStage instances"]
     W --> OP["Per-stream output pipe and persistent send loop"]
     OP --> NATIVE["System.Net.Quic / MsQuic"]
     NATIVE --> RD["Per-stream reader: reusable scratch buffer and stable chunk copy"]
@@ -41,7 +41,8 @@ so its MergeHub can finish, drain queued frames and send FIN.
 
 The ordinary QUIC adapter copies frames into a per-stream output pipe. A persistent loop submits
 one native write at a time, capped at 16 KiB. Pipe flush completion controls upstream demand.
-The pipe replaces the separate QUIC frame batcher. Control and large-role streams retain direct writes.
+This control experiment retains the producer frame batcher ahead of the pipe, reducing per-frame pipe
+flushes under pressure. Count both layers in retention measurements. Control and large-role streams retain direct writes.
 Its read path reuses a scratch array and publishes a separate copy of the actual bytes received.
 That copy is necessary because frame parsing and asynchronous consumers can retain chunk memory.
 
@@ -123,7 +124,9 @@ ordinary QUIC I/O operations; they are separate from unprofiled throughput measu
 The output pipe is implemented on this experiment branch. Its initial pause/resume thresholds are
 16 KiB / 8 KiB. A threshold triggers backpressure rather than imposing a hard allocation cap: include
 one bounded copy overshoot, physical page slack, original frame ownership and upstream queues in
-retention accounting. No timer delays an idle write. Receive pipes below are a proposed follow-up;
+retention accounting, including the retained producer batch and pending frame. This is a comparison
+variant of the pipe-only accumulator, with the same pipe thresholds and native cap. No timer delays
+an idle write. Receive pipes below are a proposed follow-up;
 the current reader still publishes stable copied chunks. This architecture carries no performance claim.
 
 ```mermaid
