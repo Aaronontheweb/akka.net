@@ -20,15 +20,17 @@ connection generation. Complete frames are grouped; messages are not striped rou
 flowchart TB
     subgraph Artery["Shared Artery / Akka.Streams"]
         Q["N bounded recipient-hashed queues"] --> H["Handshake and encode stages"]
-        H --> G["Fixed stream groups, merge and existing frame batching"]
+        H --> G["Fixed stream groups and merge"]
         R["Preamble and frame parsing"] --> I["UID checks, inbound processing and actor delivery"]
     end
-    G --> T["TCP flow: one ordinary connection"]
+    G --> B["TCP frame batching"]
+    B --> T["TCP flow: one ordinary connection"]
     T --> TS["TcpStreamLogic write buffering"]
     TS --> IO["Akka.IO connection actor, pooled pipes and pumps"]
     IO --> TCP["NetworkStream or SslStream"]
     G --> W["QUIC: S ArteryQuicWriteStage instances"]
-    W --> NATIVE["System.Net.Quic / MsQuic"]
+    W --> OP["Per-stream output pipe and persistent send loop"]
+    OP --> NATIVE["System.Net.Quic / MsQuic"]
     NATIVE --> RD["Per-stream reader: reusable scratch buffer and stable chunk copy"]
     RD --> R
 ```
@@ -37,7 +39,9 @@ TCP keeps its existing merge/batching path. QUIC groups reuse the same handshake
 test-mode and kill-switch stages. A group consumes completion markers from all its lane producers
 so its MergeHub can finish, drain queued frames and send FIN.
 
-The QUIC adapter currently writes each sequence segment through one outstanding native write.
+The ordinary QUIC adapter copies frames into a per-stream output pipe. A persistent loop submits
+one native write at a time, capped at 16 KiB. Pipe flush completion controls upstream demand.
+The pipe replaces the separate QUIC frame batcher. Control and large-role streams retain direct writes.
 Its read path reuses a scratch array and publishes a separate copy of the actual bytes received.
 That copy is necessary because frame parsing and asynchronous consumers can retain chunk memory.
 
@@ -48,11 +52,14 @@ That copy is necessary because frame parsing and asynchronous consumers can reta
 | Routing, queues, serialization, envelope framing and metadata/compression extension points | Shared Artery graphs |
 | Address/UID handshake, reliable system messages, quarantine and retries | Shared association/protocol state |
 | Native connect/listen, stream admission, channel failures and final disposal | `ArteryQuicTransport` |
-| Graph demand, one outstanding native write and encoded-buffer ownership | `ArteryQuicWriteStage` |
+| Graph demand, producer flush completion and encoded-buffer ownership | `ArteryQuicWriteStage` |
+| Ordinary byte accumulation, pooled storage and serial native writes | `ArteryQuicOutputPipe` |
 | Certificates, trust and peer identity | Existing Akka.IO policies through typed Artery TLS setup |
 | TLS packet protection, congestion and native stream credit | `System.Net.Quic` / MsQuic |
 
-Ordinary encoded owners remain live until their write operation settles and are returned once.
+Ordinary encoded owners are returned once copying and producer flush work settle. Large frames
+copy incrementally so a pending flush does not copy the whole frame into the pipe. Pipe storage
+remains live until native writes settle. Direct-write owners remain live through their native write.
 Cancellation must not return memory while an asynchronous operation can still use it. The
 connection owner disposes native streams; individual graph stages signal retirement rather than
 independently competing to dispose a shared connection.
@@ -73,8 +80,9 @@ independently competing to dispose a shared connection.
   generation. A healthy FIN must allow sibling streams to finish independently.
 - Ordinary messages gain no application-level replay or exactly-once promise. System-message
   reliability remains the shared protocol's responsibility.
-- Native write completion does not establish peer application processing. Graceful drain needs the
-  writer's FIN/completion signal; queue completion or an unused read outlet is insufficient.
+- Local completion drains the pipe before FIN and awaits `WritesClosed`. These signals do not prove
+  peer consumption. Connection shutdown can discard unread peer bytes; a bounded peer acknowledgment
+  barrier remains necessary for a full peer-drain guarantee. Actor processing is a separate boundary.
 
 ## TLS and compatibility
 
@@ -110,23 +118,25 @@ comparison is Artery TLS TCP versus QUIC; plaintext transports are references. K
 credit-paced one-way units separate. Optional diagnostics report process CPU/allocation/GC and
 ordinary QUIC I/O operations; they are separate from unprofiled throughput measurements.
 
-## Candidate performance follow-up: pipes beneath Streams
+## Output pipe experiment and proposed receive follow-up
 
-This section is a proposed follow-up, not an implemented pipe adapter or a performance claim.
-Keep protocol stages and fixed stream routing. Introduce pooled byte pipes and persistent native
-pumps below the graph boundary, using the existing Akka.IO pipe and ownership patterns.
+The output pipe is implemented on this experiment branch. Its initial pause/resume thresholds are
+16 KiB / 8 KiB. A threshold triggers backpressure rather than imposing a hard allocation cap: include
+one bounded copy overshoot, physical page slack, original frame ownership and upstream queues in
+retention accounting. No timer delays an idle write. Receive pipes below are a proposed follow-up;
+the current reader still publishes stable copied chunks. This architecture carries no performance claim.
 
 ```mermaid
 flowchart TB
     subgraph Graph["Existing Artery / Akka.Streams"]
         A["Queues, handshake, encode and stream groups"] --> B["Write bridge"]
-        R["Source bridge"] --> D["Shared frame parsing and inbound lanes"]
+        R["Proposed source bridge"] --> D["Shared frame parsing and inbound lanes"]
     end
     B --> OP["Bounded pooled output pipe"]
     OP --> SP["Persistent send pump"]
     SP --> OUT["Sending native QUIC stream"]
-    IN["Receiving native QUIC stream"] --> RP["Persistent receive pump"]
-    RP --> IP["Bounded pooled input pipe"]
+    IN["Receiving native QUIC stream"] --> RP["Proposed persistent receive pump"]
+    RP --> IP["Proposed bounded pooled input pipe"]
     IP --> R
 ```
 
@@ -137,7 +147,7 @@ its connection-wide target, so a managed pipe threshold is not a native memory c
 
 `ITransportConnection` provides useful copy/flush and pump-completion semantics, but the concrete
 `TcpTransportConnection` also owns socket/TLS shutdown behavior. Do not wrap a fake socket around
-QUIC. A first experimental directional helper can stay internal to Artery, leaving TCP unchanged;
+QUIC. The experimental directional helper stays internal to Artery, leaving TCP I/O unchanged;
 shared pump extraction requires its own regression evidence. No per-stream actor is necessary.
 
 ```mermaid
@@ -153,8 +163,8 @@ sequenceDiagram
     N-->>W: Write settles
     W->>P: Advance consumed bytes
     G->>P: Complete writer after upstream finishes
-    W->>N: Drain bytes, CompleteWrites, await WritesClosed
-    W-->>G: Writer completion permits graceful graph shutdown
+    W-->>G: Pump completion after all accepted bytes drain
+    G->>N: CompleteWrites and await WritesClosed
 ```
 
 Primary references: [Kestrel QUIC stream pumps](https://github.com/dotnet/aspnetcore/blob/v10.0.0/src/Servers/Kestrel/Transport.Quic/src/Internal/QuicStreamContext.cs),
@@ -167,9 +177,10 @@ one MsQuic connection and its streams execute on one native worker at a time.
 
 1. **Current prototype:** native adapter, fixed ordinary-stream groups, shared TLS policy, comparison
    source, optional diagnostics, and native correctness tests. Keep TCP/default behavior unchanged.
-2. **Bounded byte-adapter follow-up:** a working bridge and pumps together with retained-byte,
+2. **Ordinary output pipe experiment:** a working bridge and send loop together with retained-byte,
    poisoned-owner, cancellation, saturation/resume and actual writer-drain tests. Include empty,
-   single-lane, control and large paths. Preserve connection retirement and FIFO.
+   single-lane, control and large paths. Preserve connection retirement and FIFO. Receive-pipe ownership
+   and peer-acknowledged shutdown remain separate work.
 3. **Performance/reliability evaluation:** warmed repeated comparisons, matched effective budgets,
    separate diagnostics and explicit invalid attempts. Native resource, lost-ACK/quarantine,
    percentile-latency and two-host/impairment gates need their own evidence before promotion.

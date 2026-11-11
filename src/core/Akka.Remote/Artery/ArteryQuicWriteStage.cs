@@ -8,6 +8,8 @@
 
 using System;
 using System.Buffers;
+using System.IO;
+using System.IO.Pipelines;
 using System.Net;
 using System.Runtime.Versioning;
 using System.Threading;
@@ -28,20 +30,20 @@ namespace Akka.Remote.Artery
     internal sealed class ArteryQuicWriteStage
         : GraphStageWithMaterializedValue<FlowShape<ReadOnlySequence<byte>, ReadOnlySequence<byte>>, Task<Done>>
     {
-        // Match the ordinary lane batch cap. Larger sequences keep the segmented path.
-        private const int MaximumCoalescedWriteSize = 16 * 1024;
-
         private readonly ArteryQuicTransport _transport;
         private readonly EndPoint _endpoint;
         private readonly ArteryStreamId _role;
         private readonly int _ordinaryStream;
+        private readonly Action<long>? _onDropped;
 
-        internal ArteryQuicWriteStage(ArteryQuicTransport transport, EndPoint endpoint, ArteryStreamId role, int ordinaryStream = 0)
+        internal ArteryQuicWriteStage(ArteryQuicTransport transport, EndPoint endpoint, ArteryStreamId role,
+            int ordinaryStream = 0, Action<long>? onDropped = null)
         {
             _transport = transport;
             _endpoint = endpoint;
             _role = role;
             _ordinaryStream = ordinaryStream;
+            _onDropped = onDropped;
         }
 
         private readonly Inlet<ReadOnlySequence<byte>> _in = new("ArteryQuic.in");
@@ -88,14 +90,7 @@ namespace Akka.Remote.Artery
                     _connected.TrySetException(ex);
                     FailStage(ex);
                 });
-                _written = GetAsyncCallback<Done>(done =>
-                {
-                    _writing = false;
-                    if (_finished)
-                        _finishing = FinishAsync();
-                    else
-                        Pull(_stage._in);
-                });
+                _written = GetAsyncCallback<Done>(_ => WriteCompleted());
                 var opened = GetAsyncCallback<Done>(done =>
                 {
                     var channel = Interlocked.Exchange(ref _pendingChannel, null)!;
@@ -105,7 +100,6 @@ namespace Akka.Remote.Artery
                         _output = new ArteryQuicOutputPipe(channel.Stream, length =>
                         {
                             _stage._transport.RecordWrite(_stage._role, length);
-                            _written!(Done.Instance);
                         }, _stop.Token, channel.CancellationToken);
                         _sending = MonitorOutputAsync(_output);
                     }
@@ -154,25 +148,66 @@ namespace Akka.Remote.Artery
             {
                 var bytes = Grab(_stage._in);
                 _writing = true;
-                if (_output is not null && !bytes.IsEmpty && bytes.Length <= MaximumCoalescedWriteSize)
+                if (_output is not null)
                 {
                     try
                     {
-                        _output.Write(bytes);
+                        var flush = _output.WriteAsync(bytes);
+                        if (flush.IsCompletedSuccessfully)
+                        {
+                            CheckFlush(flush.GetAwaiter().GetResult());
+                            bytes.DisposeOwnedSegments();
+                            WriteCompleted();
+                        }
+                        else
+                        {
+                            _writingOperation = AwaitOutputAsync(flush, bytes);
+                        }
                     }
                     catch (Exception ex)
                     {
-                        FailStage(ex);
-                    }
-                    finally
-                    {
-                        // Pipe storage now owns a copy, as on the TCP output path.
                         bytes.DisposeOwnedSegments();
+                        FailStage(ex);
                     }
                 }
                 else
                 {
                     _writingOperation = WriteAsync(bytes);
+                }
+            }
+
+            private void WriteCompleted()
+            {
+                _writing = false;
+                if (_finished)
+                    _finishing = FinishAsync();
+                else
+                    Pull(_stage._in);
+            }
+
+            private static void CheckFlush(FlushResult result)
+            {
+                if (result.IsCanceled || result.IsCompleted)
+                    throw new IOException("The QUIC output pipe is closed.");
+            }
+
+            private async Task AwaitOutputAsync(ValueTask<FlushResult> flush, ReadOnlySequence<byte> bytes)
+            {
+                try
+                {
+                    try
+                    {
+                        CheckFlush(await flush.ConfigureAwait(false));
+                    }
+                    finally
+                    {
+                        bytes.DisposeOwnedSegments();
+                    }
+                    _written!(Done.Instance);
+                }
+                catch (Exception ex)
+                {
+                    _failed!(ex);
                 }
             }
 
@@ -231,8 +266,8 @@ namespace Akka.Remote.Artery
                 try
                 {
                     _output?.Complete();
-                    if (_sending is not null)
-                        await _sending.ConfigureAwait(false);
+                    if (_output is not null)
+                        await _output.Completion.ConfigureAwait(false);
                     _channel!.Stream.CompleteWrites();
                     await _channel.Stream.WritesClosed.WaitAsync(_stop.Token).ConfigureAwait(false);
                     // Peer owns native disposal; retaining this closed stream until connection
@@ -252,7 +287,6 @@ namespace Akka.Remote.Artery
             public override void PostStop()
             {
                 _stop.Cancel();
-                _output?.Complete();
                 _connected.TrySetCanceled();
                 Interlocked.Exchange(ref _pendingChannel, null)?.Retire();
                 // A stopped channel fences all sibling streams, including idle writers.
@@ -265,9 +299,15 @@ namespace Akka.Remote.Artery
             {
                 try
                 {
+                    // A pending producer owns its FlushAsync. Settle it before
+                    // completing the writer, including a partially copied frame.
+                    await (_writingOperation ?? Task.CompletedTask).ConfigureAwait(false);
+                    _output?.Complete();
                     await Task.WhenAll(_initializing ?? Task.CompletedTask, _monitoring ?? Task.CompletedTask,
-                        _writingOperation ?? Task.CompletedTask, _finishing ?? Task.CompletedTask,
+                        _finishing ?? Task.CompletedTask,
                         _sending ?? Task.CompletedTask).ConfigureAwait(false);
+                    if (!_graceful && _output is not null && _output.UnsentBytes > 0)
+                        _stage._onDropped?.Invoke(_output.UnsentBytes);
                 }
                 finally
                 {

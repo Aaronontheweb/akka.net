@@ -138,8 +138,9 @@ namespace Akka.Remote.Artery
         internal void StartAccepting(Action<Source<ReadOnlySequence<byte>, NotUsed>, EndPoint, Action> accept) =>
             Track(AcceptConnectionsAsync(accept));
 
-        internal Flow<ReadOnlySequence<byte>, ReadOnlySequence<byte>, Task<Done>> Outgoing(EndPoint endpoint, ArteryStreamId role, int ordinaryStream = 0) =>
-            Flow.FromGraph(new ArteryQuicWriteStage(this, endpoint, role, ordinaryStream));
+        internal Flow<ReadOnlySequence<byte>, ReadOnlySequence<byte>, Task<Done>> Outgoing(EndPoint endpoint,
+            ArteryStreamId role, int ordinaryStream = 0, Action<long>? onDropped = null) =>
+            Flow.FromGraph(new ArteryQuicWriteStage(this, endpoint, role, ordinaryStream, onDropped));
 
         internal IReadOnlyDictionary<string, int> OrdinaryStreamCounts() => _outbound
             .ToDictionary(pair => pair.Key.ToString()!, pair => pair.Value.OrdinaryStreamCount);

@@ -307,10 +307,11 @@ namespace Akka.Remote.Artery
                 new Inet.SO.PipeBufferSize(settings.TcpPipeBufferSize));
 
         private Flow<ReadOnlySequence<byte>, ReadOnlySequence<byte>, Task<Done>>
-            CreateOutgoingConnection(EndPoint remoteEndpoint, ArteryStreamId streamId, int ordinaryStream = 0)
+            CreateOutgoingConnection(EndPoint remoteEndpoint, ArteryStreamId streamId, int ordinaryStream = 0,
+                Action<long>? onDropped = null)
         {
             if (_quic is not null && QuicConnection.IsSupported)
-                return _quic.Outgoing(remoteEndpoint, streamId, ordinaryStream);
+                return _quic.Outgoing(remoteEndpoint, streamId, ordinaryStream, onDropped);
 
             var connection = _tlsSettings is null
                 ? _tcp!.OutgoingConnection(remoteEndpoint, options: _arterySocketOptions, halfClose: false)
@@ -1954,7 +1955,8 @@ namespace Akka.Remote.Artery
                     Func<Flow<ReadOnlySequence<byte>, ReadOnlySequence<byte>, NotUsed>> createConnection =
                         () => Flow.Create<ReadOnlySequence<byte>>()
                             .Prepend(Source.Single(BuildPreamble(ArteryStreamId.Ordinary)))
-                            .ViaMaterialized(CreateOutgoingConnection(remoteEndpoint, ArteryStreamId.Ordinary, stream), Keep.Right)
+                            .ViaMaterialized(CreateOutgoingConnection(remoteEndpoint, ArteryStreamId.Ordinary, stream,
+                                CreateOrdinaryWriteDropReporter(remoteAddress)), Keep.Right)
                             .MapMaterializedValue(connectionTask =>
                             {
                                 // Runs at EVERY (re-)materialization of the socket flow -- including
@@ -1979,7 +1981,7 @@ namespace Akka.Remote.Artery
                     // "TERMINATION SIGNAL" remarks) -> frame batching (below) -> restart-wrapped
                     // OutgoingConnection (above).
                     //
-                    // FRAME BATCHING: crossing into the restart-wrapped connection flow costs
+                    // TCP FRAME BATCHING: crossing into the restart-wrapped connection flow costs
                     // per-ELEMENT, so under load the merge tail collapses whatever already-encoded
                     // frames are immediately available into ONE multi-segment sequence of up to
                     // LaneWriteBatchMaxBytes before crossing (AppendFrameToBatch chains the segments
@@ -1990,11 +1992,15 @@ namespace Akka.Remote.Artery
                     // publishes a Dropped event, because this late in the pipeline -- after encode and
                     // the lane merge -- there is no IOutboundEnvelope left to hand back through
                     // ReturnUndelivered.
+                    // QUIC instead accumulates these encoded frames inside the stream's
+                    // bounded output pipe; both paths report retained bytes on failure.
                     var ((mergeSink, sourceFinished), writerFinished) = mergeHubSource
                         .Via(_killSwitch.Flow<ReadOnlySequence<byte>>())
                         .Via(laneKillSwitch.Flow<ReadOnlySequence<byte>>())
                         .WatchTermination(Keep.Both)
-                        .Via(Flow.FromGraph(CreateOrdinaryWriteBatch(remoteAddress)))
+                        .Via(_quic is null
+                            ? Flow.FromGraph(CreateOrdinaryWriteBatch(remoteAddress))
+                            : Flow.Create<ReadOnlySequence<byte>>())
                         .Via(connectionWithRestart)
                         .ToMaterialized(Sink.Ignore<ReadOnlySequence<byte>>(), Keep.Both)
                         .Run(_materializer!);
@@ -2441,7 +2447,8 @@ namespace Akka.Remote.Artery
                     Func<Flow<ReadOnlySequence<byte>, ReadOnlySequence<byte>, NotUsed>> createConnection =
                         () => Flow.Create<ReadOnlySequence<byte>>()
                             .Prepend(Source.Single(BuildPreamble(streamId)))
-                            .ViaMaterialized(CreateOutgoingConnection(remoteEndpoint, streamId), Keep.Right)
+                            .ViaMaterialized(CreateOutgoingConnection(remoteEndpoint, streamId,
+                                onDropped: CreateOrdinaryWriteDropReporter(remoteAddress)), Keep.Right)
                             .MapMaterializedValue(connectionTask =>
                             {
                                 // Runs at EVERY (re-)materialization of the socket flow -- including
@@ -2465,17 +2472,14 @@ namespace Akka.Remote.Artery
                         .Via(_killSwitch.Flow<ReadOnlySequence<byte>>())
                         .ViaMaterialized(KillSwitches.Single<ReadOnlySequence<byte>>(), Keep.Right)
                         .WatchTermination(Keep.Both);
-                    var batchOrdinaryQuic = _quic is not null && streamId == ArteryStreamId.Ordinary;
-                    if (batchOrdinaryQuic)
-                        watchedFrames = watchedFrames.Via(Flow.FromGraph(CreateOrdinaryWriteBatch(remoteAddress)));
-
+                    var awaitOrdinaryQuicWriter = _quic is not null && streamId == ArteryStreamId.Ordinary;
                     Task<Done> writerFinished;
                     ((killSwitch, terminationWatch), writerFinished) = watchedFrames
                         .Via(connectionWithRestart)
                         .ToMaterialized(Sink.Ignore<ReadOnlySequence<byte>>(), Keep.Both)
                         .Run(_materializer!);
 
-                    if (batchOrdinaryQuic)
+                    if (awaitOrdinaryQuicWriter)
                         terminationWatch = Task.WhenAll(terminationWatch, writerFinished);
 
                     if (isLargeStream)
@@ -2795,26 +2799,30 @@ namespace Akka.Remote.Artery
 
         /// <summary>
         /// Weight cap for combining encoded frames with <see cref="LaneWriteBatchStage"/>.
-        /// Matches the 16 KiB TCP connection write buffer and the single-lane QUIC write
-        /// coalescing limit. Oversized frames pass through individually.
+        /// Matches the 16 KiB TCP connection write buffer. Oversized frames pass through
+        /// individually. QUIC uses its own bounded output pipe instead of this stage.
         /// </summary>
         private const long LaneWriteBatchMaxBytes = 16 * 1024;
 
         private LaneWriteBatchStage CreateOrdinaryWriteBatch(Address remoteAddress) =>
-            new(LaneWriteBatchMaxBytes, onDropped: bytes =>
+            new(LaneWriteBatchMaxBytes, CreateOrdinaryWriteDropReporter(remoteAddress, pipe: false));
+
+        private Action<long> CreateOrdinaryWriteDropReporter(Address remoteAddress, bool pipe = true) =>
+            bytes =>
             {
+                var location = pipe ? "output pipe admission" : "write batch";
                 _log.Debug(
-                    "Outbound Artery ordinary-lanes write batch to [{0}] held {1} bytes of " +
-                    "already-encoded frame data when its stream stopped; dropping it.",
-                    remoteAddress, bytes);
+                    "Outbound Artery ordinary-lanes {0} to [{1}] had {2} encoded bytes " +
+                    "without successful local write completion when its stream stopped; dropping it.",
+                    location, remoteAddress, bytes);
 
                 System.EventStream.Publish(new Dropped(
                     $"{bytes} bytes of already-encoded Artery frame data",
-                    $"Outbound Artery ordinary-lanes write batch to [{remoteAddress}] held {bytes} " +
-                    "bytes of already-encoded frame data across one or more lanes when its stream stopped",
+                    $"Outbound Artery ordinary-lanes {location} to [{remoteAddress}] had {bytes} " +
+                    "encoded bytes without successful local write completion when its stream stopped",
                     ActorRefs.NoSender,
                     System.DeadLetters));
-            });
+            };
 
         /// <summary>
         /// Aggregate operation used by <see cref="LaneWriteBatchStage"/>. Chains every segment of

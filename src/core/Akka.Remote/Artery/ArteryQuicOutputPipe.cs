@@ -16,8 +16,8 @@ using System.Threading.Tasks;
 namespace Akka.Remote.Artery
 {
     /// <summary>
-    /// Reuses pipe storage for one outstanding bounded batch. The graph supplies the
-    /// next batch only after the send loop has consumed the preceding one.
+    /// Accumulates ordinary frames under pipe backpressure while one persistent
+    /// send loop submits bounded native writes in their original byte order.
     /// </summary>
     internal sealed class ArteryQuicOutputPipe
     {
@@ -27,6 +27,9 @@ namespace Akka.Remote.Artery
         private readonly CancellationToken _stop;
         private readonly CancellationToken _channelCancellation;
         private bool _completed;
+        private long _acceptedBytes;
+        private long _sentBytes;
+        private const int MaximumWriteSize = 16 * 1024;
 
         internal ArteryQuicOutputPipe(Stream stream, Action<int> written, CancellationToken stop,
             CancellationToken channelCancellation, MemoryPool<byte>? pool = null)
@@ -35,26 +38,45 @@ namespace Akka.Remote.Artery
             _written = written;
             _stop = stop;
             _channelCancellation = channelCancellation;
-            // Demand is already bounded to one input by the graph. Disabling the
-            // pipe's separate pause threshold preserves that existing byte budget.
-            _pipe = new Pipe(new PipeOptions(pool: pool, pauseWriterThreshold: 0,
-                resumeWriterThreshold: 0, minimumSegmentSize: 16 * 1024,
+            // Replace the preceding lane batcher, rather than adding another
+            // independent accumulator. An atomic copy may overshoot by one chunk.
+            _pipe = new Pipe(new PipeOptions(pool: pool, pauseWriterThreshold: 16 * 1024,
+                resumeWriterThreshold: 8 * 1024, minimumSegmentSize: MaximumWriteSize,
                 useSynchronizationContext: false));
             Completion = RunAsync();
         }
 
         internal Task Completion { get; }
+        // Read only after the producer and send loop have both settled.
+        internal long UnsentBytes => _acceptedBytes - _sentBytes;
 
-        internal void Write(ReadOnlySequence<byte> bytes)
+        internal ValueTask<FlushResult> WriteAsync(ReadOnlySequence<byte> bytes)
         {
+            _acceptedBytes += bytes.Length;
+            if (bytes.IsEmpty)
+                return new ValueTask<FlushResult>(new FlushResult(false, false));
+            if (bytes.Length > MaximumWriteSize)
+                return WriteLargeAsync(bytes);
             var length = checked((int)bytes.Length);
             bytes.CopyTo(_pipe.Writer.GetSpan(length));
             _pipe.Writer.Advance(length);
-            // With no pause threshold a flush cannot wait for consumption. Observe
-            // its result once, including a reader that has already failed.
-            var result = _pipe.Writer.FlushAsync(_stop).GetAwaiter().GetResult();
-            if (result.IsCanceled || result.IsCompleted)
-                throw new IOException("The QUIC output pipe is closed.");
+            return _pipe.Writer.FlushAsync(_stop);
+        }
+
+        private async ValueTask<FlushResult> WriteLargeAsync(ReadOnlySequence<byte> bytes)
+        {
+            var result = new FlushResult(false, false);
+            while (!bytes.IsEmpty)
+            {
+                var length = (int)Math.Min(bytes.Length, MaximumWriteSize);
+                bytes.Slice(0, length).CopyTo(_pipe.Writer.GetSpan(length));
+                _pipe.Writer.Advance(length);
+                result = await _pipe.Writer.FlushAsync(_stop).ConfigureAwait(false);
+                if (result.IsCanceled || result.IsCompleted)
+                    throw new IOException("The QUIC output pipe closed while copying a frame.");
+                bytes = bytes.Slice(length);
+            }
+            return result;
         }
 
         internal void Complete()
@@ -73,20 +95,24 @@ namespace Akka.Remote.Artery
                 {
                     var result = await _pipe.Reader.ReadAsync(_stop).ConfigureAwait(false);
                     var bytes = result.Buffer;
-                    var length = checked((int)bytes.Length);
                     using (var lifetime = CancellationTokenSource.CreateLinkedTokenSource(_stop, _channelCancellation))
                     {
                         foreach (var segment in bytes)
                         {
-                            if (!segment.IsEmpty)
-                                await _stream.WriteAsync(segment, lifetime.Token).ConfigureAwait(false);
+                            var remaining = segment;
+                            while (!remaining.IsEmpty)
+                            {
+                                var length = Math.Min(remaining.Length, MaximumWriteSize);
+                                await _stream.WriteAsync(remaining.Slice(0, length), lifetime.Token).ConfigureAwait(false);
+                                _sentBytes += length;
+                                _written(length);
+                                remaining = remaining.Slice(length);
+                            }
                         }
                     }
                     // Advance only after the native write settles, even if stop
                     // was requested while native code retained the submitted memory.
                     _pipe.Reader.AdvanceTo(bytes.End);
-                    if (length != 0)
-                        _written(length);
                     if (result.IsCompleted)
                         break;
                 }

@@ -21,8 +21,7 @@ namespace Akka.Remote.Artery
     ///
     /// <para>
     /// <see cref="ArteryRemoting.MaterializeOrdinaryOutboundWithLanes"/> uses this stage after each
-    /// ordinary lane merge. <see cref="ArteryRemoting.MaterializeOutboundStream"/> also uses it on
-    /// ordinary single-lane QUIC, before the stream preamble and native writer.
+    /// ordinary TCP lane merge. QUIC accumulates frames in its per-stream output pipe.
     /// </para>
     /// </summary>
     internal sealed class LaneWriteBatchStage : GraphStage<FlowShape<ReadOnlySequence<byte>, ReadOnlySequence<byte>>>
