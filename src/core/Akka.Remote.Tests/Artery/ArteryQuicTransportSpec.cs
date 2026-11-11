@@ -148,6 +148,153 @@ namespace Akka.Remote.Tests.Artery
             }
         }
 
+        [Theory(DisplayName = "QUIC writer cancellation settles after repeated writes on one channel")]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Should_SettleWriter_When_StoppedAfterRepeatedWrites(bool closePeer)
+        {
+            RequireTransportSupport("quic");
+            using var certificate = CreateCertificate();
+            var tls = ArteryTlsSettings.Mutual(certificate, TrustCertificate(certificate));
+            var log = Logging.GetLogger(Sys, GetType());
+            var sender = new ArteryQuicTransport(tls, TimeSpan.FromSeconds(10), log, enableIoStatistics: true);
+            var receiver = new ArteryQuicTransport(tls, TimeSpan.FromSeconds(10), log);
+            var materializer = ActorMaterializer.Create(Sys);
+            var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var owners = Enumerable.Range(0, 128).Select(_ => new TrackingOwner(4096, 0x13)).ToArray();
+            var frames = owners.Select(owner => OwnedSequenceSegment.Create(owner, 4096)).ToArray();
+            var preamble = Preamble(ArteryStreamId.Ordinary);
+            var expectedBytes = preamble.Length + owners.Length * 4096;
+            var receivedBytes = 0L;
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            try
+            {
+                var endpoint = await receiver.BindAsync("127.0.0.1", 0, deadline.Token);
+                receiver.StartAccepting((source, _, admitted) =>
+                {
+                    source.RunWith(Sink.ForEach<ReadOnlySequence<byte>>(bytes =>
+                    {
+                        if (Interlocked.Add(ref receivedBytes, bytes.Length) == expectedBytes)
+                            received.TrySetResult();
+                    }), materializer);
+                    admitted();
+                });
+                var ((killSwitch, connected), writerFinished) = Source.Single(new ReadOnlySequence<byte>(preamble))
+                    .Concat(Source.From(frames))
+                    .ConcatMaterialized(Source.Maybe<ReadOnlySequence<byte>>(), Keep.Left)
+                    .ViaMaterialized(KillSwitches.Single<ReadOnlySequence<byte>>(), Keep.Right)
+                    .ViaMaterialized(sender.Outgoing(endpoint, ArteryStreamId.Ordinary), Keep.Both)
+                    .ToMaterialized(Sink.Ignore<ReadOnlySequence<byte>>(), Keep.Both)
+                    .Run(materializer);
+                await connected.WaitAsync(deadline.Token);
+                await received.Task.WaitAsync(deadline.Token);
+                await AwaitAssertAsync(() => sender.IoSnapshot.WriteOperations.Should().Be(owners.Length + 1),
+                    TimeSpan.FromSeconds(3));
+                writerFinished.IsCompleted.Should().BeFalse();
+
+                if (closePeer)
+                    await receiver.ShutdownAsync(deadline.Token);
+                else
+                    killSwitch.Abort(new IOException("Stop the writer after repeated writes."));
+
+                var stopped = async () => await writerFinished.WaitAsync(deadline.Token);
+                await stopped.Should().ThrowAsync<Exception>();
+                await sender.ShutdownAsync(deadline.Token);
+                foreach (var owner in owners)
+                    owner.DisposeCount.Should().Be(1);
+            }
+            finally
+            {
+                using var shutdown = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await sender.ShutdownAsync(shutdown.Token);
+                await receiver.ShutdownAsync(shutdown.Token);
+                materializer.Shutdown();
+            }
+        }
+
+        [Theory(DisplayName = "QUIC writer retains a frame through cancellation after the native copy begins")]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Should_ReleaseFrame_When_WriterOrPeerStopsDuringNativeWrite(bool closePeer)
+        {
+            RequireTransportSupport("quic");
+            using var certificate = CreateCertificate();
+            var tls = ArteryTlsSettings.Mutual(certificate, TrustCertificate(certificate));
+            var log = Logging.GetLogger(Sys, GetType());
+            var sender = new ArteryQuicTransport(tls, TimeSpan.FromSeconds(10), log);
+            var receiver = new ArteryQuicTransport(tls, TimeSpan.FromSeconds(10), log);
+            var materializer = ActorMaterializer.Create(Sys);
+            var pressure = new ObservedWriteOwner(32 * 1024 * 1024);
+            var owner = new ObservedWriteOwner(32 * 1024 * 1024);
+            var pressureFrame = OwnedSequenceSegment.Create(pressure, pressure.Memory.Length);
+            var frame = OwnedSequenceSegment.Create(owner, owner.Memory.Length);
+            owner.ObserveReads();
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            try
+            {
+                var endpoint = await receiver.BindAsync("127.0.0.1", 0, deadline.Token);
+                receiver.StartAccepting((_, _, admitted) => admitted());
+                var ((killSwitch, connected), writerFinished) = Source.Single(new ReadOnlySequence<byte>(Preamble(ArteryStreamId.Ordinary)))
+                    // MsQuic can buffer one request past its ideal target. Fill that buffer before
+                    // copying the next request while the peer remains unread.
+                    .Concat(Source.Single(pressureFrame))
+                    .Concat(Source.Single(frame))
+                    .ConcatMaterialized(Source.Maybe<ReadOnlySequence<byte>>(), Keep.Left)
+                    .ViaMaterialized(KillSwitches.Single<ReadOnlySequence<byte>>(), Keep.Right)
+                    .ViaMaterialized(sender.Outgoing(endpoint, ArteryStreamId.Ordinary), Keep.Both)
+                    .ToMaterialized(Sink.Ignore<ReadOnlySequence<byte>>(), Keep.Both)
+                    .Run(materializer);
+                await connected.WaitAsync(deadline.Token);
+                await owner.ReadStarted.WaitAsync(deadline.Token);
+                await AwaitAssertAsync(() => pressure.DisposeCount.Should().Be(1), TimeSpan.FromSeconds(3));
+                owner.DisposeCount.Should().Be(0, "the outstanding write must retain its owner while the peer has no reader");
+
+                if (closePeer)
+                    await receiver.ShutdownAsync(deadline.Token);
+                else
+                    killSwitch.Abort(new IOException("Stop the writer during its native write."));
+
+                var stopped = async () => await writerFinished.WaitAsync(deadline.Token);
+                await stopped.Should().ThrowAsync<Exception>();
+                await sender.ShutdownAsync(deadline.Token);
+                owner.DisposeCount.Should().Be(1);
+            }
+            finally
+            {
+                using var shutdown = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await sender.ShutdownAsync(shutdown.Token);
+                await receiver.ShutdownAsync(shutdown.Token);
+                materializer.Shutdown();
+            }
+        }
+
+        private sealed class ObservedWriteOwner(int length) : MemoryManager<byte>
+        {
+            private readonly byte[] _bytes = new byte[length];
+            private readonly TaskCompletionSource _readStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            private int _observeReads;
+            private int _disposeCount;
+
+            internal Task ReadStarted => _readStarted.Task;
+            internal int DisposeCount => Volatile.Read(ref _disposeCount);
+
+            internal void ObserveReads() => Volatile.Write(ref _observeReads, 1);
+
+            public override Span<byte> GetSpan()
+            {
+                if (Volatile.Read(ref _observeReads) != 0)
+                    _readStarted.TrySetResult();
+                return _bytes;
+            }
+
+            public override MemoryHandle Pin(int elementIndex = 0) => _bytes.AsMemory(elementIndex).Pin();
+
+            // The returned memory handle owns the array pin.
+            public override void Unpin() { }
+
+            protected override void Dispose(bool disposing) => Interlocked.Increment(ref _disposeCount);
+        }
+
         private sealed class TrackingOwner(int length, byte fill) : IMemoryOwner<byte>
         {
             private readonly byte[] _bytes = Enumerable.Repeat(fill, length).ToArray();

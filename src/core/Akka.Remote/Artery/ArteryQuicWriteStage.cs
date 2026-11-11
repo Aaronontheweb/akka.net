@@ -77,6 +77,8 @@ namespace Akka.Remote.Artery
             private readonly ArteryQuicWriteStage _stage;
             private readonly TaskCompletionSource<Done> _connected;
             private readonly CancellationTokenSource _stop = new();
+            private CancellationTokenSource? _writeLifetime;
+            private CancellationToken _writeToken;
             private ArteryQuicTransport.Channel? _channel;
             private ArteryQuicTransport.Channel? _pendingChannel;
             private bool _writing;
@@ -116,6 +118,8 @@ namespace Akka.Remote.Artery
                 {
                     var channel = Interlocked.Exchange(ref _pendingChannel, null)!;
                     _channel = channel;
+                    _writeLifetime = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token, channel.CancellationToken);
+                    _writeToken = _writeLifetime.Token;
                     _connected.TrySetResult(Done.Instance);
                     if (_finished)
                         _finishing = FinishAsync();
@@ -169,18 +173,17 @@ namespace Akka.Remote.Artery
                 try
                 {
                     var channel = _channel!;
-                    using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token, channel.CancellationToken);
                     if (_stage._role == ArteryStreamId.Ordinary && !bytes.IsSingleSegment &&
                         !bytes.IsEmpty && bytes.Length <= MaximumCoalescedWriteSize)
                     {
-                        await WriteCoalescedAsync(channel.Stream, bytes, ArrayPool<byte>.Shared, lifetime.Token).ConfigureAwait(false);
+                        await WriteCoalescedAsync(channel.Stream, bytes, ArrayPool<byte>.Shared, _writeToken).ConfigureAwait(false);
                         _stage._transport.RecordWrite(_stage._role, (int)bytes.Length);
                     }
                     else
                     {
                         foreach (var segment in bytes)
                         {
-                            await channel.Stream.WriteAsync(segment, lifetime.Token).ConfigureAwait(false);
+                            await channel.Stream.WriteAsync(segment, _writeToken).ConfigureAwait(false);
                             _stage._transport.RecordWrite(_stage._role, segment.Length);
                         }
                     }
@@ -251,6 +254,8 @@ namespace Akka.Remote.Artery
                 }
                 finally
                 {
+                    // Keep the linked token alive through cancellation and native write settlement.
+                    _writeLifetime?.Dispose();
                     _stop.Dispose();
                 }
             }
