@@ -57,7 +57,7 @@ namespace Akka.Remote.Artery
         }
 
         internal static async ValueTask WriteCoalescedAsync(Stream stream, ReadOnlySequence<byte> bytes,
-            ArrayPool<byte> pool, CancellationToken cancellationToken)
+            ArrayPool<byte> pool, CancellationToken cancellationToken, Action<Exception>? cleanupFailed = null)
         {
             byte[]? buffer = null;
             try
@@ -66,11 +66,26 @@ namespace Akka.Remote.Artery
                 buffer = pool.Rent(length);
                 var memory = buffer.AsMemory(0, length);
                 bytes.CopyTo(memory.Span);
-                // The coalesced rental now owns the bytes submitted to native I/O.
-                // Return the original encoded arrays as soon as the copy finishes.
-                bytes.DisposeOwnedSegments();
-                bytes = default;
-                await stream.WriteAsync(memory, cancellationToken).ConfigureAwait(false);
+                var write = stream.WriteAsync(memory, cancellationToken);
+                try
+                {
+                    // Recycle original arrays while native I/O is already progressing.
+                    bytes.DisposeOwnedSegments();
+                    bytes = default;
+                }
+                catch (Exception ex)
+                {
+                    // Let the graph retire a blocked native channel immediately;
+                    // the submitted rental still belongs to the operation below.
+                    cleanupFailed?.Invoke(ex);
+                    throw;
+                }
+                finally
+                {
+                    // Even a failing original owner must not release the submitted
+                    // rental while native I/O can still read it.
+                    await write.ConfigureAwait(false);
+                }
             }
             finally
             {
@@ -191,7 +206,7 @@ namespace Akka.Remote.Artery
                         var coalesced = bytes;
                         // Transfer cleanup to the copying operation, including rent/copy failure.
                         bytes = default;
-                        await WriteCoalescedAsync(channel.Stream, coalesced, ArrayPool<byte>.Shared, lifetime.Token).ConfigureAwait(false);
+                        await WriteCoalescedAsync(channel.Stream, coalesced, ArrayPool<byte>.Shared, lifetime.Token, _failed).ConfigureAwait(false);
                         _stage._transport.RecordWrite(_stage._role, length);
                     }
                     else

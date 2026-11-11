@@ -54,9 +54,13 @@ That copy is necessary because frame parsing and asynchronous consumers can reta
 | Certificates, trust and peer identity | Existing Akka.IO policies through typed Artery TLS setup |
 | TLS packet protection, congestion and native stream credit | `System.Net.Quic` / MsQuic |
 
-Coalesced ordinary writes return original encoded owners once their bytes have been copied into
-the coalescing rental. That rental remains owned until the native write settles. Direct writes
+Coalesced ordinary writes start native I/O on the copied rental, then return original encoded
+owners without waiting for native completion. That rental remains owned until the native write settles,
+including an original owner's cleanup failure. Direct writes
 retain their original owners through settlement. Each owner is returned once, including failures.
+An original cleanup failure is signaled to the graph immediately so it can retire blocked I/O.
+If that cleanup failure and native completion both fail, native fault/cancellation takes precedence
+in the copying operation; the graph has already received the original cleanup error.
 Cancellation must not return memory while an asynchronous operation can still use it. The
 connection owner disposes native streams; individual graph stages signal retirement rather than
 independently competing to dispose a shared connection.

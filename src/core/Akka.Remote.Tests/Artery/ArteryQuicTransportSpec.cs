@@ -148,7 +148,7 @@ namespace Akka.Remote.Tests.Artery
             }
         }
 
-        private sealed class TrackingOwner(int length, byte fill) : IMemoryOwner<byte>
+        private sealed class TrackingOwner(int length, byte fill, Exception? disposeError = null) : IMemoryOwner<byte>
         {
             private readonly byte[] _bytes = Enumerable.Repeat(fill, length).ToArray();
             private int _disposeCount;
@@ -160,6 +160,8 @@ namespace Akka.Remote.Tests.Artery
             {
                 Interlocked.Increment(ref _disposeCount);
                 Array.Fill(_bytes, (byte)0xEE);
+                if (disposeError is not null)
+                    throw disposeError;
             }
         }
 
@@ -279,6 +281,60 @@ namespace Akka.Remote.Tests.Artery
             public override byte[] Rent(int minimumLength) => throw error;
             public override void Return(byte[] array, bool clearArray = false) =>
                 throw new InvalidOperationException("No buffer was rented.");
+        }
+
+        [Theory(DisplayName = "QUIC coalescing retains submitted memory and reports cleanup failure while native I/O settles")]
+        [InlineData("success")]
+        [InlineData("failure")]
+        [InlineData("cancellation")]
+        public async Task Should_RetainRental_When_OriginalOwnerCleanupFailsDuringNativeWrite(string nativeOutcome)
+        {
+            var error = new IOException("Controlled original-owner disposal failure.");
+            var first = new TrackingOwner(3, 0x13, error);
+            var second = new TrackingOwner(4, 0xB1);
+            var input = ArteryRemoting.AppendFrameToBatch(
+                OwnedSequenceSegment.Create(first), OwnedSequenceSegment.Create(second));
+            var expected = input.ToArray();
+            var pool = new TrackingPool();
+            Exception? reported = null;
+            using var stream = new PendingWriteStream(false);
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var write = ArteryQuicWriteStage.WriteCoalescedAsync(stream, input, pool, CancellationToken.None,
+                ex => reported = ex).AsTask();
+            try
+            {
+                stream.Submissions.Should().Be(1);
+                write.IsCompleted.Should().BeFalse();
+                first.DisposeCount.Should().Be(1);
+                reported.Should().BeSameAs(error, "cleanup failure must be signaled before waiting for native I/O");
+                pool.ReturnCount.Should().Be(0, "native I/O still owns the submitted copy despite cleanup failure");
+                stream.Submitted.ToArray().Should().Equal(expected);
+                if (nativeOutcome == "success")
+                {
+                    stream.Completion.SetResult();
+                    (await Assert.ThrowsAsync<IOException>(() => write.WaitAsync(deadline.Token))).Should().BeSameAs(error);
+                }
+                else if (nativeOutcome == "failure")
+                {
+                    var nativeError = new IOException("Controlled native write failure.");
+                    stream.Completion.SetException(nativeError);
+                    (await Assert.ThrowsAsync<IOException>(() => write.WaitAsync(deadline.Token))).Should().BeSameAs(nativeError);
+                }
+                else
+                {
+                    stream.Completion.SetCanceled();
+                    await Assert.ThrowsAnyAsync<OperationCanceledException>(() => write.WaitAsync(deadline.Token));
+                }
+                first.DisposeCount.Should().Be(1);
+                second.DisposeCount.Should().Be(1);
+                pool.ReturnCount.Should().Be(1);
+            }
+            finally
+            {
+                stream.Completion.TrySetCanceled();
+                await write.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing | ConfigureAwaitOptions.ContinueOnCapturedContext);
+                input.DisposeOwnedSegments();
+            }
         }
 
         [Fact(DisplayName = "QUIC coalescing returns source owners and rental when copying fails before native submission")]
