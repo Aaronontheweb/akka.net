@@ -82,6 +82,87 @@ class ValidationContractTests(unittest.TestCase):
                 self.parse(self.output().replace("2,16386,5001,3277.2,20,20", bad, 1))
 
 
+class WriteProgressContractTests(unittest.TestCase):
+    def setUp(self):
+        self.proof = dict(phaseId=str(uuid.uuid4()))
+        snapshot = dict(calls=128, bytes=1024, readyOnInspection=1, completed=128, canceled=0, faulted=0,
+                        samples=2, invocationTicks=10, completionTicks=100, batches=128, callbackSamples=2,
+                        callbackTicks=50, currentRentedCapacityBytes=0, lifetimePeakRentedCapacityBytes=128,
+                        rentOperations=128, copiedBytes=1024,
+                        meanSampledInvocationUs=5, meanSampledCompletionUs=50, meanSampledCallbackUs=25)
+        self.report = dict(version=1, phaseId=self.proof["phaseId"], samplingInterval=64, samplingScope="ordinary-writer",
+                           stopwatchFrequency=1_000_000, elapsedMilliseconds=3277.2,
+                           io=dict(readOperations=10, readBytes=1024, writeOperations=10, writeBytes=1024),
+                           endpoints=[dict(endpoint=name, before={key: 0 for key in snapshot}, interval=copy.deepcopy(snapshot),
+                                           afterShutdown=copy.deepcopy(snapshot)) for name in ["sender", "receiver"]])
+
+    def test_complete_write_observation_passes(self):
+        controller.validate_progress(self.report, self.proof, 3277.2)
+
+    def test_wrong_phase_sampling_clock_or_endpoints_fail(self):
+        for key, value in dict(phaseId=str(uuid.uuid4()), samplingInterval=32, stopwatchFrequency=0,
+                               elapsedMilliseconds=100, version=True, samplingScope="global", endpoints=[]).items():
+            report = copy.deepcopy(self.report)
+            report[key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                controller.validate_progress(report, self.proof, 3277.2)
+
+    def test_missing_bad_counters_or_incomplete_cleanup_fail(self):
+        changes = [("interval", "samples", 0), ("interval", "callbackSamples", 0),
+                   ("interval", "calls", -1), ("interval", "meanSampledCompletionUs", float("nan")),
+                   ("interval", "meanSampledInvocationUs", 11), ("afterShutdown", "currentRentedCapacityBytes", 1),
+                   ("interval", "currentRentedCapacityBytes", 129)]
+        for scope, field, value in changes:
+            report = copy.deepcopy(self.report)
+            report["endpoints"][0][scope][field] = value
+            with self.subTest(field=field, scope=scope), self.assertRaises(ValueError):
+                controller.validate_progress(report, self.proof, 3277.2)
+        report = copy.deepcopy(self.report)
+        del report["endpoints"][0]["interval"]["bytes"]
+        with self.assertRaises(ValueError):
+            controller.validate_progress(report, self.proof, 3277.2)
+
+    def test_normal_parser_links_two_mode_proofs_and_rejects_missing_diagnostics(self):
+        fixture = ValidationContractTests()
+        fixture.setUp()
+        proofs = copy.deepcopy(fixture.proofs)
+        reports = []
+        for proof in proofs:
+            proof["writeProgress"] = True
+            report = copy.deepcopy(self.report)
+            report["phaseId"] = proof["phaseId"]
+            reports.append(report)
+        output = fixture.output(proofs) + "\n" + "\n".join([
+            "Recipient lane occupancy (send): 2", "Recipient lane occupancy (reply): 2",
+            "QUIC ordinary streams open: 1 (per-stream inbound lanes 1; receive paths 1)"] * 2)
+        output += "\n" + "\n".join("WRITEPROGRESS " + json.dumps(report) for report in reports)
+        args = (2, dict(transport="quic", lanes=1, streams=1), "transports", True, 10, 8193, "oneway", None, True)
+        self.assertEqual(len(controller.parse_run(output, *args)), 2)
+        with self.assertRaises(ValueError):
+            controller.parse_run(output[:output.rfind("WRITEPROGRESS ")], *args)
+        with self.assertRaises(ValueError):
+            controller.parse_run(output.replace('"writeProgress": true', '"writeProgress": false', 1), *args)
+        with self.assertRaises(ValueError):
+            controller.parse_run(output, *args[:-1])
+
+    def test_settled_outcomes_samples_and_cumulative_monotonicity_are_checked(self):
+        for field, value in [("readyOnInspection", 129), ("completed", 127), ("faulted", 1),
+                             ("samples", 129), ("batches", 1)]:
+            report = copy.deepcopy(self.report)
+            settled = report["endpoints"][0]["afterShutdown"]
+            settled[field] = value
+            for metric, ticks, samples in [("meanSampledInvocationUs", "invocationTicks", "samples"),
+                                            ("meanSampledCompletionUs", "completionTicks", "samples"),
+                                            ("meanSampledCallbackUs", "callbackTicks", "callbackSamples")]:
+                settled[metric] = settled[ticks] / settled[samples] if settled[samples] else 0
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "cumulative write"):
+                controller.validate_progress(report, self.proof, 3277.2)
+        report = copy.deepcopy(self.report)
+        report["endpoints"][0]["before"]["bytes"] = 1
+        with self.assertRaisesRegex(ValueError, "cumulative write counters decreased"):
+            controller.validate_progress(report, self.proof, 3277.2)
+
+
 class PacedContractTests(unittest.TestCase):
     def setUp(self):
         self.proof = dict(phaseId=str(uuid.uuid4()))

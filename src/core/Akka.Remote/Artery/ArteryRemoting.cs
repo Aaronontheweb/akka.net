@@ -118,6 +118,8 @@ namespace Akka.Remote.Artery
 
         internal ArteryQuicIoSnapshot QuicIoSnapshot =>
             _quic is not null && QuicConnection.IsSupported ? _quic.IoSnapshot : default;
+        internal ArteryQuicWriteProgress.Snapshot QuicWriteProgressSnapshot =>
+            _quic is not null && QuicConnection.IsSupported ? _quic.WriteProgressSnapshot : default;
 
         internal IReadOnlyDictionary<string, int> QuicOrdinaryStreamCounts() =>
             _quic is not null && QuicConnection.IsSupported
@@ -428,7 +430,7 @@ namespace Akka.Remote.Artery
                 var resources = System.Settings.Setup.Get<ArteryQuicResourceSetup>();
                 _quic = new ArteryQuicTransport(_tlsSettings, _settings.HandshakeTimeout, _log,
                     _settings.QuicOrdinaryStreams, _settings.QuicMaximumInboundOrdinaryStreams, _settings.QuicIoStatisticsEnabled,
-                    resources.HasValue ? resources.Value.Lifetime : null);
+                    resources.HasValue ? resources.Value.Lifetime : null, _settings.QuicWriteProgressEnabled);
                 _shutdownDrain = new ArteryShutdownDrain();
             }
             _materializer = CreateSystemMaterializer();

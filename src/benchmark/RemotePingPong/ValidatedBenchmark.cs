@@ -25,7 +25,7 @@ namespace RemotePingPong
         internal static readonly TimeSpan ProgressTimeout = TimeSpan.FromSeconds(10);
 
         internal sealed record Agreement(Guid RunId, int Messages, int Window, int AckEvery, bool OneWay,
-            int PayloadBytes, int Version = 1, int RttIntervalMs = 0);
+            int PayloadBytes, int Version = 1, int RttIntervalMs = 0, bool WriteProgress = false);
         internal sealed record Prepare;
         internal sealed record Ready(Agreement Settings);
         internal sealed record Credit(Guid RunId, int Received);

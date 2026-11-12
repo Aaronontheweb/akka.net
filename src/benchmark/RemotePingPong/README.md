@@ -118,6 +118,7 @@ long-lived server does not accumulate idle actors across runs.
 | `--transport dotnetty\|artery-tcp\|artery-tls\|quic` | `dotnetty` | ✓ | ✓ | ✓ | Explicit transport; incompatible with `--artery` unless selecting `artery-tcp` |
 | `--quic-streams S` | `1` | ✓ | ✓ | ✓ | Native ordinary streams, bounded by outbound lanes and 64 |
 | `--diagnostics` | off | ✓ | ✓ | ✓ | Optional process CPU/allocation/GC and ordinary QUIC I/O counters |
+| `--write-progress` | off | ✓ | — | — | Separate ordered QUIC one-way write/completion/handoff and pooled-capacity observations |
 | `--validate-sequence` | off | ✓ | — | — | Ordered real V2 delivery, cumulative credit, phase agreement and final receiver receipts |
 | `--rtt-interval-ms N` | off | ✓ | — | — | Fixed scheduled offers for validated ping-pong; 1–1000 ms, at most 1,000,000 total RTT samples |
 | `--cert PATH` | ephemeral in encrypted `run` | ✓ | ✓ | ✓ | PKCS#12 identity; required in encrypted split modes |
@@ -352,6 +353,46 @@ rate mismatches. `rtt-summary.csv` summarizes per-run percentiles; it does not p
 samples across runs. Message rate in paced mode is capped by offered load and must
 not be presented as maximum throughput. Collect CPU/allocation diagnostics separately;
 combining `--diagnostics` with paced latency is rejected.
+
+### Write Progress Observations
+
+Use `--write-progress` with validated QUIC one-way loopback to examine the ordinary
+write path. Keep it off for primary timing, paced latency and CPU/allocation profiling.
+The public controller accepts the same flag and labels QUIC rows as diagnostic;
+other transport cells remain contextual controls without this probe.
+
+Each ordinary writer has a preallocated probe. Every nonempty public write has one
+explicit readiness inspection and one await. A successfully ready observation does
+not prove that no asynchronous or native work occurred before that snapshot. Calls
+are public `WriteAsync` operations, not packets, system calls or application messages.
+Successful writes and batch callbacks are sampled once every 64 operations per
+writer. Invocation samples include readiness/probe overhead; completion samples
+also include managed continuation delay. Callback samples measure posting to the
+stream-interpreter handler. None of these durations measures an OS context switch,
+native CPU time or peer delivery, and concurrent writer durations cannot be summed
+into a wall-time decomposition. The measured coalescing helper replaces the
+normal completion helper; its diagnostic state is larger. The disabled path keeps
+the original helper. Measure probe overhead separately before interpreting these observations.
+
+`WRITEPROGRESS` records contain independent sender/receiver snapshots before timing,
+interval counter differences, and settled snapshots after shutdown. Counter snapshots
+are not atomic; writes can cross interval boundaries. Current coalescing rental
+capacity is a gauge; its peak is a lifetime high-water mark, including setup and
+shutdown. Neither is time-weighted occupancy, total retained transport memory,
+managed allocation, or native MsQuic allocation. Rental counts and copied bytes
+describe managed coalescing only. Receives continue to publish data in stable owned arrays.
+
+```bash
+dotnet src/benchmark/RemotePingPong/bin/Release/net10.0/RemotePingPong.dll run \
+  --transport quic --payload real --serializer v2 --validate-sequence --oneway \
+  --write-progress --clients 128 --window 10 --msgs 50000 --times 2 \
+  --outbound-lanes 8 --inbound-lanes 1 --quic-streams 8 --qsize 1024
+```
+
+Use a fixed identity and a clean frozen build for comparisons. Collect on/off probe
+perturbation separately from a candidate/control primary comparison. The controller
+checks phase/mode agreement, clock/mean arithmetic, cumulative settled outcomes and
+returned capacity; it does not assume interval calls equal interval completions.
 
 ### `--oneway`
 

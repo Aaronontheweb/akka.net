@@ -46,6 +46,7 @@ namespace Akka.Remote.Artery
         private readonly int _maximumIncomingOrdinaryStreams;
         private readonly ILoggingAdapter _log;
         private readonly ArteryQuicIoCounters? _ioCounters;
+        private readonly ArteryQuicWriteProgress? _writeProgress;
         private readonly CancellationTokenSource _stop = new();
         private readonly ConcurrentDictionary<EndPoint, Peer> _outbound = new();
         private readonly ConcurrentDictionary<long, Task> _work = new();
@@ -58,7 +59,7 @@ namespace Akka.Remote.Artery
 
         internal ArteryQuicTransport(ArteryTlsSettings? tls, TimeSpan handshakeTimeout, ILoggingAdapter log,
             int ordinaryStreams = 1, int maximumInboundOrdinaryStreams = 8, bool enableIoStatistics = false,
-            ArteryQuicResourceLifetime? nativeLifetime = null)
+            ArteryQuicResourceLifetime? nativeLifetime = null, bool enableWriteProgress = false)
         {
             if (tls is null)
                 throw new ConfigurationException("Artery QUIC requires explicit ArteryTlsSetup credentials and peer policy.");
@@ -70,6 +71,7 @@ namespace Akka.Remote.Artery
                 maximumInboundOrdinaryStreams is < 1 or > ArterySettings.MaximumQuicOrdinaryStreams)
                 throw new ArgumentOutOfRangeException(nameof(ordinaryStreams), "QUIC ordinary stream limits must be between 1 and 64.");
             _ioCounters = enableIoStatistics ? new ArteryQuicIoCounters() : null;
+            _writeProgress = enableWriteProgress ? new ArteryQuicWriteProgress() : null;
             _ordinaryStreams = ordinaryStreams;
             _maximumIncomingOrdinaryStreams = maximumInboundOrdinaryStreams;
             _maximumIncomingStreams = maximumInboundOrdinaryStreams + 2;
@@ -80,6 +82,9 @@ namespace Akka.Remote.Artery
         }
 
         internal ArteryQuicIoSnapshot IoSnapshot => _ioCounters?.Snapshot ?? default;
+        internal ArteryQuicWriteProgress.Snapshot WriteProgressSnapshot => _writeProgress?.Read() ?? default;
+        internal ArteryQuicWriteProgress.Writer? CreateWriteProbe(ArteryStreamId role) =>
+            role == ArteryStreamId.Ordinary && _writeProgress is not null ? new ArteryQuicWriteProgress.Writer(_writeProgress) : null;
         internal Task WhenNativeResourcesReleased => _nativeLifetime.WhenReleased;
 
         internal void RecordWrite(ArteryStreamId role, int bytes)

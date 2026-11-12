@@ -50,7 +50,10 @@ def arguments():
                         help="Use the ordered real V2 protocol and require final delivery proofs (transports phase only)")
     parser.add_argument("--rtt-interval-ms", type=int,
                         help="Fixed scheduled RTT offers; requires validated transports ping-pong and at most 1000000 samples")
+    parser.add_argument("--write-progress", action="store_true", help="Collect separate QUIC write diagnostics in ordered one-way mode")
     result = parser.parse_args()
+    if result.write_progress and (result.phase != "transports" or not result.validate_sequence or result.pattern != "oneway"):
+        parser.error("--write-progress requires validated transports one-way mode; these are diagnostic runs")
     if result.validate_sequence and (result.phase != "transports" or result.messages > 1_000_000):
         parser.error("--validate-sequence requires transports phase and at most 1000000 messages per client")
     if result.rtt_interval_ms is not None and (not result.validate_sequence or result.pattern != "ping-pong"
@@ -141,6 +144,8 @@ def command(args, cell):
         result.append("--validate-sequence")
     if getattr(args, "rtt_interval_ms", None) is not None:
         result += ["--rtt-interval-ms", str(args.rtt_interval_ms)]
+    if getattr(args, "write_progress", False) and cell["transport"] == "quic":
+        result.append("--write-progress")
     if cell["transport"] != "dotnetty":
         # Match total receive paths: S streams each have N/S processing lanes. At S=N
         # each stream uses its inline processor, avoiding accidental N*N consumers.
@@ -153,7 +158,7 @@ def command(args, cell):
 
 
 def parse_run(output, clients, cell, phase, validate_sequence=False, window=None, messages=None, pattern=None,
-              rtt_interval_ms=None):
+              rtt_interval_ms=None, write_progress=False):
     data = []
     for line in output.splitlines():
         if re.match(rf"^\s*{clients},", line):
@@ -203,16 +208,29 @@ def parse_run(output, clients, cell, phase, validate_sequence=False, window=None
                         preparedPayloads=messages, orderedPayloadsAndContent=True, retries=0)
         if rtt_interval_ms is not None:
             expected["rttIntervalMs"] = rtt_interval_ms
+        if write_progress:
+            expected["writeProgress"] = True
         for row, proof in zip(data, proofs):
             if not isinstance(proof.get("phaseId"), str):
                 raise ValueError("validation phase identifier missing")
             uuid.UUID(proof["phaseId"])
+            if type(proof.get("writeProgress", False)) is not bool or proof.get("writeProgress", False) != write_progress:
+                raise ValueError("write diagnostic mode differs from controller")
             if any(type(proof.get(key)) is not type(value) or proof.get(key) != value
                    for key, value in expected.items()) or row["messages"] != expected_count:
                 raise ValueError("validated workload parameters or final delivery proof differ from controller")
             if type(proof.get("datasetAllocatedBytes")) is not int or proof["datasetAllocatedBytes"] <= 0:
                 raise ValueError("prepared dataset allocation evidence missing")
             row["validation"] = proof
+    progress = [json.loads(line.removeprefix("WRITEPROGRESS ")) for line in output.splitlines() if line.startswith("WRITEPROGRESS ")]
+    if write_progress:
+        if not validate_sequence or cell["transport"] != "quic" or len(progress) != 2:
+            raise ValueError("write diagnostics require two QUIC ordered phase reports")
+        for row, report in zip(data, progress):
+            validate_progress(report, row["validation"], row["milliseconds"])
+            row["write_progress"] = report
+    elif progress:
+        raise ValueError("unexpected write diagnostics in primary run")
     reports = [json.loads(line.removeprefix("RTT ")) for line in output.splitlines() if line.startswith("RTT ")]
     if rtt_interval_ms is None and reports:
         raise ValueError("unexpected paced results in an unpaced run")
@@ -245,6 +263,61 @@ def parse_run(output, clients, cell, phase, validate_sequence=False, window=None
             if budgets != [expected] * 2:
                 raise ValueError("effective QUIC receive-path budget differs from configured comparison")
     return data
+
+
+def validate_progress(report, proof, elapsed_ms):
+    if not isinstance(report, dict) or report.get("phaseId") != proof["phaseId"] or type(report.get("version")) is not int \
+            or report["version"] != 1 or type(report.get("samplingInterval")) is not int \
+            or report["samplingInterval"] != 64 or report.get("samplingScope") != "ordinary-writer":
+        raise ValueError("write diagnostic phase/version/sampling agreement missing")
+    frequency = report.get("stopwatchFrequency")
+    elapsed = report.get("elapsedMilliseconds")
+    if type(frequency) is not int or frequency <= 0 or type(elapsed) not in (int, float) or not math.isfinite(elapsed) \
+            or abs(elapsed - elapsed_ms) > 0.0051:
+        raise ValueError("write diagnostic clock or interval differs from timing row")
+    io = report.get("io")
+    if not isinstance(io, dict) or any(type(io.get(key)) is not int or io[key] < 0
+                                     for key in ["readOperations", "readBytes", "writeOperations", "writeBytes"]):
+        raise ValueError("ordinary I/O operation and byte evidence missing")
+    endpoints = report.get("endpoints")
+    if not isinstance(endpoints, list) or len(endpoints) != 2 \
+            or {entry.get("endpoint") for entry in endpoints if isinstance(entry, dict)} != {"sender", "receiver"}:
+        raise ValueError("both endpoint write observations required")
+    fields = ["calls", "bytes", "readyOnInspection", "completed", "canceled", "faulted", "samples", "invocationTicks",
+              "completionTicks", "batches", "callbackSamples", "callbackTicks", "currentRentedCapacityBytes", "lifetimePeakRentedCapacityBytes",
+              "rentOperations", "copiedBytes"]
+    for endpoint in endpoints:
+        for scope in ["before", "interval", "afterShutdown"]:
+            snapshot = endpoint.get(scope)
+            if not isinstance(snapshot, dict) or any(type(snapshot.get(key)) is not int or snapshot[key] < 0 for key in fields):
+                raise ValueError("write counter snapshot missing or invalid")
+            if snapshot["completionTicks"] < snapshot["invocationTicks"] \
+                    or snapshot["currentRentedCapacityBytes"] > snapshot["lifetimePeakRentedCapacityBytes"]:
+                raise ValueError("write duration/capacity arithmetic inconsistent")
+            for metric, ticks, samples in [("meanSampledInvocationUs", "invocationTicks", "samples"),
+                                            ("meanSampledCompletionUs", "completionTicks", "samples"),
+                                            ("meanSampledCallbackUs", "callbackTicks", "callbackSamples")]:
+                expected_mean = snapshot[ticks] * 1_000_000 / frequency / snapshot[samples] if snapshot[samples] else 0
+                value = snapshot.get(metric)
+                if type(value) not in (int, float) or not math.isfinite(value) \
+                        or not math.isclose(value, expected_mean, rel_tol=1e-9, abs_tol=1e-9):
+                    raise ValueError("sampled write timing mean disagrees with counters/clock")
+        if endpoint["interval"]["calls"] <= 0 or endpoint["interval"]["samples"] <= 0 \
+                or endpoint["interval"]["callbackSamples"] <= 0:
+            raise ValueError("write diagnostic run did not produce samples")
+        if endpoint["afterShutdown"]["currentRentedCapacityBytes"] != 0:
+            raise ValueError("coalescing rental still retained after shutdown; stop for diagnosis")
+        before, interval, settled = endpoint["before"], endpoint["interval"], endpoint["afterShutdown"]
+        cumulative = [key for key in fields if key not in ("currentRentedCapacityBytes", "lifetimePeakRentedCapacityBytes")]
+        if any(before[key] + interval[key] > settled[key] for key in cumulative) \
+                or max(before["lifetimePeakRentedCapacityBytes"], interval["lifetimePeakRentedCapacityBytes"]) > settled["lifetimePeakRentedCapacityBytes"]:
+            raise ValueError("cumulative write counters decreased after the measured interval")
+        # Only the settled snapshot has terminal reconciliation. Interval completions may
+        # belong to calls started before the baseline; live snapshots are not atomic.
+        if settled["completed"] + settled["canceled"] + settled["faulted"] != settled["calls"] \
+                or settled["readyOnInspection"] > settled["calls"] or settled["samples"] > settled["completed"] \
+                or settled["callbackSamples"] > settled["batches"]:
+            raise ValueError("cumulative write outcomes or samples are impossible or not settled")
 
 
 def validate_rtt(report, proof, clients, messages, interval):
@@ -324,7 +397,8 @@ def main():
                     affinity=sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
                     started_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     dotnet_info=subprocess.check_output([args.dotnet, "--info"], text=True),
-                    cells=groups, interpretation=("scheduled offered-load latency; message rate is capped, not maximum throughput"
+                    cells=groups, interpretation=("QUIC diagnostic write observations; other cells are uninstrumented context"
+                        if args.write_progress else "scheduled offered-load latency; message rate is capped, not maximum throughput"
                         if args.rtt_interval_ms is not None else "loopback throughput only") + "; one same-sized warmup before every measured run")
     for group in groups:
         for cell in group:
@@ -355,11 +429,12 @@ def main():
                         raise ValueError(f"process exited {process.returncode}")
                     warmup, measured = parse_run(process.stdout, args.clients, cell, args.phase,
                                                 args.validate_sequence, args.window, args.messages, args.pattern,
-                                                args.rtt_interval_ms)
+                                                args.rtt_interval_ms, args.write_progress and cell["transport"] == "quic")
                     expected = args.clients * args.messages * (1 if args.pattern == "oneway" else 2)
                     if measured["messages"] != expected:
                         raise ValueError("completion count differs from workload")
-                    record.update(warmup=warmup, measured=measured)
+                    record.update(warmup=warmup, measured=measured,
+                                  diagnostic_mode="write-progress" if args.write_progress and cell["transport"] == "quic" else "off")
                     if measured["milliseconds"] < args.minimum_seconds * 1000:
                         raise ValueError("measurement too short; keep evidence and rerun the paired matrix with more messages")
                     record["status"] = "valid"

@@ -386,8 +386,10 @@ namespace Akka.Remote.Tests.Artery
                 throw new InvalidOperationException("No buffer was rented.");
         }
 
-        [Fact(DisplayName = "QUIC coalescing returns source owners and rental when copying fails before native submission")]
-        public async Task Should_ReturnOriginalsAndRental_When_CoalescingCopyFails()
+        [Theory(DisplayName = "QUIC coalescing returns source owners and rental when copying fails before native submission")]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Should_ReturnOriginalsAndRental_When_CoalescingCopyFails(bool progress)
         {
             var error = new IOException("Controlled source span failure.");
             var first = new FailingCopyOwner(error);
@@ -398,7 +400,9 @@ namespace Akka.Remote.Tests.Artery
             using var stream = new PendingWriteStream();
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             first.FailReads();
-            var write = ArteryQuicWriteStage.WriteCoalescedAsync(stream, input, pool, CancellationToken.None).AsTask();
+            var counters = new ArteryQuicWriteProgress(1);
+            var probe = progress ? new ArteryQuicWriteProgress.Writer(counters) : null;
+            var write = ArteryQuicWriteStage.WriteCoalescedAsync(stream, input, pool, CancellationToken.None, probe).AsTask();
             try
             {
                 (await Assert.ThrowsAsync<IOException>(() => write.WaitAsync(deadline.Token))).Should().BeSameAs(error);
@@ -407,6 +411,9 @@ namespace Akka.Remote.Tests.Artery
                 pool.ReturnCount.Should().Be(1);
                 pool.Returned.Should().BeSameAs(pool.Buffer);
                 stream.Submissions.Should().Be(0);
+                counters.Read().Calls.Should().Be(0);
+                counters.Read().CopiedBytes.Should().Be(0);
+                counters.Read().CurrentRentedCapacityBytes.Should().Be(0);
             }
             finally
             {
@@ -417,11 +424,15 @@ namespace Akka.Remote.Tests.Artery
         }
 
         [Theory(DisplayName = "QUIC coalescing returns all owners when native submission completes or throws synchronously")]
-        [InlineData("success")]
-        [InlineData("failure")]
-        [InlineData("canceled")]
-        [InlineData("uncanceled-token")]
-        public async Task Should_ReturnAllOwners_When_NativeSubmissionIsSynchronous(string outcome)
+        [InlineData("success", false)]
+        [InlineData("failure", false)]
+        [InlineData("canceled", false)]
+        [InlineData("uncanceled-token", false)]
+        [InlineData("success", true)]
+        [InlineData("failure", true)]
+        [InlineData("canceled", true)]
+        [InlineData("uncanceled-token", true)]
+        public async Task Should_ReturnAllOwners_When_NativeSubmissionIsSynchronous(string outcome, bool progress)
         {
             var first = new TrackingOwner(3, 0x13);
             var second = new TrackingOwner(4, 0xB1);
@@ -439,7 +450,9 @@ namespace Akka.Remote.Tests.Artery
                 _ => null
             };
             using var stream = new ImmediateWriteStream(error);
-            var write = ArteryQuicWriteStage.WriteCoalescedAsync(stream, input, pool, CancellationToken.None);
+            var counters = new ArteryQuicWriteProgress(1);
+            var probe = progress ? new ArteryQuicWriteProgress.Writer(counters) : null;
+            var write = ArteryQuicWriteStage.WriteCoalescedAsync(stream, input, pool, CancellationToken.None, probe);
             try
             {
                 write.IsCompleted.Should().BeTrue();
@@ -463,6 +476,9 @@ namespace Akka.Remote.Tests.Artery
                 second.DisposeCount.Should().Be(1);
                 pool.ReturnCount.Should().Be(1);
                 pool.Returned.Should().BeSameAs(pool.Buffer);
+                counters.Read().Calls.Should().Be(progress ? 1 : 0);
+                counters.Read().ReadyOnInspection.Should().Be(progress && error is null ? 1 : 0);
+                counters.Read().CurrentRentedCapacityBytes.Should().Be(0);
             }
             finally
             {

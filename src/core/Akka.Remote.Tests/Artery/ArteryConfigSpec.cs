@@ -104,6 +104,7 @@ namespace Akka.Remote.Tests.Artery
             settings.OutboundLanes.Should().Be(1);
             settings.QuicOrdinaryStreams.Should().Be(1);
             settings.QuicIoStatisticsEnabled.Should().BeFalse();
+            settings.QuicWriteProgressEnabled.Should().BeFalse();
             settings.QuicMaximumInboundOrdinaryStreams.Should().Be(8);
             settings.HandshakeTimeout.Should().Be(20.Seconds());
             settings.HandshakeRetryInterval.Should().Be(1.Seconds());

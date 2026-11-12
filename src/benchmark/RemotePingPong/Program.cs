@@ -58,6 +58,7 @@ namespace RemotePingPong
         private static BenchmarkTransport _transport = BenchmarkTransport.Default();
         private static int? _quicStreamsOverride;
         private static bool _diagnostics;
+        private static bool _writeProgress;
         private static bool _validateSequence;
         private static int? _rttIntervalMs;
         private static RealPayload.V2.RealBenchmarkMessage[]? _validatedPayloads;
@@ -65,9 +66,10 @@ namespace RemotePingPong
         private static readonly HashSet<ActorSystem> ActorSystems = new();
 
         private static bool SelectTransport(bool artery, string? transport, string? certificatePath,
-            string? passwordEnvironmentVariable, string? peerPins, int? quicStreams, bool splitMode, bool diagnostics = false)
+            string? passwordEnvironmentVariable, string? peerPins, int? quicStreams, bool splitMode, bool diagnostics = false, bool writeProgress = false)
         {
             _diagnostics = diagnostics;
+            _writeProgress = writeProgress;
             _quicStreamsOverride = quicStreams;
             _transport = BenchmarkTransport.Create(transport ?? (artery ? "artery-tcp" : "dotnetty"),
                 splitMode, certificatePath, passwordEnvironmentVariable, peerPins);
@@ -317,8 +319,10 @@ namespace RemotePingPong
             if (_transport.Kind == "quic")
             {
                 config = ConfigurationFactory.ParseString("akka.remote.artery.transport = quic").WithFallback(config);
-                if (_diagnostics)
+                if (_diagnostics || _writeProgress)
                     config = ConfigurationFactory.ParseString("akka.remote.artery.advanced.quic.io-statistics = on").WithFallback(config);
+                if (_writeProgress)
+                    config = ConfigurationFactory.ParseString("akka.remote.artery.advanced.quic.write-progress-statistics = on").WithFallback(config);
                 if (_quicStreamsOverride.HasValue)
                 {
                     config = ConfigurationFactory.ParseString($"akka.remote.artery.advanced.quic.ordinary-streams = {_quicStreamsOverride.Value}")
@@ -639,6 +643,10 @@ namespace RemotePingPong
                 Description = "Fixed scheduled ping-pong burst interval, 1–1000 ms. Requires loopback ordered real V2 validation, " +
                               "explicit clients/messages and at most 1000000 total round trips."
             };
+            var writeProgressOption = new Option<bool>("--write-progress")
+            {
+                Description = "QUIC ordered one-way diagnostic mode: public write readiness, sampled completion/handoff time and coalescing rental capacity."
+            };
 
             var windowOption = new Option<int>("--window")
             {
@@ -806,6 +814,14 @@ namespace RemotePingPong
             runCommand.Options.Add(serializerOption);
             runCommand.Options.Add(validateSequenceOption);
             runCommand.Options.Add(rttIntervalOption);
+            runCommand.Options.Add(writeProgressOption);
+            runCommand.Validators.Add(result =>
+            {
+                if (result.GetValue(writeProgressOption) && (result.GetValue(transportOption) != "quic"
+                    || !result.GetValue(validateSequenceOption) || !result.GetValue(onewayOption)
+                    || result.GetValue(diagnosticsOption) || result.GetValue(rttIntervalOption).HasValue))
+                    result.AddError("--write-progress requires QUIC ordered one-way loopback; collect allocation and paced latency separately.");
+            });
             runCommand.Validators.Add(result =>
             {
                 var interval = result.GetValue(rttIntervalOption);
@@ -836,7 +852,8 @@ namespace RemotePingPong
             runCommand.SetAction((parseResult, cancellationToken) => RunLoopbackAsync(
                 SelectTransport(parseResult.GetValue(arteryOption), parseResult.GetValue(transportOption),
                     parseResult.GetValue(certificateOption), parseResult.GetValue(passwordEnvironmentOption),
-                    parseResult.GetValue(peerPinsOption), parseResult.GetValue(quicStreamsOption), splitMode: false, diagnostics: parseResult.GetValue(diagnosticsOption)),
+                    parseResult.GetValue(peerPinsOption), parseResult.GetValue(quicStreamsOption), splitMode: false,
+                    diagnostics: parseResult.GetValue(diagnosticsOption), writeProgress: parseResult.GetValue(writeProgressOption)),
                 parseResult.GetValue(onewayOption),
                 parseResult.GetValue(windowOption),
                 parseResult.GetValue(clientsOption),
@@ -1440,7 +1457,8 @@ namespace RemotePingPong
                 if (serialization.FindSerializerFor(payloads[^1]).ToBinary(payloads[^1]).Length != _realPayloadWireBytes)
                     throw new InvalidOperationException("Sequence payload encoding width changed within the prepared dataset.");
                 var settings = new ValidatedBenchmark.Agreement(validationPhase, checked((int)numberOfRepeats),
-                    windowSize, Math.Max(1, windowSize / 2), _onewayMode, _realPayloadWireBytes, RttIntervalMs: _rttIntervalMs ?? 0);
+                    windowSize, Math.Max(1, windowSize / 2), _onewayMode, _realPayloadWireBytes,
+                    RttIntervalMs: _rttIntervalMs ?? 0, WriteProgress: _writeProgress);
                 for (var i = 0; i < numberOfClients; i++)
                 {
                     var completion = new ValidatedBenchmark.Outcome(_rttIntervalMs.HasValue ? settings.Messages : 0);
@@ -1590,7 +1608,11 @@ namespace RemotePingPong
                 system is not null && _transport.Kind == "quic"
                     ? ((ArteryRemoting)((RemoteActorRefProvider)((ExtendedActorSystem)system).Provider).Transport).QuicIoSnapshot
                     : default;
-            var ioBefore = _diagnostics ? SnapshotIo(system1) + SnapshotIo(system2) : default;
+            var ioBefore = _diagnostics || _writeProgress ? SnapshotIo(system1) + SnapshotIo(system2) : default;
+            var progressA = _writeProgress ? (ArteryRemoting)((RemoteActorRefProvider)((ExtendedActorSystem)system1).Provider).Transport : null;
+            var progressB = _writeProgress ? (ArteryRemoting)((RemoteActorRefProvider)((ExtendedActorSystem)system2!).Provider).Transport : null;
+            var beforeProgressA = progressA?.QuicWriteProgressSnapshot ?? default;
+            var beforeProgressB = progressB?.QuicWriteProgressSnapshot ?? default;
             var actualReleases = _rttIntervalMs.HasValue ? new long[checked((int)numberOfRepeats)] : Array.Empty<long>();
             var pacedFinished = _rttIntervalMs.HasValue ? Task.WhenAll(tasks) : null;
             var firstPacedFailure = _rttIntervalMs.HasValue ? Task.WhenAny(validatedOutcomes.Select(outcome => outcome.Failure)).Unwrap() : null;
@@ -1624,6 +1646,9 @@ namespace RemotePingPong
                 ? await waiting.WaitAsync(cancellationToken)
                 : await PacedBenchmark.CompleteAsync(waiting, firstPacedFailure, cancellationToken);
             sw.Stop();
+            var afterProgressA = progressA?.QuicWriteProgressSnapshot ?? default;
+            var afterProgressB = progressB?.QuicWriteProgressSnapshot ?? default;
+            var progressIo = _writeProgress ? SnapshotIo(system1) + SnapshotIo(system2) - ioBefore : default;
             if (_diagnostics)
             {
                 diagnosticProcess!.Refresh();
@@ -1696,8 +1721,25 @@ namespace RemotePingPong
                     datasetAllocatedBytes = _sequenceDatasetAllocatedBytes,
                     orderedPayloadsAndContent = true,
                     retries = 0,
-                    rttIntervalMs = _rttIntervalMs ?? 0
+                    rttIntervalMs = _rttIntervalMs ?? 0,
+                    writeProgress = _writeProgress
                 }));
+                if (_writeProgress)
+                    Console.WriteLine("WRITEPROGRESS " + System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        version = 1,
+                        phaseId = validationPhase,
+                        samplingInterval = ArteryQuicWriteProgress.DefaultSamplingInterval,
+                        samplingScope = "ordinary-writer",
+                        stopwatchFrequency = Stopwatch.Frequency,
+                        elapsedMilliseconds = sw.Elapsed.TotalMilliseconds,
+                        io = progressIo,
+                        endpoints = new[]
+                        {
+                            new { endpoint = "sender", before = beforeProgressA, interval = afterProgressA.Since(beforeProgressA), afterShutdown = progressA!.QuicWriteProgressSnapshot },
+                            new { endpoint = "receiver", before = beforeProgressB, interval = afterProgressB.Since(beforeProgressB), afterShutdown = progressB!.QuicWriteProgressSnapshot }
+                        }
+                    }, new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase }));
                 if (releases is not null)
                     Console.WriteLine("RTT " + System.Text.Json.JsonSerializer.Serialize(
                         PacedBenchmark.Summarize(validationPhase, validatedOutcomes, releases),

@@ -58,7 +58,7 @@ namespace Akka.Remote.Artery
         }
 
         internal static ValueTask WriteCoalescedAsync(Stream stream, ReadOnlySequence<byte> bytes,
-            ArrayPool<byte> pool, CancellationToken cancellationToken)
+            ArrayPool<byte> pool, CancellationToken cancellationToken, ArteryQuicWriteProgress.Writer? probe = null)
         {
             // Keep source sequence, stream and cancellation state out of the suspended write.
             // Preserve faulted-ValueTask behavior for synchronous preparation/submission errors.
@@ -69,14 +69,19 @@ namespace Akka.Remote.Artery
                 {
                     var length = checked((int)bytes.Length);
                     buffer = pool.Rent(length);
+                    probe?.Rented(buffer.Length);
                     var memory = buffer.AsMemory(0, length);
                     bytes.CopyTo(memory.Span);
+                    probe?.Copied(length);
                     bytes.DisposeOwnedSegments();
                     bytes = default;
+                    probe?.BeforeInvocation(length);
                     var write = stream.WriteAsync(memory, cancellationToken);
+                    probe?.InvocationReturned(write.IsCompletedSuccessfully);
                     var submitted = buffer;
                     buffer = null;
-                    return CompleteCoalescedWriteAsync(write, submitted, pool);
+                    return probe is null ? CompleteCoalescedWriteAsync(write, submitted, pool)
+                        : CompleteMeasuredCoalescedWriteAsync(write, submitted, pool, probe);
                 }
                 finally
                 {
@@ -87,15 +92,39 @@ namespace Akka.Remote.Artery
                     finally
                     {
                         if (buffer is not null)
+                        {
                             pool.Return(buffer);
+                            probe?.Returned(buffer.Length);
+                        }
                     }
                 }
             }
             catch (Exception ex)
             {
+                probe?.Failed(ex);
                 var completion = AsyncValueTaskMethodBuilder.Create();
                 completion.SetException(ex);
                 return completion.Task;
+            }
+        }
+
+        private static async ValueTask CompleteMeasuredCoalescedWriteAsync(ValueTask write, byte[] buffer,
+            ArrayPool<byte> pool, ArteryQuicWriteProgress.Writer probe)
+        {
+            try
+            {
+                await write.ConfigureAwait(false);
+                probe.Completed();
+            }
+            catch (Exception ex)
+            {
+                probe.Failed(ex);
+                throw;
+            }
+            finally
+            {
+                pool.Return(buffer);
+                probe.Returned(buffer.Length);
             }
         }
 
@@ -127,11 +156,13 @@ namespace Akka.Remote.Artery
             private Task? _finishing;
             private Action<Exception>? _failed;
             private Action<Done>? _written;
+            private readonly ArteryQuicWriteProgress.Writer? _probe;
 
             internal Logic(ArteryQuicWriteStage stage, TaskCompletionSource<Done> connected) : base(stage.Shape)
             {
                 _stage = stage;
                 _connected = connected;
+                _probe = stage._transport.CreateWriteProbe(stage._role);
                 SetHandler(stage._in, this);
                 SetHandler(stage._out, this);
             }
@@ -145,6 +176,7 @@ namespace Akka.Remote.Artery
                 });
                 _written = GetAsyncCallback<Done>(done =>
                 {
+                    _probe?.CallbackHandled();
                     _writing = false;
                     if (_finished)
                         _finishing = FinishAsync();
@@ -199,6 +231,7 @@ namespace Akka.Remote.Artery
             public void OnPush()
             {
                 var bytes = Grab(_stage._in);
+                _probe?.BeginBatch();
                 _writing = true;
                 _writingOperation = WriteAsync(bytes);
             }
@@ -216,21 +249,27 @@ namespace Akka.Remote.Artery
                         var coalesced = bytes;
                         // Transfer cleanup to the copying operation, including rent/copy failure.
                         bytes = default;
-                        await WriteCoalescedAsync(channel.Stream, coalesced, ArrayPool<byte>.Shared, lifetime.Token).ConfigureAwait(false);
+                        await WriteCoalescedAsync(channel.Stream, coalesced, ArrayPool<byte>.Shared, lifetime.Token, _probe).ConfigureAwait(false);
                         _stage._transport.RecordWrite(_stage._role, length);
                     }
                     else
                     {
                         foreach (var segment in bytes)
                         {
-                            await channel.Stream.WriteAsync(segment, lifetime.Token).ConfigureAwait(false);
+                            _probe?.BeforeInvocation(segment.Length);
+                            var operation = channel.Stream.WriteAsync(segment, lifetime.Token);
+                            _probe?.InvocationReturned(operation.IsCompletedSuccessfully);
+                            await operation.ConfigureAwait(false);
+                            _probe?.Completed();
                             _stage._transport.RecordWrite(_stage._role, segment.Length);
                         }
                     }
+                    _probe?.CallbackPosted();
                     _written!(Done.Instance);
                 }
                 catch (Exception ex)
                 {
+                    _probe?.Failed(ex);
                     _failed!(ex);
                 }
                 finally

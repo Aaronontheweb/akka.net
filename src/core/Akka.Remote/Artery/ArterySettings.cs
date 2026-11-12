@@ -53,6 +53,7 @@ namespace Akka.Remote.Artery
 
         /// <summary>Opt-in native I/O-size diagnostics for prototype profiling.</summary>
         public bool QuicIoStatisticsEnabled { get; }
+        internal bool QuicWriteProgressEnabled { get; }
 
         /// <summary>
         /// The hostname (or IP) this system advertises for other systems to connect to.
@@ -353,6 +354,7 @@ namespace Akka.Remote.Artery
                     $"akka.remote.artery.advanced.outbound-lanes must be >= 1, but was [{OutboundLanes}].");
 
             QuicIoStatisticsEnabled = arteryConfig.GetBoolean("advanced.quic.io-statistics", false);
+            QuicWriteProgressEnabled = arteryConfig.GetBoolean("advanced.quic.write-progress-statistics", false);
             QuicOrdinaryStreams = arteryConfig.GetInt("advanced.quic.ordinary-streams", 1);
             QuicMaximumInboundOrdinaryStreams = arteryConfig.GetInt("advanced.quic.maximum-inbound-ordinary-streams", 8);
             if (QuicOrdinaryStreams is < 1 or > MaximumQuicOrdinaryStreams ||
