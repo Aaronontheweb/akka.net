@@ -3,6 +3,9 @@
 
 import copy
 import json
+import hashlib
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 import unittest
 import uuid
@@ -170,6 +173,68 @@ class PacedContractTests(unittest.TestCase):
             controller.parse_run(quic_output.replace("QUIC reply ordinary streams open: 1", ""), *quic_args)
         with self.assertRaises(ValueError):
             controller.parse_run(quic_output.replace("QUIC reply ordinary streams open: 1", "QUIC reply ordinary streams open: 2", 1), *quic_args)
+
+
+class TimelineContractTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        self.proof = dict(phaseId=str(uuid.uuid4()), clients=2, messagesPerClient=3, window=1, rttIntervalMs=2, rttTimeline=True)
+        self.path = self.directory / (self.proof["phaseId"] + ".json")
+        self.data = dict(formatVersion=1, phaseId=self.proof["phaseId"], frequency=1000000000, origin=1000000,
+                         lastEcho=7000050, anchorBefore=8000000, anchorAfter=8000010,
+                         clients=2, messagesPerClient=3, window=1, intervalMs=2, samplingInterval=64,
+                         releases=[3000010, 5000010, 7000010], samples=[[0, 0, 20, 50], [1, 1, 20, 50]])
+        self.manifest = dict(formatVersion=1, phaseId=self.proof["phaseId"], path=str(self.path), samples=2, totalSamples=6, samplingInterval=64)
+        self.report = dict(releaseLateness=dict(p50Us=.01, p95Us=.01, p99Us=.01, maxUs=.01), actualReleaseRttsPerSecond=1000)
+        for name in ["dispatchDelay", "sendToEcho", "scheduledToEcho"]:
+            self.report[name] = dict(maxUs=1)
+        self.write()
+
+    def write(self):
+        self.path.write_text(json.dumps(self.data))
+        self.manifest["sha256"] = hashlib.sha256(self.path.read_bytes()).hexdigest()
+
+    def validate(self):
+        controller.validate_timeline(self.manifest, self.proof, self.directory, self.report)
+
+    def test_complete_staggered_samples_and_clock_bounds_pass(self):
+        self.validate()
+
+    def test_changed_file_hash_and_foreign_phase_or_path_fail(self):
+        self.path.write_text("changed")
+        with self.assertRaises(ValueError): self.validate()
+        self.write()
+        for field, value in [("phaseId", str(uuid.uuid4())), ("path", str(self.directory.parent / self.path.name)), ("samples", 1)]:
+            original = self.manifest[field]
+            self.manifest[field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError): self.validate()
+            self.manifest[field] = original
+
+    def test_clock_sample_or_release_corruption_fails_even_with_valid_hash(self):
+        original = copy.deepcopy(self.data)
+        for field, value in [("frequency", True), ("anchorAfter", 1), ("lastEcho", 9000000),
+                             ("releases", [3000000, 2999999, 7000000]), ("samples", [[0, 0, 1, 50], [1, 1, 20, 50]]),
+                             ("samples", [[0, 0, 20, 50]]), ("samples", [[0, 1, 20, 50], [1, 1, 20, 50]])]:
+            self.data = copy.deepcopy(original); self.data[field] = value; self.write()
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError): self.validate()
+
+    def test_timeline_must_agree_with_full_latency_report(self):
+        self.report["sendToEcho"]["maxUs"] = .001
+        with self.assertRaises(ValueError): self.validate()
+        self.report["sendToEcho"]["maxUs"] = 1
+        self.report["releaseLateness"]["p99Us"] = 10
+        with self.assertRaises(ValueError): self.validate()
+
+    def test_command_wires_the_diagnostic_directory_only_for_paced_runs(self):
+        args = SimpleNamespace(dotnet="dotnet", clients=2, window=1, messages=3, pattern="ping-pong", validate_sequence=True, rtt_interval_ms=2)
+        cell = dict(binary="benchmark.dll", flags=["--transport", "dotnetty"], transport="dotnetty")
+        self.assertNotIn("--rtt-timeline", controller.command(args, cell))
+        cmd = controller.command(args, cell, self.directory)
+        self.assertEqual(cmd[cmd.index("--rtt-timeline") + 1], str(self.directory))
+        args.rtt_interval_ms = None
+        with self.assertRaises(ValueError): controller.command(args, cell, self.directory)
 
 
 if __name__ == "__main__":

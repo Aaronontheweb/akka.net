@@ -586,3 +586,23 @@ default-shaped runs comparable to old ones.
 Actors: `BenchmarkActor` + `EchoActor` (ping-pong), `OneWaySenderActor` + `OneWayReceiverActor`
 (one-way), `AllStartedActor` (the `Identify` readiness handshake that confirms every remote actor is
 reachable before timing starts), `DropCounterActor` (queue-overflow visibility).
+
+### Sampled RTT diagnostic timeline
+
+`run --rtt-timeline DIRECTORY` requires `--rtt-interval-ms` and validated paced loopback.
+It writes one new phase-ID JSON file after each phase has finished and its actor systems have
+terminated. The export samples existing dispatch/echo observations at a fixed interval of64,
+staggered by client, and includes actual release ticks, negotiated parameters and a file hash.
+It adds no per-message timestamp, allocation or logging.
+
+The `RemotePingPong-PacedTimeline` EventSource emits one post-phase `ClockAnchor` event.
+Each file records Stopwatch ticks before and after that event, bounding its mapping to trace
+time without assuming a private QPC epoch. Collect the whole diagnostic process so the anchor
+is retained. Classify ambiguous overlap explicitly when aligning RTTs with GC pauses.
+
+`compare_transports.py --rtt-timeline` selects the same mode and validates the phase flags,
+file paths/hashes, staggered samples, clocks and consistency with full release/latency reports.
+Files remain bounded by the existing one-million-RTT limit; raw timeline files are private
+research artifacts. Export and trace work can perturb the next phase even though file output
+is outside timing: compare diagnostic-on/off controls, and use uninstrumented runs for primary
+performance claims. Temporal overlap alone does not establish that GC caused an RTT outlier.

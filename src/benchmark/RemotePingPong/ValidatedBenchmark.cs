@@ -25,7 +25,7 @@ namespace RemotePingPong
         internal static readonly TimeSpan ProgressTimeout = TimeSpan.FromSeconds(10);
 
         internal sealed record Agreement(Guid RunId, int Messages, int Window, int AckEvery, bool OneWay,
-            int PayloadBytes, int Version = 1, int RttIntervalMs = 0);
+            int PayloadBytes, int Version = 1, int RttIntervalMs = 0, bool RttTimeline = false);
         internal sealed record Prepare;
         internal sealed record Ready(Agreement Settings);
         internal sealed record Credit(Guid RunId, int Received);
@@ -87,7 +87,8 @@ namespace RemotePingPong
                     || settings.AckEvery > settings.Window || settings.PayloadBytes < 1 || settings.Version != 1)
                     throw new ArgumentException("Invalid validated benchmark agreement.", nameof(settings));
                 _settings = settings;
-                if (settings.RttIntervalMs is < 0 or > 1000 || (settings.RttIntervalMs > 0 && (settings.OneWay || settings.Messages < 2)))
+                if (settings.RttIntervalMs is < 0 or > 1000 || (settings.RttIntervalMs > 0 && (settings.OneWay || settings.Messages < 2))
+                    || (settings.RttTimeline && settings.RttIntervalMs == 0))
                     throw new ArgumentException("Paced delivery requires ping-pong and a valid interval.", nameof(settings));
             }
 

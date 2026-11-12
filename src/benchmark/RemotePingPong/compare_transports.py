@@ -50,7 +50,10 @@ def arguments():
                         help="Use the ordered real V2 protocol and require final delivery proofs (transports phase only)")
     parser.add_argument("--rtt-interval-ms", type=int,
                         help="Fixed scheduled RTT offers; requires validated transports ping-pong and at most 1000000 samples")
+    parser.add_argument("--rtt-timeline", action="store_true", help="Diagnostic post-phase sampled timeline export beneath the controller output")
     result = parser.parse_args()
+    if result.rtt_timeline and result.rtt_interval_ms is None:
+        parser.error("--rtt-timeline requires --rtt-interval-ms")
     if result.validate_sequence and (result.phase != "transports" or result.messages > 1_000_000):
         parser.error("--validate-sequence requires transports phase and at most 1000000 messages per client")
     if result.rtt_interval_ms is not None and (not result.validate_sequence or result.pattern != "ping-pong"
@@ -132,7 +135,7 @@ def cells(args):
     return groups
 
 
-def command(args, cell):
+def command(args, cell, timeline_directory=None):
     result = [args.dotnet, cell["binary"], "run", *cell["flags"], "--payload", "real", "--serializer", "v2",
               "--clients", str(args.clients), "--window", str(args.window), "--msgs", str(args.messages), "--times", "2"]
     if args.pattern == "oneway":
@@ -149,11 +152,15 @@ def command(args, cell):
                    "--qsize", str(args.queue_budget // cell["lanes"])]
     if cell["transport"] == "quic":
         result += ["--quic-streams", str(cell["streams"])]
+    if timeline_directory is not None:
+        if getattr(args, "rtt_interval_ms", None) is None:
+            raise ValueError("timeline requires paced delivery")
+        result += ["--rtt-timeline", str(timeline_directory)]
     return result
 
 
 def parse_run(output, clients, cell, phase, validate_sequence=False, window=None, messages=None, pattern=None,
-              rtt_interval_ms=None):
+              rtt_interval_ms=None, timeline_directory=None):
     data = []
     for line in output.splitlines():
         if re.match(rf"^\s*{clients},", line):
@@ -204,6 +211,8 @@ def parse_run(output, clients, cell, phase, validate_sequence=False, window=None
         if rtt_interval_ms is not None:
             expected["rttIntervalMs"] = rtt_interval_ms
         for row, proof in zip(data, proofs):
+            if type(proof.get("rttTimeline", False)) is not bool or proof.get("rttTimeline", False) != (timeline_directory is not None):
+                raise ValueError("timeline phase agreement differs from controller")
             if not isinstance(proof.get("phaseId"), str):
                 raise ValueError("validation phase identifier missing")
             uuid.UUID(proof["phaseId"])
@@ -222,6 +231,15 @@ def parse_run(output, clients, cell, phase, validate_sequence=False, window=None
         for row, report in zip(data, reports):
             validate_rtt(report, row["validation"], clients, messages, rtt_interval_ms)
             row["rtt"] = report
+    timelines = [json.loads(line.removeprefix("RTT-TIMELINE ")) for line in output.splitlines() if line.startswith("RTT-TIMELINE ")]
+    if timeline_directory is None and timelines:
+        raise ValueError("unexpected diagnostic timeline")
+    if timeline_directory is not None:
+        if rtt_interval_ms is None or len(timelines) != 2:
+            raise ValueError("two paced timeline exports required")
+        for row, manifest in zip(data, timelines):
+            validate_timeline(manifest, row["validation"], timeline_directory, row["rtt"])
+            row["timeline"] = manifest
     if phase == "transports" and cell["transport"] != "dotnetty":
         for direction in ["send", "reply"]:
             matches = re.findall(rf"Recipient lane occupancy \({direction}\):\s+([0-9,]+)", output)
@@ -306,6 +324,72 @@ def summary(output, records):
                                  statistics.median(report["releaseLateness"]["p99Us"] for report in reports)])
 
 
+def validate_timeline(manifest, proof, directory, report):
+    if not isinstance(manifest, dict) or manifest.get("phaseId") != proof["phaseId"]:
+        raise ValueError("timeline phase differs")
+    if not isinstance(manifest.get("path"), str):
+        raise ValueError("timeline path missing")
+    path = Path(manifest["path"]).resolve()
+    if path.parent != Path(directory).resolve() or path.name != proof["phaseId"] + ".json":
+        raise ValueError("timeline path differs from controller")
+    try:
+        if path.stat().st_size > 32 * 1024 * 1024:
+            raise ValueError("timeline exceeds bounded export size")
+        raw = path.read_bytes()
+    except OSError as error:
+        raise ValueError("timeline artifact unavailable") from error
+    if manifest.get("sha256") != hashlib.sha256(raw).hexdigest():
+        raise ValueError("timeline hash differs")
+    document = json.loads(raw)
+    if not isinstance(document, dict):
+        raise ValueError("timeline document must be an object")
+    expected = dict(formatVersion=1, phaseId=proof["phaseId"], clients=proof["clients"],
+                    messagesPerClient=proof["messagesPerClient"], window=proof["window"],
+                    intervalMs=proof["rttIntervalMs"], samplingInterval=64)
+    if any(type(document.get(k)) is not type(v) or document.get(k) != v for k, v in expected.items()):
+        raise ValueError("timeline parameters differ")
+    for field in ["frequency", "origin", "lastEcho", "anchorBefore", "anchorAfter"]:
+        if type(document.get(field)) is not int or document[field] <= 0:
+            raise ValueError("invalid timeline clock")
+    if document["anchorAfter"] < document["anchorBefore"] or document["lastEcho"] > document["anchorBefore"]:
+        raise ValueError("invalid timeline clock ordering")
+    frequency = document["frequency"]
+    if frequency % 1000:
+        raise ValueError("unsupported fractional interval ticks")
+    step = frequency // 1000 * expected["intervalMs"]
+    releases = document.get("releases")
+    if not isinstance(releases, list) or len(releases) != expected["messagesPerClient"]:
+        raise ValueError("timeline releases incomplete")
+    for i, tick in enumerate(releases):
+        if type(tick) is not int or tick < document["origin"] + step * (i + 1) or (i and tick < releases[i - 1]):
+            raise ValueError("invalid timeline release")
+    lateness = sorted((tick - document["origin"] - step * (i + 1)) * 1e6 / frequency for i, tick in enumerate(releases))
+    for quantile, fraction in [("p50Us", .50), ("p95Us", .95), ("p99Us", .99), ("maxUs", 1)]:
+        if abs(lateness[math.ceil(fraction * len(lateness)) - 1] - report["releaseLateness"][quantile]) > 1e-6:
+            raise ValueError("timeline release quantiles differ from full report")
+    if releases[-1] <= releases[0]:
+        raise ValueError("timeline release span is empty")
+    actual_rate = proof["clients"] * (len(releases) - 1) * frequency / (releases[-1] - releases[0])
+    if abs(actual_rate - report["actualReleaseRttsPerSecond"]) > 1e-6:
+        raise ValueError("timeline release rate differs from full report")
+    keys = [(c, i) for c in range(expected["clients"]) for i in range(c % 64, expected["messagesPerClient"], 64)]
+    samples = document.get("samples")
+    if not isinstance(samples, list) or len(samples) != len(keys):
+        raise ValueError("timeline samples incomplete")
+    for row, (client, index) in zip(samples, keys):
+        if not isinstance(row, list) or len(row) != 4 or any(type(v) is not int for v in row) or row[:2] != [client, index]:
+            raise ValueError("timeline sample identity differs")
+        due = document["origin"] + step * (index + 1)
+        if row[2] < releases[index] - due or row[3] <= 0 or row[3] < row[2] or due + row[3] > document["lastEcho"]:
+            raise ValueError("invalid timeline RTT")
+        for group, ticks in [("dispatchDelay", row[2]), ("sendToEcho", row[3] - row[2]), ("scheduledToEcho", row[3])]:
+            if ticks * 1e6 / frequency > report[group]["maxUs"] + 1e-6:
+                raise ValueError("timeline sample exceeds full distribution")
+    for field, value in dict(formatVersion=1, samples=len(keys), totalSamples=proof["clients"] * proof["messagesPerClient"], samplingInterval=64).items():
+        if type(manifest.get(field)) is not int or manifest[field] != value:
+            raise ValueError("timeline manifest arithmetic differs")
+
+
 def matched_offer_rates(rates):
     return bool(rates) and min(rates) > 0 and all(math.isfinite(value) for value in rates) and max(rates) / min(rates) <= 1.03
 
@@ -341,7 +425,8 @@ def main():
             offset = (repetition + group_index) % len(group)
             for cell in group[offset:] + group[:offset]:
                 log_name = f"r{repetition + 1}-{cell['name']}.log"
-                cmd = command(args, cell)
+                timeline = args.output / (log_name + "-timeline") if args.rtt_timeline else None
+                cmd = command(args, cell, timeline)
                 record = dict(cell=cell["name"], revision=cell["revision"], repetition=repetition + 1,
                               transport=cell["transport"], lanes=cell["lanes"], ordinary_streams=cell["streams"],
                               inbound_lanes_per_stream=(cell["lanes"] // cell["streams"]
@@ -355,7 +440,7 @@ def main():
                         raise ValueError(f"process exited {process.returncode}")
                     warmup, measured = parse_run(process.stdout, args.clients, cell, args.phase,
                                                 args.validate_sequence, args.window, args.messages, args.pattern,
-                                                args.rtt_interval_ms)
+                                                args.rtt_interval_ms, timeline)
                     expected = args.clients * args.messages * (1 if args.pattern == "oneway" else 2)
                     if measured["messages"] != expected:
                         raise ValueError("completion count differs from workload")
