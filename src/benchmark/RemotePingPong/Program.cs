@@ -60,6 +60,7 @@ namespace RemotePingPong
         private static bool _diagnostics;
         private static bool _validateSequence;
         private static int? _rttIntervalMs;
+        private static string? _rttTimelineDirectory;
         private static RealPayload.V2.RealBenchmarkMessage[]? _validatedPayloads;
         private static long _sequenceDatasetAllocatedBytes;
         private static readonly HashSet<ActorSystem> ActorSystems = new();
@@ -640,6 +641,11 @@ namespace RemotePingPong
                               "explicit clients/messages and at most 1000000 total round trips."
             };
 
+            var rttTimelineOption = new Option<string?>("--rtt-timeline")
+            {
+                Description = "Diagnostic only: write sampled existing RTT timestamps and a bounded trace-clock anchor after each phase. Requires --rtt-interval-ms."
+            };
+
             var windowOption = new Option<int>("--window")
             {
                 Description = "In-flight priming window size per client (i.e. how many messages are sent before " +
@@ -806,6 +812,13 @@ namespace RemotePingPong
             runCommand.Options.Add(serializerOption);
             runCommand.Options.Add(validateSequenceOption);
             runCommand.Options.Add(rttIntervalOption);
+            runCommand.Options.Add(rttTimelineOption);
+            runCommand.Validators.Add(result =>
+            {
+                var timeline = result.GetValue(rttTimelineOption);
+                if (timeline is not null && (string.IsNullOrWhiteSpace(timeline) || !result.GetValue(rttIntervalOption).HasValue))
+                    result.AddError("--rtt-timeline requires a directory and --rtt-interval-ms.");
+            });
             runCommand.Validators.Add(result =>
             {
                 var interval = result.GetValue(rttIntervalOption);
@@ -848,7 +861,7 @@ namespace RemotePingPong
                 parseResult.GetValue(timesOption),
                 parseResult.GetValue(payloadOption)!,
                 parseResult.GetValue(serializerOption), parseResult.GetValue(validateSequenceOption),
-                parseResult.GetValue(rttIntervalOption), cancellationToken));
+                parseResult.GetValue(rttIntervalOption), parseResult.GetValue(rttTimelineOption), cancellationToken));
 
             var serverHostOption = new Option<string>("--host")
             {
@@ -976,10 +989,11 @@ namespace RemotePingPong
         private static async Task<int> RunLoopbackAsync(bool artery, bool oneway, int window, int? clients,
             string? iobuf, long? msgs, int? qsize, int? inboundLanes, int? outboundLanes, uint times,
             string payload, string? serializer, bool validateSequence = false, int? rttIntervalMs = null,
-            CancellationToken cancellationToken = default)
+            string? rttTimelineDirectory = null, CancellationToken cancellationToken = default)
         {
             _validateSequence = validateSequence;
             _rttIntervalMs = rttIntervalMs;
+            _rttTimelineDirectory = rttTimelineDirectory;
             _useArtery = artery;
             _onewayMode = oneway;
             _windowSize = window;
@@ -1440,7 +1454,7 @@ namespace RemotePingPong
                 if (serialization.FindSerializerFor(payloads[^1]).ToBinary(payloads[^1]).Length != _realPayloadWireBytes)
                     throw new InvalidOperationException("Sequence payload encoding width changed within the prepared dataset.");
                 var settings = new ValidatedBenchmark.Agreement(validationPhase, checked((int)numberOfRepeats),
-                    windowSize, Math.Max(1, windowSize / 2), _onewayMode, _realPayloadWireBytes, RttIntervalMs: _rttIntervalMs ?? 0);
+                    windowSize, Math.Max(1, windowSize / 2), _onewayMode, _realPayloadWireBytes, RttIntervalMs: _rttIntervalMs ?? 0, RttTimeline: _rttTimelineDirectory is not null);
                 for (var i = 0; i < numberOfClients; i++)
                 {
                     var completion = new ValidatedBenchmark.Outcome(_rttIntervalMs.HasValue ? settings.Messages : 0);
@@ -1696,11 +1710,16 @@ namespace RemotePingPong
                     datasetAllocatedBytes = _sequenceDatasetAllocatedBytes,
                     orderedPayloadsAndContent = true,
                     retries = 0,
-                    rttIntervalMs = _rttIntervalMs ?? 0
+                    rttIntervalMs = _rttIntervalMs ?? 0,
+                    rttTimeline = _rttTimelineDirectory is not null
                 }));
                 if (releases is not null)
                     Console.WriteLine("RTT " + System.Text.Json.JsonSerializer.Serialize(
                         PacedBenchmark.Summarize(validationPhase, validatedOutcomes, releases),
+                        new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase }));
+                if (releases is not null && _rttTimelineDirectory is not null)
+                    Console.WriteLine("RTT-TIMELINE " + System.Text.Json.JsonSerializer.Serialize(
+                        PacedTimeline.Write(_rttTimelineDirectory, validationPhase, windowSize, validatedOutcomes, releases, cancellationToken),
                         new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase }));
             }
 

@@ -82,14 +82,16 @@ namespace RemotePingPong.Tests
         [Theory(DisplayName = "Receiver rejects foreign phase, parameter mismatch, early fence and post-fence data")]
         [InlineData("phase")]
         [InlineData("parameters")]
+        [InlineData("timeline")]
         [InlineData("early-fence")]
         [InlineData("after-fence")]
         public async Task Should_RejectPhase_When_AgreementOrFenceIsInvalid(string fault)
         {
             var settings = Settings(1);
             var receiver = Sys.ActorOf(Props.Create(() => new Receiver(settings)));
-            receiver.Tell(fault == "parameters" ? settings with { Window = 3 } : settings, TestActor);
-            if (fault == "parameters")
+            receiver.Tell(fault == "timeline" ? settings with { RttTimeline = true }
+                : fault == "parameters" ? settings with { Window = 3 } : settings, TestActor);
+            if (fault is "parameters" or "timeline")
             {
                 await ExpectMsgAsync<Failed>();
                 return;
