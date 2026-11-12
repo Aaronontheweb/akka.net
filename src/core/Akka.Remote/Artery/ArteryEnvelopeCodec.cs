@@ -10,6 +10,7 @@
 using System;
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace Akka.Remote.Artery
@@ -533,14 +534,17 @@ namespace Akka.Remote.Artery
             if (length == 0)
                 return string.Empty;
 
-            // PERF: netstandard2.0 has no Encoding.GetString(ReadOnlySpan<byte>) overload (added in
-            // netstandard2.1), so literal resolution always allocates an intermediate byte[] via
-            // ArrayPool. Acceptable at G1 -- literals are the cold path; ref/manifest compression
-            // (deferred) replaces them with O(1) index lookups on the hot path.
+            var literal = _frameBody.Slice(dataStart, length);
+            // Decode array-backed literals without another copy. The resulting string owns its
+            // storage; this neither exposes nor changes ownership of the received bytes.
+            if (literal.IsSingleSegment && MemoryMarshal.TryGetArray(literal.First, out var array))
+                return Encoding.UTF8.GetString(array.Array!, array.Offset, array.Count);
+
+            // Retain the netstandard2.0-compatible copy for segmented or non-array memory.
             var rented = ArrayPool<byte>.Shared.Rent(length);
             try
             {
-                _frameBody.Slice(dataStart, length).CopyTo(rented);
+                literal.CopyTo(rented);
                 return Encoding.UTF8.GetString(rented, 0, length);
             }
             finally

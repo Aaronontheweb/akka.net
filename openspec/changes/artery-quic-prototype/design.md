@@ -545,3 +545,18 @@ unchanged, but their absent receipts cause bounded incomplete-progress shutdown.
 ends to exercise confirmation. This is a prototype implementation with focused checks; simultaneous
 termination, reset/late-completion stress, native resource/credential lifetime after an expired
 deadline, and the broader qualification gates remain required before production qualification.
+
+### Contiguous literal decoding experiment
+
+The shared inbound envelope decoder can avoid a scratch rental and copy when a validated literal
+already occupies one array-backed segment. Decode directly from that array's offset and count;
+the returned string still owns independent storage. Keep the pooled scratch fallback for segmented
+or non-array memory, all header and payload-boundary checks, and the existing UTF-8 replacement
+behavior. Published receive storage remains unpooled and stable. This changes neither framing nor
+actor-reference compression.
+
+Compare both QUIC and encrypted TCP with contemporary controls because both use this decoder.
+Keep diagnostics separate from primary timing. Promotion requires matched throughput, CPU,
+allocation and paced-latency evidence, plus native ownership/ordering and single-stream checks.
+A null result leaves the experiment outside the transport proposal; it does not justify changing
+receive ownership or weakening validation.

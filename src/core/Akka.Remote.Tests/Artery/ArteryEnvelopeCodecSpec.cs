@@ -11,6 +11,7 @@ using System;
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 using Akka.Actor;
 using Akka.Remote.Artery;
@@ -161,6 +162,63 @@ namespace Akka.Remote.Tests.Artery
         }
 
         // ===================== decode from a multi-segment ReadOnlySequence<byte> =====================
+
+        [Theory(DisplayName = "Should_preserve_literal_decoding_and_storage_independence_When_receive_storage_varies")]
+        [InlineData("array", false)]
+        [InlineData("segmented", false)]
+        [InlineData("memory-manager", false)]
+        [InlineData("array", true)]
+        [InlineData("segmented", true)]
+        [InlineData("memory-manager", true)]
+        public void Should_PreserveLiteralDecodingAndStorageIndependence_When_ReceiveStorageVaries(string storage, bool malformedUtf8)
+        {
+            const string unicode = "α送🙂";
+            const string recipient = "/user/名前";
+            const string manifest = "Manifest-Ω";
+            var expected = malformedUtf8 ? "\uFFFD(\uFFFD(" : unicode;
+            var (frame, _) = EncodeToFrame(42L, 3, malformedUtf8 ? "abcd" : unicode,
+                recipient, manifest, new byte[] { 1, 2, 3 });
+            if (malformedUtf8)
+                new byte[] { 0xF0, 0x28, 0x8C, 0x28 }.CopyTo(frame, FrameLengthFieldLength + HeaderLength + 2);
+
+            // Ensure array-backed literals have a nonzero array offset as well as a frame offset.
+            var backing = new byte[frame.Length + 27];
+            frame.CopyTo(backing, 11);
+            using var manager = new HiddenArrayMemory(backing);
+            var body = backing.AsMemory(11 + FrameLengthFieldLength, frame.Length - FrameLengthFieldLength);
+            var segmentedBytes = body.ToArray();
+            var sequence = storage switch
+            {
+                "array" => new ReadOnlySequence<byte>(body),
+                // Split inside the first UTF-8 literal, including a multibyte code point.
+                "segmented" => TwoSegment(segmentedBytes, HeaderLength + 2 + 1),
+                "memory-manager" => new ReadOnlySequence<byte>(manager.Memory.Slice(11 + FrameLengthFieldLength, body.Length)),
+                _ => throw new ArgumentOutOfRangeException(nameof(storage))
+            };
+            if (storage == "memory-manager")
+                Assert.False(MemoryMarshal.TryGetArray(sequence.First, out _));
+
+            var decoded = ArteryEnvelopeCodec.Decode(sequence);
+            Assert.True(decoded.TryGetSenderPath(out var sender));
+            Assert.True(decoded.TryGetRecipientPath(out var decodedRecipient));
+            Assert.True(decoded.TryGetManifest(out var decodedManifest));
+            Array.Fill(backing, (byte)0xEE);
+            Array.Fill(segmentedBytes, (byte)0xEE);
+            manager.Invalidate();
+            Assert.Equal(expected, sender);
+            Assert.Equal(recipient, decodedRecipient);
+            Assert.Equal(manifest, decodedManifest);
+        }
+
+        private sealed class HiddenArrayMemory(byte[] bytes) : MemoryManager<byte>
+        {
+            private byte[]? _bytes = bytes;
+            public override Span<byte> GetSpan() => _bytes ?? throw new ObjectDisposedException(nameof(HiddenArrayMemory));
+            public override MemoryHandle Pin(int elementIndex = 0) => throw new NotSupportedException();
+            public override void Unpin() { }
+            public void Invalidate() => _bytes = null;
+            protected override void Dispose(bool disposing) => Invalidate();
+        }
 
         [Fact(DisplayName = "Should_decode_correctly_When_the_fixed_header_is_split_across_segments")]
         public void Should_decode_correctly_When_the_fixed_header_is_split_across_segments()
