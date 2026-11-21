@@ -34,8 +34,11 @@ namespace Akka.Remote.Artery
         /// <summary>Length, in bytes, of the fixed envelope header (offsets 0..32).</summary>
         public const int HeaderLength = 32;
 
-        /// <summary>The only version this codec understands; the decoder rejects any other value.</summary>
-        public const byte CurrentVersion = 1;
+        /// <summary>
+        /// The only version this codec understands; the decoder rejects any other value. Version 2
+        /// adds the TEMP tag kind (<see cref="TempTagKind"/>); the fixed header is otherwise unchanged.
+        /// </summary>
+        public const byte CurrentVersion = 2;
 
         /// <summary>Flags bit 0: a metadata section is present immediately after the fixed header.</summary>
         public const byte MetadataPresentFlag = 0b0000_0001;
@@ -46,8 +49,38 @@ namespace Akka.Remote.Artery
         /// <summary>Tag value meaning ABSENT: no sender / no recipient / empty manifest.</summary>
         public const uint AbsentTag = 0x0000_0000u;
 
-        /// <summary>Top-byte mask; a non-zero top byte marks a COMPRESSED tag.</summary>
+        /// <summary>
+        /// Top-byte mask; the top byte is the tag KIND: 0x00 ABSENT / LITERAL, <see cref="TempTagKindByte"/>
+        /// TEMP, any other non-zero value COMPRESSED (reserved).
+        /// </summary>
         public const uint CompressedTagMask = 0xFF00_0000u;
+
+        /// <summary>Top-byte value (0x01) of a TEMP tag.</summary>
+        public const uint TempTagKindByte = 0x01u;
+
+        /// <summary>
+        /// A TEMP tag's top byte, already shifted into place. A TEMP tag is <c>TempTagKind | offset</c>,
+        /// where the low 24 bits (<see cref="TempTagOffsetMask"/>) are the absolute byte offset of a
+        /// fixed-size tail record -- <see cref="TempSenderRecordLength"/> bytes in the sender position,
+        /// <see cref="TempRecipientRecordLength"/> bytes in the recipient position -- laid out among the
+        /// literals, before the payload offset. A TEMP tag is never valid in the manifest position.
+        /// </summary>
+        public const uint TempTagKind = TempTagKindByte << 24;
+
+        /// <summary>Low 24 bits of a TEMP tag: the tail record's absolute byte offset.</summary>
+        public const uint TempTagOffsetMask = 0x00FF_FFFFu;
+
+        /// <summary>
+        /// Length of the TEMP record in the SENDER position: <c>i64 LE tempId</c>. The owning system is
+        /// implicitly the frame's origin (<see cref="OriginUidOffset"/>).
+        /// </summary>
+        public const int TempSenderRecordLength = 8;
+
+        /// <summary>
+        /// Length of the TEMP record in the RECIPIENT position: <c>i64 LE ownerUid</c> then
+        /// <c>i64 LE tempId</c>.
+        /// </summary>
+        public const int TempRecipientRecordLength = 16;
 
         /// <summary>Low 16 bits of a COMPRESSED tag hold the compression-table index.</summary>
         public const uint CompressedIndexMask = 0x0000_FFFFu;
@@ -123,7 +156,7 @@ namespace Akka.Remote.Artery
             PayloadOffset = payloadOffset;
         }
 
-        /// <summary>Envelope wire-layout version. Always 1 in a successfully decoded header.</summary>
+        /// <summary>Envelope wire-layout version. Always <see cref="ArteryEnvelopeHeader.CurrentVersion"/> in a successfully decoded header.</summary>
         public byte Version { get; }
 
         /// <summary>Envelope flags byte. Bit 0 = metadata section present; bits 1-7 are reserved-must-be-zero.</summary>

@@ -163,6 +163,33 @@ namespace Akka.Remote.Artery
             string? senderPath,
             string? recipientPath,
             object message,
+            ArrayPool<byte>? pool = null) =>
+            Encode(serialization, originUid, senderPath, NoTempId, recipientPath, 0L, NoTempId, message, pool);
+
+        /// <summary>
+        /// Sentinel for "this field is not a TEMP ref" in the temp-id parameters of
+        /// <see cref="Encode(Akka.Serialization.Serialization,long,string?,long,string?,long,long,object,ArrayPool{byte}?)"/>.
+        /// Valid temp ids are non-negative.
+        /// </summary>
+        public const long NoTempId = -1L;
+
+        /// <summary>
+        /// As the literal-only single-pass encode, but either ref field may instead be a TEMP ref. When
+        /// <paramref name="senderTempId"/> is non-negative the sender is written as a TEMP record of
+        /// that id (owned by <paramref name="originUid"/>, implicitly) and <paramref name="senderPath"/>
+        /// is ignored; when <paramref name="recipientTempId"/> is non-negative the recipient is written as
+        /// a TEMP record of (<paramref name="recipientTempOwnerUid"/>, <paramref name="recipientTempId"/>)
+        /// and <paramref name="recipientPath"/> is ignored.
+        /// </summary>
+        public static Akka.Serialization.PooledPayloadWriter Encode(
+            Akka.Serialization.Serialization serialization,
+            long originUid,
+            string? senderPath,
+            long senderTempId,
+            string? recipientPath,
+            long recipientTempOwnerUid,
+            long recipientTempId,
+            object message,
             ArrayPool<byte>? pool = null)
         {
             if (serialization is null)
@@ -171,14 +198,16 @@ namespace Akka.Remote.Artery
                 throw new ArgumentNullException(nameof(message));
 
             return Akka.Serialization.Serialization.WithTransport(serialization.System,
-                (serialization, originUid, senderPath, recipientPath, message, pool), static state =>
+                (serialization, originUid, senderPath, senderTempId, recipientPath, recipientTempOwnerUid, recipientTempId, message, pool), static state =>
             {
                 var serializer = state.serialization.FindSerializerV2For(state.message);
                 var manifest = Akka.Serialization.Serialization.ManifestFor(serializer, state.message) ?? string.Empty;
 
                 const int reservedPrefixLength = ArteryEnvelopeHeader.FrameLengthFieldLength + ArteryEnvelopeHeader.HeaderLength;
                 var capacityHint = reservedPrefixLength
-                    + LiteralWireSize(state.senderPath) + LiteralWireSize(state.recipientPath) + LiteralWireSize(manifest);
+                    + (state.senderTempId >= 0 ? ArteryEnvelopeHeader.TempSenderRecordLength : LiteralWireSize(state.senderPath))
+                    + (state.recipientTempId >= 0 ? ArteryEnvelopeHeader.TempRecipientRecordLength : LiteralWireSize(state.recipientPath))
+                    + LiteralWireSize(manifest);
 
                 // Fold in the serializer's own size hint (a hint only -- the frame length is still
                 // back-patched from actual bytes written below, never predicted) so the pooled
@@ -195,8 +224,12 @@ namespace Akka.Remote.Artery
                     writer.GetSpan(reservedPrefixLength);
                     writer.Advance(reservedPrefixLength);
 
-                    var senderTag = WriteLiteral(writer, state.senderPath);
-                    var recipientTag = WriteLiteral(writer, state.recipientPath);
+                    var senderTag = state.senderTempId >= 0
+                        ? WriteTempSender(writer, state.senderTempId)
+                        : WriteLiteral(writer, state.senderPath);
+                    var recipientTag = state.recipientTempId >= 0
+                        ? WriteTempRecipient(writer, state.recipientTempOwnerUid, state.recipientTempId)
+                        : WriteLiteral(writer, state.recipientPath);
                     var manifestTag = WriteLiteral(writer, manifest);
 
                     var payloadOffset = writer.WrittenCount - ArteryEnvelopeHeader.FrameLengthFieldLength;
@@ -373,6 +406,35 @@ namespace Akka.Remote.Artery
             return (uint)tagOffset;
         }
 
+        /// <summary>Writes a TEMP tail record for the SENDER position (<c>i64 tempId</c>) and returns its TEMP tag.</summary>
+        private static uint WriteTempSender(Akka.Serialization.PooledPayloadWriter writer, long tempId)
+        {
+            var tagOffset = ValidatedTempTagOffset(writer);
+            var span = writer.GetSpan(ArteryEnvelopeHeader.TempSenderRecordLength);
+            BinaryPrimitives.WriteInt64LittleEndian(span, tempId);
+            writer.Advance(ArteryEnvelopeHeader.TempSenderRecordLength);
+            return ArteryEnvelopeHeader.TempTagKind | tagOffset;
+        }
+
+        /// <summary>Writes a TEMP tail record for the RECIPIENT position (<c>i64 ownerUid, i64 tempId</c>) and returns its TEMP tag.</summary>
+        private static uint WriteTempRecipient(Akka.Serialization.PooledPayloadWriter writer, long ownerUid, long tempId)
+        {
+            var tagOffset = ValidatedTempTagOffset(writer);
+            var span = writer.GetSpan(ArteryEnvelopeHeader.TempRecipientRecordLength);
+            BinaryPrimitives.WriteInt64LittleEndian(span, ownerUid);
+            BinaryPrimitives.WriteInt64LittleEndian(span.Slice(sizeof(long)), tempId);
+            writer.Advance(ArteryEnvelopeHeader.TempRecipientRecordLength);
+            return ArteryEnvelopeHeader.TempTagKind | tagOffset;
+        }
+
+        private static uint ValidatedTempTagOffset(Akka.Serialization.PooledPayloadWriter writer)
+        {
+            var tagOffset = writer.WrittenCount - ArteryEnvelopeHeader.FrameLengthFieldLength;
+            if (tagOffset >= ArteryEnvelopeHeader.LiteralOffsetExclusiveMax)
+                throw new ArteryEnvelopeException($"TEMP record offset {tagOffset} does not fit the 24-bit tag offset space.");
+            return (uint)tagOffset;
+        }
+
         private static int ValidatedUtf8ByteCount(string value)
         {
             var byteCount = Encoding.UTF8.GetByteCount(value);
@@ -391,8 +453,8 @@ namespace Akka.Remote.Artery
     /// INTERNAL API.
     ///
     /// The classification of an Artery tag (sender / recipient / manifest), per design.md's CLOSED
-    /// tag scheme: tag <c>0x00000000</c> is ABSENT; a non-zero top byte is COMPRESSED; anything else
-    /// is a LITERAL absolute byte offset.
+    /// tag scheme: tag <c>0x00000000</c> is ABSENT; top byte <c>0x01</c> is TEMP; any other non-zero
+    /// top byte is COMPRESSED; anything else is a LITERAL absolute byte offset.
     /// </summary>
     internal enum ArteryTagKind : byte
     {
@@ -406,7 +468,14 @@ namespace Akka.Remote.Artery
         /// The tag is a compression-table index (low 16 bits). Resolving a COMPRESSED index to an
         /// actor ref / manifest string is future work (ref/manifest compression, deferred post-MVP).
         /// </summary>
-        Compressed = 2
+        Compressed = 2,
+
+        /// <summary>
+        /// The ref is a temporary Ask ref written as a numeric record: the tag's low 24 bits are the
+        /// absolute byte offset of the tail record (sender: <c>i64 tempId</c>, owned by the frame's
+        /// origin; recipient: <c>i64 ownerUid, i64 tempId</c>). Only valid in the sender and recipient positions.
+        /// </summary>
+        Temp = 3
     }
 
     /// <summary>
@@ -488,7 +557,69 @@ namespace Akka.Remote.Artery
             if (tag == ArteryEnvelopeHeader.AbsentTag)
                 return ArteryTagKind.Absent;
 
-            return (tag & ArteryEnvelopeHeader.CompressedTagMask) != 0 ? ArteryTagKind.Compressed : ArteryTagKind.Literal;
+            var kindByte = (tag & ArteryEnvelopeHeader.CompressedTagMask) >> 24;
+            if (kindByte == 0)
+                return ArteryTagKind.Literal;
+
+            return kindByte == ArteryEnvelopeHeader.TempTagKindByte ? ArteryTagKind.Temp : ArteryTagKind.Compressed;
+        }
+
+        /// <summary>
+        /// Reads the sender's temp id when <see cref="SenderKind"/> is <see cref="ArteryTagKind.Temp"/>; the
+        /// owning system is the frame's origin (<see cref="ArteryEnvelopeFixedHeader.OriginUid"/>).
+        /// Returns <see langword="false"/> for any other kind.
+        /// </summary>
+        /// <exception cref="ArteryEnvelopeException">The tail record lies outside the literal region.</exception>
+        public bool TryGetSenderTempId(out long tempId)
+        {
+            tempId = -1;
+            if (SenderKind != ArteryTagKind.Temp)
+                return false;
+
+            Span<byte> buf = stackalloc byte[ArteryEnvelopeHeader.TempSenderRecordLength];
+            ReadTempRecord(Header.SenderTag, buf);
+            tempId = BinaryPrimitives.ReadInt64LittleEndian(buf);
+            ThrowIfInvalidTempId(tempId);
+            return true;
+        }
+
+        /// <summary>
+        /// Reads the recipient's (owner uid, temp id) when <see cref="RecipientKind"/> is
+        /// <see cref="ArteryTagKind.Temp"/>. Returns <see langword="false"/> for any other kind.
+        /// </summary>
+        /// <exception cref="ArteryEnvelopeException">The tail record lies outside the literal region.</exception>
+        public bool TryGetRecipientTemp(out long ownerUid, out long tempId)
+        {
+            ownerUid = 0;
+            tempId = -1;
+            if (RecipientKind != ArteryTagKind.Temp)
+                return false;
+
+            Span<byte> buf = stackalloc byte[ArteryEnvelopeHeader.TempRecipientRecordLength];
+            ReadTempRecord(Header.RecipientTag, buf);
+            ownerUid = BinaryPrimitives.ReadInt64LittleEndian(buf);
+            tempId = BinaryPrimitives.ReadInt64LittleEndian(buf.Slice(sizeof(long)));
+            ThrowIfInvalidTempId(tempId);
+            return true;
+        }
+
+        private static void ThrowIfInvalidTempId(long tempId)
+        {
+            if (tempId < 0)
+                throw new ArteryEnvelopeException($"TEMP record carries a negative temp id ({tempId}).");
+        }
+
+        private void ReadTempRecord(uint tag, Span<byte> destination)
+        {
+            var offset = (long)(tag & ArteryEnvelopeHeader.TempTagOffsetMask);
+            if (offset < ArteryEnvelopeHeader.HeaderLength)
+                throw new ArteryEnvelopeException(
+                    $"TEMP tag offset {offset} is inside the fixed header (must be >= {ArteryEnvelopeHeader.HeaderLength}).");
+            if (offset + destination.Length > Header.PayloadOffset)
+                throw new ArteryEnvelopeException(
+                    $"TEMP record at offset {offset} (length {destination.Length}) extends past the payload offset ({Header.PayloadOffset}).");
+
+            _frameBody.Slice(offset, destination.Length).CopyTo(destination);
         }
 
         private static int DecodeCompressedIndex(uint tag) => (int)(tag & ArteryEnvelopeHeader.CompressedIndexMask);
@@ -501,6 +632,8 @@ namespace Akka.Remote.Artery
                     value = null;
                     return true;
                 case ArteryTagKind.Compressed:
+                case ArteryTagKind.Temp:
+                    // Not a string: COMPRESSED is unsupported, TEMP is read through TryGet*Temp*.
                     value = null;
                     return false;
                 default:
