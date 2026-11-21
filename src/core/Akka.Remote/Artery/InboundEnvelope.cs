@@ -53,6 +53,21 @@ namespace Akka.Remote.Artery
         /// </summary>
         string? RecipientPath { get; }
 
+        /// <summary>
+        /// A non-negative temp id when the sender was a numeric TEMP record (a temp ref owned by
+        /// <see cref="OriginUid"/>); <see cref="SenderPath"/> is then <see langword="null"/>. -1 otherwise.
+        /// </summary>
+        long SenderTempId { get; }
+
+        /// <summary>The owner UID of a numeric TEMP recipient. Meaningful only when <see cref="RecipientTempId"/> is non-negative.</summary>
+        long RecipientTempOwnerUid { get; }
+
+        /// <summary>
+        /// A non-negative temp id when the recipient was a numeric TEMP record; <see cref="RecipientPath"/>
+        /// is then <see langword="null"/> even for an ordinary-stream message. -1 otherwise.
+        /// </summary>
+        long RecipientTempId { get; }
+
         /// <summary>The sending system's UID, decoded from the envelope's fixed header.</summary>
         long OriginUid { get; }
 
@@ -93,9 +108,66 @@ namespace Akka.Remote.Artery
     /// <param name="OriginUid">The sending system's UID.</param>
     /// <param name="SerializerId">The serializer id used to deserialize <see cref="Message"/>.</param>
     /// <param name="Manifest">The manifest string decoded from the envelope's header -- see <see cref="IInboundEnvelope.Manifest"/>.</param>
-    internal sealed record InboundEnvelope(object Message, string? SenderPath, string? RecipientPath, long OriginUid, int SerializerId, string Manifest) : IInboundEnvelope
+    /// <param name="SenderTempId">See <see cref="IInboundEnvelope.SenderTempId"/>.</param>
+    /// <param name="RecipientTempOwnerUid">See <see cref="IInboundEnvelope.RecipientTempOwnerUid"/>.</param>
+    /// <param name="RecipientTempId">See <see cref="IInboundEnvelope.RecipientTempId"/>.</param>
+    internal sealed record InboundEnvelope(
+        object Message,
+        string? SenderPath,
+        string? RecipientPath,
+        long OriginUid,
+        int SerializerId,
+        string Manifest,
+        long SenderTempId = ArteryEnvelopeCodec.NoTempId,
+        long RecipientTempOwnerUid = 0L,
+        long RecipientTempId = ArteryEnvelopeCodec.NoTempId) : IInboundEnvelope
     {
         /// <inheritdoc/>
         public bool IsControl { get; } = Message is IArteryControlMessage;
+    }
+
+    /// <summary>
+    /// INTERNAL API.
+    ///
+    /// The decoded sender and recipient of one inbound ordinary frame, carried from the decoder (or across
+    /// an inbound lane) to <c>ArteryRemoting.DispatchOrdinaryMessage</c>. Each side is either a literal wire
+    /// path or a numeric temp ref; a recipient is always one of the two for an ordinary message.
+    /// </summary>
+    internal readonly struct InboundWireRefs
+    {
+        /// <summary>Initializes a new instance of the <see cref="InboundWireRefs"/> struct.</summary>
+        public InboundWireRefs(
+            string? senderPath, long senderTempId,
+            string? recipientPath, long recipientTempOwnerUid, long recipientTempId,
+            long originUid)
+        {
+            SenderPath = senderPath;
+            SenderTempId = senderTempId;
+            RecipientPath = recipientPath;
+            RecipientTempOwnerUid = recipientTempOwnerUid;
+            RecipientTempId = recipientTempId;
+            OriginUid = originUid;
+        }
+
+        /// <summary>The sender's literal wire path, or <see langword="null"/> (no sender, or a numeric temp sender).</summary>
+        public string? SenderPath { get; }
+
+        /// <summary>A non-negative temp id when the sender is a temp ref owned by <see cref="OriginUid"/>; -1 otherwise.</summary>
+        public long SenderTempId { get; }
+
+        /// <summary>The recipient's literal wire path, or <see langword="null"/> for a numeric temp recipient.</summary>
+        public string? RecipientPath { get; }
+
+        /// <summary>The owner UID of a numeric temp recipient.</summary>
+        public long RecipientTempOwnerUid { get; }
+
+        /// <summary>A non-negative temp id when the recipient is a numeric temp ref; -1 otherwise.</summary>
+        public long RecipientTempId { get; }
+
+        /// <summary>The sending system's UID (the frame's origin).</summary>
+        public long OriginUid { get; }
+
+        /// <summary><see langword="true"/> when the recipient is a numeric temp ref.</summary>
+        public bool HasTempRecipient => RecipientTempId >= 0;
     }
 }

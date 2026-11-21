@@ -48,6 +48,23 @@ namespace Akka.Remote.Artery
         string? RecipientPath { get; }
 
         /// <summary>
+        /// When non-negative, the sender is a temporary Ask ref owned by the sending (origin) system and
+        /// is written as a numeric TEMP record of this id; <see cref="SenderPath"/> is then unused.
+        /// <see cref="ArteryEnvelopeCodec.NoTempId"/> (-1) means the sender is described by <see cref="SenderPath"/>.
+        /// </summary>
+        long SenderTempId { get; }
+
+        /// <summary>The owning system's UID for a numeric TEMP recipient. Meaningful only when <see cref="RecipientTempId"/> is non-negative.</summary>
+        long RecipientTempOwnerUid { get; }
+
+        /// <summary>
+        /// When non-negative, the recipient is a temporary ref of <see cref="RecipientTempOwnerUid"/> and is
+        /// written as a numeric TEMP record; <see cref="RecipientPath"/> is then unused (null).
+        /// <see cref="ArteryEnvelopeCodec.NoTempId"/> (-1) means the recipient is described by <see cref="RecipientPath"/>.
+        /// </summary>
+        long RecipientTempId { get; }
+
+        /// <summary>
         /// Cheap, precomputed (at construction, not re-tested per stage) flag: <see langword="true"/>
         /// when <see cref="Message"/> is an <see cref="IArteryControlMessage"/>. Stages dispatch on
         /// this instead of re-running an <c>is</c> type-test on every element at every stage.
@@ -66,7 +83,16 @@ namespace Akka.Remote.Artery
     /// <param name="Message">The message to serialize as the envelope's payload.</param>
     /// <param name="SenderPath">The sender's wire-format path, or <see langword="null"/> for no sender.</param>
     /// <param name="RecipientPath">The recipient's wire-format path, or <see langword="null"/> for control messages.</param>
-    internal sealed record OutboundEnvelope(object Message, string? SenderPath, string? RecipientPath) : IOutboundEnvelope
+    /// <param name="SenderTempId">A non-negative temp id when the sender is a temp ref owned by the origin system; see <see cref="IOutboundEnvelope.SenderTempId"/>.</param>
+    /// <param name="RecipientTempOwnerUid">See <see cref="IOutboundEnvelope.RecipientTempOwnerUid"/>.</param>
+    /// <param name="RecipientTempId">A non-negative temp id when the recipient is a numeric temp ref; see <see cref="IOutboundEnvelope.RecipientTempId"/>.</param>
+    internal sealed record OutboundEnvelope(
+        object Message,
+        string? SenderPath,
+        string? RecipientPath,
+        long SenderTempId = ArteryEnvelopeCodec.NoTempId,
+        long RecipientTempOwnerUid = 0L,
+        long RecipientTempId = ArteryEnvelopeCodec.NoTempId) : IOutboundEnvelope
     {
         /// <inheritdoc/>
         public bool IsControl { get; } = Message is IArteryControlMessage;
