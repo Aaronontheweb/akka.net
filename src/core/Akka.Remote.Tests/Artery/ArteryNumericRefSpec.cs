@@ -15,6 +15,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Configuration;
+using Akka.Event;
 using Akka.Remote.Artery;
 using Akka.TestKit;
 using Akka.Util;
