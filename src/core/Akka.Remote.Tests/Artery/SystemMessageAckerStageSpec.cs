@@ -322,7 +322,7 @@ namespace Akka.Remote.Tests.Artery
                     await pub.SendNextAsync(Envelope(Sme(seq, peer, seq.ToString()), peer.Uid));
             })));
 
-            await AwaitAssertAsync(() => delivered.Count.Should().BeGreaterThanOrEqualTo(count), TimeSpan.FromSeconds(10));
+            await AwaitAssertAsync(() => delivered.Count.Should().BeGreaterOrEqualTo(count), TimeSpan.FromSeconds(10));
             await Task.Delay(300);
             delivered.Select(long.Parse).OrderBy(x => x).Should().Equal(Enumerable.Range(1, count).Select(x => (long)x));
         }
