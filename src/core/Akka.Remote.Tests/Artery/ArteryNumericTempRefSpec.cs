@@ -502,6 +502,10 @@ namespace Akka.Remote.Tests.Artery
             }
         }
 
+        private static void Ignore(object _)
+        {
+        }
+
         private sealed class SenderReporter : ReceiveActor
         {
             public SenderReporter(Action<object> report) => ReceiveAny(m => report((m, Sender)));
@@ -515,7 +519,7 @@ namespace Akka.Remote.Tests.Artery
             {
                 var reports = new BlockingCollection<object>();
                 asker.ActorOf(Props.Create(() => new SenderReporter(o => reports.Add(o))), "reporter");
-                var from = responder.ActorOf(Props.Create(() => new SenderReporter(_ => { })), "from");
+                var from = responder.ActorOf(Props.Create(() => new SenderReporter(Ignore)), "from");
 
                 responder.ActorSelection($"{AddressOf(asker)}/user/reporter").Tell("hello", from);
 
