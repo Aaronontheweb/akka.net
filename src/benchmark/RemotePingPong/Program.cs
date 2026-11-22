@@ -74,7 +74,29 @@ namespace RemotePingPong
         {
             var system = ActorSystem.Create(name, _transport.Setup(CreateActorSystemConfig(name, host, port)));
             ActorSystems.Add(system);
+            foreach (var (key, _) in ParseExtraHocon())
+                Console.WriteLine($"EXTRA-HOCON {name}: {key} = {system.Settings.Config.GetString(key, "<unset>")}");
             return system;
+        }
+
+        /// <summary>
+        /// Parses the optional RPP_EXTRA_HOCON environment variable: semicolon-separated
+        /// "full.hocon.key=value" pairs that are applied to every ActorSystem this process creates.
+        /// </summary>
+        private static List<(string Key, string Value)> ParseExtraHocon()
+        {
+            var result = new List<(string, string)>();
+            var raw = Environment.GetEnvironmentVariable("RPP_EXTRA_HOCON");
+            if (string.IsNullOrWhiteSpace(raw))
+                return result;
+            foreach (var pair in raw.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                var idx = pair.IndexOf('=');
+                if (idx <= 0)
+                    throw new ArgumentException($"RPP_EXTRA_HOCON entry '{pair}' is not key=value");
+                result.Add((pair[..idx].Trim(), pair[(idx + 1)..].Trim()));
+            }
+            return result;
         }
 
         // Selected once at startup via the "--oneway" option. Default mode is ping-pong
@@ -361,6 +383,14 @@ namespace RemotePingPong
             var realPayloadConfig = RealPayloadSerializationConfig();
             if (realPayloadConfig != null)
                 config = realPayloadConfig.WithFallback(config);
+
+            var extra = ParseExtraHocon();
+            if (extra.Count > 0)
+            {
+                var extraConfig = ConfigurationFactory.ParseString(
+                    string.Join("\n", extra.Select(e => $"{e.Key} = {e.Value}")));
+                config = extraConfig.WithFallback(config);
+            }
 
             return config;
         }
