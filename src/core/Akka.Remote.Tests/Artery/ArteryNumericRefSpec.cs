@@ -69,6 +69,7 @@ namespace Akka.Remote.Tests.Artery
                     Sender.Tell("pong");
                 });
                 Receive<string>(s => s == "hold", _ => report(Sender));
+                Receive<string>(s => s == "echo", _ => Sender.Tell("pong"));
                 Receive<string>(s => s == "watch-and-reply", _ =>
                 {
                     Context.Watch(Sender);
@@ -420,6 +421,23 @@ namespace Akka.Remote.Tests.Artery
             }
         }
 
+        /// <summary>Repeats a short Ask until one completes: progress-based, no fixed wait.</summary>
+        private static async Task WaitForRoundTrip(ActorSystem asker, ActorSystem responder)
+        {
+            var deadline = DateTime.UtcNow + Timeout;
+            while (true)
+            {
+                try
+                {
+                    (await AskResponder(asker, responder, "echo", TimeSpan.FromSeconds(1))).Should().Be("pong");
+                    return;
+                }
+                catch (AskTimeoutException) when (DateTime.UtcNow < deadline)
+                {
+                }
+            }
+        }
+
         private static async Task<ActorSystem> RestartOnSamePort(int port)
         {
             for (var attempt = 0; ; attempt++)
@@ -453,6 +471,10 @@ namespace Akka.Remote.Tests.Artery
                 restarted = await RestartOnSamePort(port);
                 var deadLetters = CreateTestProbe(restarted);
                 restarted.EventStream.Subscribe(deadLetters, typeof(DeadLetter));
+
+                // Wait until replies to the new incarnation flow (a frame written while the responder still holds
+                // its connection to the old incarnation would be lost), then leave an Ask pending.
+                await WaitForRoundTrip(restarted, responder);
                 var newAsk = AskResponder(restarted, responder, "hold");
                 var newSender = (RemoteTempActorRef)await Next<IActorRef>(reports);
                 newSender.OwnerUid.Should().NotBe(oldSender.OwnerUid);
