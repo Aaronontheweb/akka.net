@@ -1151,29 +1151,31 @@ namespace Akka.Remote.Artery
         /// snapshot, so <see cref="AssociationRegistry"/> can tell — without a separate,
         /// racy read — whether (and from what uid) an incarnation change just happened.
         /// </summary>
-        public (AssociationState Previous, AssociationState Updated) CompleteHandshake(UniqueAddress peer, bool notify = true) =>
-            Transition(peer, static (state, p) => state.CompleteHandshake(p), notify);
+        public (AssociationState Previous, AssociationState Updated) CompleteHandshake(UniqueAddress peer, long connectionOrder = 0, bool notify = true) =>
+            Transition(peer, connectionOrder, static (state, p, order) => state.CompleteHandshake(p, order), notify);
 
         /// <summary>
         /// As <see cref="CompleteHandshake"/>, but applying
         /// <see cref="AssociationState.CompleteOutboundHandshake"/> -- the only path that sets
         /// <see cref="AssociationState.OutboundHandshakeCompleted"/> (issue #8496).
         /// </summary>
-        public (AssociationState Previous, AssociationState Updated) CompleteOutboundHandshake(UniqueAddress peer, bool notify = true) =>
-            Transition(peer, static (state, p) => state.CompleteOutboundHandshake(p), notify);
+        public (AssociationState Previous, AssociationState Updated) CompleteOutboundHandshake(UniqueAddress peer, long connectionOrder = 0, bool notify = true) =>
+            Transition(peer, connectionOrder, static (state, p, order) => state.CompleteOutboundHandshake(p, order), notify);
 
         /// <summary>
         /// <paramref name="notify"/> false defers listener notification to the caller
         /// (<see cref="NotifyHandshakeStateChanged"/>), which <see cref="AssociationRegistry"/> uses to
-        /// notify after releasing its lock. A handshake naming a retired uid is ignored entirely: no
-        /// generation increment, no state change, no notification.
+        /// notify after releasing its lock. A stale handshake (a different uid on an older connection than
+        /// the one that installed the current uid, see <see cref="AssociationState.IsStaleHandshake"/>) is
+        /// ignored entirely: no generation increment, no state change, no notification.
         /// </summary>
         private (AssociationState Previous, AssociationState Updated) Transition(
             UniqueAddress peer,
-            Func<AssociationState, UniqueAddress, AssociationState> transition,
+            long connectionOrder,
+            Func<AssociationState, UniqueAddress, long, AssociationState> transition,
             bool notify)
         {
-            if (_state.IsRetired(peer.Uid))
+            if (_state.IsStaleHandshake(peer, connectionOrder))
                 return (_state, _state);
 
             Interlocked.Increment(ref _handshakeGeneration);
@@ -1181,7 +1183,7 @@ namespace Akka.Remote.Artery
             while (true)
             {
                 var current = _state;
-                var updated = transition(current, peer);
+                var updated = transition(current, peer, connectionOrder);
 
                 if (ReferenceEquals(updated, current))
                 {
@@ -1279,6 +1281,21 @@ namespace Akka.Remote.Artery
         private readonly Dictionary<long, long> _inboundExpectedSeq = new();
 
         private readonly object _inboundSeqLock = new();
+        private long _connectionOrder;
+
+        /// <summary>
+        /// Next value of the local, monotonic order in which this system accepted inbound connections. The
+        /// transport takes one per accepted connection; a handshake carries the order of its connection, which
+        /// is what tells a stale handshake of a dead incarnation (older connection) from a newer one.
+        /// </summary>
+        public long NextConnectionOrder() => Interlocked.Increment(ref _connectionOrder);
+
+        /// <summary>
+        /// The current remote uid of the association for <paramref name="address"/>, or <see langword="null"/>
+        /// if there is none. Does not create an association (diagnostics).
+        /// </summary>
+        public long? TryGetCurrentUid(Address address) =>
+            _byAddress.TryGetValue(address, out var association) ? association.CurrentState.UniqueRemoteAddress?.Uid : null;
 
         /// <summary>Number of uids in the reverse index (test observability).</summary>
         internal int UidIndexCount => _byUid.Count;
@@ -1371,9 +1388,8 @@ namespace Akka.Remote.Artery
         ///
         /// <para>
         /// Lifecycle: an entry is created lazily at seq 1, only for an association's current uid, and
-        /// is removed in <see cref="Complete"/> when a different uid replaces it. The replaced uid is retired
-        /// in <see cref="AssociationState.RetiredUids"/> and can never become current again, so no history
-        /// has to be kept for it and the map holds at most one entry per association. Frames of a
+        /// is removed in <see cref="Complete"/> when a different uid replaces it. Only the current uid counts, so
+        /// no history is kept for a superseded uid and the map holds at most one entry per association. Frames of a
         /// quarantined uid are dropped upstream by <see cref="InboundQuarantineCheckStage"/> and its entry
         /// normally remains until the uid is superseded.
         /// </para>
@@ -1408,11 +1424,12 @@ namespace Akka.Remote.Artery
         /// Completes the handshake for <paramref name="remoteAddress"/> with peer
         /// <paramref name="peer"/>: materializes the address-keyed association if needed, applies
         /// the CAS transition, and maintains the uid reverse index per the policy documented on
-        /// this type. A peer uid that was already superseded (see <see cref="AssociationState.RetiredUids"/>)
-        /// is ignored.
+        /// this type. <paramref name="connectionOrder"/> is the order of the accepted connection the handshake
+        /// arrived on; <see langword="null"/> means "just now" (a new, highest order). A different uid on an older
+        /// connection than the one that installed the current uid is stale and ignored.
         /// </summary>
-        public AssociationState CompleteHandshake(Address remoteAddress, UniqueAddress peer) =>
-            Complete(remoteAddress, peer, outbound: false);
+        public AssociationState CompleteHandshake(Address remoteAddress, UniqueAddress peer, long? connectionOrder = null) =>
+            Complete(remoteAddress, peer, outbound: false, connectionOrder);
 
         /// <summary>
         /// As <see cref="CompleteHandshake"/>, but records that the peer answered a
@@ -1420,8 +1437,8 @@ namespace Akka.Remote.Artery
         /// <see cref="AssociationState.OutboundHandshakeCompleted"/>. Called only from
         /// <see cref="InboundHandshakeStage"/>'s <c>HandleRsp</c>.
         /// </summary>
-        public AssociationState CompleteOutboundHandshake(Address remoteAddress, UniqueAddress peer) =>
-            Complete(remoteAddress, peer, outbound: true);
+        public AssociationState CompleteOutboundHandshake(Address remoteAddress, UniqueAddress peer, long? connectionOrder = null) =>
+            Complete(remoteAddress, peer, outbound: true, connectionOrder);
 
         /// <summary>
         /// One critical section for the association state transition, the uid-index update and the retirement
@@ -1429,19 +1446,20 @@ namespace Akka.Remote.Artery
         /// overwrite a newer one. Listeners are notified after the lock is released. The lock is a leaf
         /// lock: inside it only the association's lock-free CAS and immutable-state reads run.
         /// </summary>
-        private AssociationState Complete(Address remoteAddress, UniqueAddress peer, bool outbound)
+        private AssociationState Complete(Address remoteAddress, UniqueAddress peer, bool outbound, long? connectionOrder)
         {
             var association = AssociationFor(remoteAddress);
+            var order = connectionOrder ?? NextConnectionOrder();
             AssociationState previous, updated;
 
             lock (_inboundSeqLock)
             {
                 (previous, updated) = outbound
-                    ? association.CompleteOutboundHandshake(peer, notify: false)
-                    : association.CompleteHandshake(peer, notify: false);
+                    ? association.CompleteOutboundHandshake(peer, order, notify: false)
+                    : association.CompleteHandshake(peer, order, notify: false);
 
-                if (previous.IsRetired(peer.Uid))
-                    return updated; // fenced: no state change, no index change, no notification
+                if (previous.IsStaleHandshake(peer, order))
+                    return updated; // stale: no state change, no index change, no notification
 
                 if (!ReferenceEquals(previous, updated) &&
                     previous.UniqueRemoteAddress is { } previousPeer &&

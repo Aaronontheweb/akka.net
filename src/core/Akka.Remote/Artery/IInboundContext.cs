@@ -45,7 +45,13 @@ namespace Akka.Remote.Artery
         /// when a <see cref="HandshakeRsp"/> arrives (registering the responder, completing the
         /// return direction the local <see cref="OutboundHandshakeStage"/> is waiting on).
         /// </summary>
-        AssociationState CompleteHandshake(UniqueAddress peer);
+        /// <param name="peer">The uid and address the handshake names.</param>
+        /// <param name="connectionOrder">
+        /// Order of the accepted connection the handshake arrived on (<see cref="AssociationRegistry.NextConnectionOrder"/>);
+        /// <see langword="null"/> means "just now". A different uid on an older connection than the one that
+        /// installed the current uid is stale and ignored.
+        /// </param>
+        AssociationState CompleteHandshake(UniqueAddress peer, long? connectionOrder = null);
 
         /// <summary>
         /// As <see cref="CompleteHandshake"/>, but for a <see cref="HandshakeRsp"/> -- which the
@@ -54,7 +60,15 @@ namespace Akka.Remote.Artery
         /// the signal an ordinary/large outbound stream needs before releasing user traffic
         /// (issue #8496).
         /// </summary>
-        AssociationState CompleteOutboundHandshake(UniqueAddress peer);
+        /// <param name="peer">The uid and address the handshake names.</param>
+        /// <param name="connectionOrder">See <see cref="CompleteHandshake"/>.</param>
+        AssociationState CompleteOutboundHandshake(UniqueAddress peer, long? connectionOrder = null);
+
+        /// <summary>
+        /// The current remote uid of the association for <paramref name="address"/>, or <see langword="null"/>
+        /// if there is none. Diagnostics only; never creates an association.
+        /// </summary>
+        long? TryGetCurrentUid(Address address);
 
         /// <summary>
         /// Sends <paramref name="message"/> over the control channel to <paramref name="to"/>.
@@ -152,10 +166,13 @@ namespace Akka.Remote.Artery
         public UniqueAddress LocalAddress { get; }
 
         /// <inheritdoc/>
-        public AssociationState CompleteHandshake(UniqueAddress peer) => _registry.CompleteHandshake(peer.Address, peer);
+        public AssociationState CompleteHandshake(UniqueAddress peer, long? connectionOrder = null) => _registry.CompleteHandshake(peer.Address, peer, connectionOrder);
 
         /// <inheritdoc/>
-        public AssociationState CompleteOutboundHandshake(UniqueAddress peer) => _registry.CompleteOutboundHandshake(peer.Address, peer);
+        public AssociationState CompleteOutboundHandshake(UniqueAddress peer, long? connectionOrder = null) => _registry.CompleteOutboundHandshake(peer.Address, peer, connectionOrder);
+
+        /// <inheritdoc/>
+        public long? TryGetCurrentUid(Address address) => _registry.TryGetCurrentUid(address);
 
         /// <inheritdoc/>
         public void SendControl(Address to, object message) => _sendControl(to, message);

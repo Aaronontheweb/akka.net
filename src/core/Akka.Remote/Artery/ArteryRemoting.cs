@@ -986,6 +986,10 @@ namespace Akka.Remote.Artery
         {
             _log.Debug("Accepted inbound Artery TCP connection from [{0}]", connection.RemoteAddress);
 
+            // Local accept order: a dead incarnation cannot open new connections, so a handshake that names a
+            // different uid on an older connection than the one that installed the current uid is stale.
+            var connectionOrder = _registry.NextConnectionOrder();
+
             // Ordinary, Control, AND (task 10.2) Large connections all feed this SAME inbound
             // shape -- ArteryInboundProcessingStage accepts any of the three preambles; routing
             // downstream is purely by the decoded envelope's IsControl flag, not by which
@@ -1050,7 +1054,7 @@ namespace Akka.Remote.Artery
             // Ordinary, control and large connections all use this one sink, so one instance is
             // sufficient.
             var inboundSink = decoded
-                .Via(Flow.FromGraph(new InboundHandshakeStage(_inboundContext!, System.Scheduler)))
+                .Via(Flow.FromGraph(new InboundHandshakeStage(_inboundContext!, System.Scheduler, connectionOrder)))
                 .Via(Flow.FromGraph(new InboundQuarantineCheckStage(_inboundContext!)))
                 .Via(Flow.FromGraph(new SystemMessageAckerStage(_inboundContext!)))
                 .To(Sink.ForEach<IInboundEnvelope>(DispatchInbound));

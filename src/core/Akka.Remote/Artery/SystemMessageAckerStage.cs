@@ -7,6 +7,7 @@
 
 #nullable enable
 
+using Akka.Event;
 using Akka.Streams;
 using Akka.Streams.Stage;
 
@@ -47,11 +48,10 @@ namespace Akka.Remote.Artery
     /// <see cref="SystemMessageDeliveryState"/> survives reconnects, so a fresh stage per accepted
     /// connection must resume at the same expectation. It lives in the <see cref="AssociationRegistry"/>
     /// (via <see cref="IInboundContext.AdvanceInboundSystemMessageSeq"/>), one entry per association for its
-    /// CURRENT origin uid only. When a different uid replaces it, the entry is removed and the old uid is
-    /// retired in <see cref="AssociationState.RetiredUids"/>: it can never become current again, so a late
-    /// handshake of a superseded incarnation cannot revive it. Frames from any uid that is not the current,
-    /// non-quarantined uid are dropped without Ack or Nack; the sender retains and resends them.
-    /// Overlapping connections: exactly-once delivery is guaranteed, and so is strict order per connection,
+    /// CURRENT origin uid only. Any other incarnation is dead: its frames are dropped without Ack or Nack,
+    /// and its entry is removed when a newer connection installs a different uid (a handshake of a different
+    /// uid on an older connection is stale and ignored, see <see cref="AssociationState.ConnectionOrder"/>).
+    ///     /// Overlapping connections: exactly-once delivery is guaranteed, and so is strict order per connection,
     /// but not across two simultaneously open connections of one origin (see
     /// <see cref="AssociationRegistry.AdvanceInboundSystemMessageSeq"/>).
     /// <see cref="ClearSystemMessageDelivery"/> deliberately never crosses the wire.
@@ -116,7 +116,12 @@ namespace Akka.Remote.Artery
 
                 if (expected == 0L)
                 {
-                    // Unknown, superseded or quarantined origin: nothing to acknowledge.
+                    // Not the current, non-quarantined incarnation of that origin: dead traffic, nothing to
+                    // acknowledge. The sender keeps its message buffered.
+                    if (Log.IsDebugEnabled)
+                        Log.Debug(
+                            "Dropping system message seq [{0}] from origin uid [{1}]: not the current incarnation of [{2}] (current uid [{3}]).",
+                            sme.SeqNo, originUid, sme.AckReplyTo.Address, _stage.Context.TryGetCurrentUid(sme.AckReplyTo.Address));
                     Pull(_stage.In);
                     return;
                 }

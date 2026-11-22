@@ -50,14 +50,12 @@ namespace Akka.Remote.Artery
             int incarnation,
             UniqueAddress? uniqueRemoteAddress,
             bool outboundHandshakeCompleted,
-            ImmutableHashSet<long> quarantinedUids,
-            ImmutableHashSet<long> retiredUids)
+            ImmutableHashSet<long> quarantinedUids)
         {
             Incarnation = incarnation;
             UniqueRemoteAddress = uniqueRemoteAddress;
             OutboundHandshakeCompleted = outboundHandshakeCompleted;
             QuarantinedUids = quarantinedUids;
-            RetiredUids = retiredUids;
         }
 
         /// <summary>
@@ -65,7 +63,7 @@ namespace Akka.Remote.Artery
         /// (<c>Associating</c>), incarnation 1, our own handshake unanswered, no quarantined UIDs.
         /// </summary>
         public static AssociationState Create() =>
-            new(incarnation: 1, uniqueRemoteAddress: null, outboundHandshakeCompleted: false, quarantinedUids: ImmutableHashSet<long>.Empty, retiredUids: ImmutableHashSet<long>.Empty);
+            new(incarnation: 1, uniqueRemoteAddress: null, outboundHandshakeCompleted: false, quarantinedUids: ImmutableHashSet<long>.Empty);
 
         /// <summary>
         /// Monotonically increasing incarnation counter. Starts at 1; incremented only when
@@ -103,28 +101,21 @@ namespace Akka.Remote.Artery
         public bool IsQuarantined(long uid) => QuarantinedUids.Contains(uid);
 
         /// <summary>
-        /// Peer UIDs that were this association's current uid and have since been replaced by a different
-        /// one. A retired uid can never become current again: a late handshake naming it (a delayed
-        /// request or response of a superseded incarnation) is ignored by <see cref="CompleteHandshake"/> /
-        /// <see cref="CompleteOutboundHandshake"/>, so a superseded incarnation cannot bump
-        /// <see cref="Incarnation"/> again or reset per-origin delivery state.
-        ///
-        /// <para>
-        /// Memory: one <see cref="long"/> per real restart of this peer, the same growth class as
-        /// <see cref="QuarantinedUids"/>. It is deliberately not capped: forgetting a uid would let it
-        /// become eligible again, which is the defect this set exists to prevent. Each entry costs a few
-        /// dozen bytes and corresponds to a whole peer process start at one address, so even a million
-        /// restarts of one peer address stay in the tens of megabytes.
-        /// </para>
-        /// <para>
-        /// Limit: only uids that were current here are retired. A stale handshake of an incarnation this
-        /// side never saw cannot be told apart from a genuine restart.
-        /// </para>
+        /// Local order (see <see cref="AssociationRegistry.NextConnectionOrder"/>) of the accepted connection
+        /// whose handshake installed the current <see cref="UniqueRemoteAddress"/>. Only the current uid
+        /// counts. A handshake naming a different uid replaces it only if it arrived on a connection
+        /// accepted at or after this one: a dead incarnation cannot open new connections, so a different
+        /// uid seen on an older connection is a stale handshake and is ignored.
         /// </summary>
-        public ImmutableHashSet<long> RetiredUids { get; init; }
+        public long ConnectionOrder { get; init; }
 
-        /// <summary>Whether <paramref name="uid"/> was replaced by a different current uid.</summary>
-        public bool IsRetired(long uid) => RetiredUids.Contains(uid);
+        /// <summary>
+        /// Whether a handshake naming <paramref name="peer"/> on the connection with
+        /// <paramref name="connectionOrder"/> is stale: a different uid than the current one, on an older
+        /// connection than the one that installed it.
+        /// </summary>
+        public bool IsStaleHandshake(UniqueAddress peer, long connectionOrder) =>
+            UniqueRemoteAddress is { } current && current.Uid != peer.Uid && connectionOrder < ConnectionOrder;
 
         /// <summary>
         /// Computes the state that results from completing (or re-completing) the handshake
@@ -132,11 +123,11 @@ namespace Akka.Remote.Artery
         /// <list type="bullet">
         /// <item><description><c>Associating</c> → <c>Associated</c>: adopts <paramref name="peer"/>, incarnation unchanged.</description></item>
         /// <item><description>Same uid as the current <see cref="UniqueRemoteAddress"/>: no-op — returns <c>this</c> (reference-equal, so the CAS loop in <see cref="Association"/> can skip the compare-exchange), except for the one-way <see cref="OutboundHandshakeCompleted"/> flip in <see cref="CompleteOutboundHandshake"/>.</description></item>
-        /// <item><description>Different uid (remote restart): a new incarnation — <see cref="Incarnation"/> + 1, <see cref="UniqueRemoteAddress"/> replaced, <see cref="QuarantinedUids"/> carried over UNCHANGED (the old uid is deliberately not auto-quarantined), and the old uid added to <see cref="RetiredUids"/>.</description></item>
-        /// <item><description>A uid in <see cref="RetiredUids"/>: ignored, returns <c>this</c>.</description></item>
+        /// <item><description>Different uid (remote restart): a new incarnation — <see cref="Incarnation"/> + 1, <see cref="UniqueRemoteAddress"/> replaced, <see cref="QuarantinedUids"/> carried over UNCHANGED (the old uid is deliberately not auto-quarantined).</description></item>
+        /// <item><description>A different uid on a connection older than <see cref="ConnectionOrder"/>: stale, ignored, returns <c>this</c>.</description></item>
         /// </list>
         /// </summary>
-        public AssociationState CompleteHandshake(UniqueAddress peer) => Apply(peer, answeredOurReq: false);
+        public AssociationState CompleteHandshake(UniqueAddress peer, long connectionOrder = 0) => Apply(peer, answeredOurReq: false, connectionOrder);
 
         /// <summary>
         /// As <see cref="CompleteHandshake"/>, but for the ONE event that proves the peer has
@@ -145,12 +136,12 @@ namespace Akka.Remote.Artery
         /// nothing else does. A same-uid call that only flips that flag still returns a NEW
         /// snapshot (it is a real transition, not the documented no-op).
         /// </summary>
-        public AssociationState CompleteOutboundHandshake(UniqueAddress peer) => Apply(peer, answeredOurReq: true);
+        public AssociationState CompleteOutboundHandshake(UniqueAddress peer, long connectionOrder = 0) => Apply(peer, answeredOurReq: true, connectionOrder);
 
-        private AssociationState Apply(UniqueAddress peer, bool answeredOurReq)
+        private AssociationState Apply(UniqueAddress peer, bool answeredOurReq, long connectionOrder)
         {
-            // Fence: a retired uid never becomes current again (no incarnation bump, no state change).
-            if (RetiredUids.Contains(peer.Uid))
+            // A different uid on an older connection than the one that installed the current uid is stale.
+            if (IsStaleHandshake(peer, connectionOrder))
                 return this;
 
             if (UniqueRemoteAddress is { } current)
@@ -172,14 +163,15 @@ namespace Akka.Remote.Artery
                     Incarnation = Incarnation + 1,
                     UniqueRemoteAddress = peer,
                     OutboundHandshakeCompleted = answeredOurReq,
-                    RetiredUids = RetiredUids.Add(current.Uid)
+                    ConnectionOrder = connectionOrder
                 };
             }
 
             return this with
             {
                 UniqueRemoteAddress = peer,
-                OutboundHandshakeCompleted = answeredOurReq
+                OutboundHandshakeCompleted = answeredOurReq,
+                ConnectionOrder = connectionOrder
             };
         }
 
