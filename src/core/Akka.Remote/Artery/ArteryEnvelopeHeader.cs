@@ -68,9 +68,11 @@ namespace Akka.Remote.Artery
         public const uint NumericTagFlag = 0x01u << 24;
 
         /// <summary>
-        /// Tag flag (reserved): the numeric record has a path attached, for ids the receiver may not hold a
-        /// definition for yet. Nothing writes it yet, and its record layout is not defined; see
-        /// <see cref="ArteryTagKind.NumericDefine"/> for how a decoder treats it.
+        /// Tag flag: the numeric record has a path attached -- the record (as for <see cref="NumericTagFlag"/>)
+        /// is immediately followed by <c>[u16 LE length][UTF-8 path]</c> -- for ids the receiver may not hold a
+        /// definition for yet. No sender writes it yet. A decoder that keeps no definitions resolves such a ref
+        /// through the attached path exactly as if it were a literal (ignoring the id, storing nothing, confirming
+        /// nothing), so a frame carrying it is delivered by any receiver. Valid only in the sender and recipient positions.
         /// </summary>
         public const uint DefineTagFlag = 0x02u << 24;
 

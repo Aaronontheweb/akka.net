@@ -45,4 +45,30 @@ namespace Akka.Remote.Artery
         /// <summary>The temporary-ref counter value. Meaningful only when <see cref="IsTemporary"/>.</summary>
         public long TemporaryCounter => Id & long.MaxValue;
     }
+
+    /// <summary>
+    /// INTERNAL API.
+    ///
+    /// The numeric sender and/or recipient of an envelope, held behind one reference so an envelope that
+    /// carries only literals (the default) pays a single null pointer for them.
+    /// </summary>
+    internal sealed class NumericWireRefs
+    {
+        /// <summary>Initializes a new instance of the <see cref="NumericWireRefs"/> class.</summary>
+        public NumericWireRefs(ArteryNumericRef? sender, ArteryNumericRef? recipient)
+        {
+            Sender = sender;
+            Recipient = recipient;
+        }
+
+        /// <summary>The numeric sender, if the sender is numeric.</summary>
+        public ArteryNumericRef? Sender { get; }
+
+        /// <summary>The numeric recipient, if the recipient is numeric.</summary>
+        public ArteryNumericRef? Recipient { get; }
+
+        /// <summary>Returns <see langword="null"/> when both are absent, else a holder for them.</summary>
+        public static NumericWireRefs? Of(ArteryNumericRef? sender, ArteryNumericRef? recipient) =>
+            sender is null && recipient is null ? null : new NumericWireRefs(sender, recipient);
+    }
 }

@@ -450,17 +450,21 @@ namespace Akka.Remote.Tests.Artery
                 var oldSender = (RemoteTempActorRef)await Next<IActorRef>(reports);
                 await asker.Terminate();
 
-                // A new incarnation on the same address: its first Ask reuses the first counter values.
                 restarted = await RestartOnSamePort(port);
+                var deadLetters = CreateTestProbe(restarted);
+                restarted.EventStream.Subscribe(deadLetters, typeof(DeadLetter));
                 var newAsk = AskResponder(restarted, responder, "hold");
                 var newSender = (RemoteTempActorRef)await Next<IActorRef>(reports);
-                newSender.TempId.Should().Be(oldSender.TempId, "a restarted asker reuses counter values");
                 newSender.OwnerUid.Should().NotBe(oldSender.OwnerUid);
 
-                // A late reply for the OLD incarnation's ask must not complete the NEW incarnation's Ask.
-                oldSender.Tell("for-the-old-incarnation", ActorRefs.NoSender);
-                await Task.Delay(1000);
-                newAsk.IsCompleted.Should().BeFalse();
+                // Force the collision instead of relying on both incarnations having consumed counters alike: a
+                // reply naming the OLD incarnation's uid and the NEW Ask's counter, delivered to the new system.
+                var association = TransportOf(responder).Registry.AssociationFor(AddressOf(restarted));
+                association.TryEnqueueOutbound(
+                    new OutboundEnvelope("stale-reply", null, null, null,
+                        ArteryNumericRef.ForTemporary(oldSender.OwnerUid, newSender.TempId)), 0).Should().BeTrue();
+                await deadLetters.FishForMessageAsync<DeadLetter>(d => d.Message is "stale-reply", Timeout);
+                newAsk.IsCompleted.Should().BeFalse("the stale reply was dead-lettered by the receiver, so it cannot have completed the Ask");
 
                 newSender.Tell("for-the-new-incarnation", ActorRefs.NoSender);
                 (await newAsk).Should().Be("for-the-new-incarnation");
@@ -505,7 +509,7 @@ namespace Akka.Remote.Tests.Artery
 
                 oldSender.Tell("to-old-id", ActorRefs.NoSender);
                 await deadLetters.FishForMessageAsync<DeadLetter>(d => d.Message is "to-old-id", Timeout);
-                newAsk.IsCompleted.Should().BeFalse();
+                newAsk.IsCompleted.Should().BeFalse("the old ref was dead-lettered at the sender and sent nothing");
 
                 newSender.Tell("to-new-id", ActorRefs.NoSender);
                 (await newAsk).Should().Be("to-new-id");
@@ -583,6 +587,75 @@ namespace Akka.Remote.Tests.Artery
             finally
             {
                 await ShutdownAll(asker, responder);
+            }
+        }
+
+        // ===================== numeric sender not owned by the origin =====================
+
+        private sealed class SenderReporter : ReceiveActor
+        {
+            public SenderReporter(Action<object> report) => ReceiveAny(m => report((m, Sender)));
+        }
+
+        [Fact(DisplayName = "Should_deliver_the_message_with_no_sender_When_a_numeric_sender_is_not_owned_by_the_frame_origin")]
+        public async Task Should_deliver_the_message_with_no_sender_When_a_numeric_sender_is_not_owned_by_the_frame_origin()
+        {
+            var (asker, responder, _) = StartPair(true, true);
+            try
+            {
+                var reports = new BlockingCollection<object>();
+                asker.ActorOf(Props.Create(() => new SenderReporter(o => reports.Add(o))), "reporter");
+                (await AskResponder(asker, responder, "ping")).Should().Be("pong");
+
+                // A sender record whose owner is a third system, not the responder that writes the frame. Nothing
+                // writes this; the receiver must not treat it as the origin's temp ref.
+                var association = TransportOf(responder).Registry.AssociationFor(AddressOf(asker));
+                association.TryEnqueueOutbound(
+                    new OutboundEnvelope("hello", null, $"{AddressOf(asker)}/user/reporter",
+                        ArteryNumericRef.ForTemporary(UidOf(responder) + 1, 5), null), 0).Should().BeTrue();
+
+                var (message, sender) = await Next<(object, IActorRef)>(reports);
+                message.Should().Be("hello");
+                sender.Should().Be(asker.DeadLetters);
+            }
+            finally
+            {
+                await ShutdownAll(asker, responder);
+            }
+        }
+
+        // ===================== lane congruence through the real outbound route =====================
+
+        [Fact(DisplayName = "Should_route_the_lazy_numeric_ref_and_the_parsed_literal_ref_to_the_same_outbound_lane")]
+        public async Task Should_route_the_lazy_numeric_ref_and_the_parsed_literal_ref_to_the_same_outbound_lane()
+        {
+            var system = ActorSystem.Create("Lanes", ArteryConfig(true, lanes: 4));
+            try
+            {
+                var transport = TransportOf(system);
+                var remote = new Address("akka", "Peer", "127.0.0.1", 1);
+                var association = transport.Registry.AssociationFor(remote);
+                var provider = RARP.For(system).Provider;
+
+                var lanesSeen = new HashSet<int>();
+                for (long counter = 1; counter <= 200; counter++)
+                {
+                    var numeric = new RemoteTempActorRef(transport, provider.DefaultAddress, association, remote, 77, counter);
+                    var literal = (RemoteActorRef)provider.ResolveActorRefWithLocalAddress(
+                        $"{remote}/temp/{counter.Base64Encode()}", provider.DefaultAddress);
+                    literal.Should().NotBeOfType<RemoteTempActorRef>();
+
+                    var numericLane = transport.ResolveSendRoute(numeric, association);
+                    transport.ResolveSendRoute(literal, association).Should().Be(numericLane, $"counter {counter}");
+                    numericLane.Should().BeInRange(0, 3);
+                    lanesSeen.Add(numericLane);
+                }
+
+                lanesSeen.Should().HaveCount(4, "consecutive Ask counters must spread across the lanes");
+            }
+            finally
+            {
+                await system.Terminate();
             }
         }
 

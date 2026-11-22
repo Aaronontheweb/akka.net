@@ -77,15 +77,26 @@ namespace Akka.Remote.Artery
     /// <param name="Message">The message to serialize as the envelope's payload.</param>
     /// <param name="SenderPath">The sender's wire-format path, or <see langword="null"/> for no sender.</param>
     /// <param name="RecipientPath">The recipient's wire-format path, or <see langword="null"/> for control messages.</param>
-    /// <param name="SenderRef">A numeric sender; see <see cref="IOutboundEnvelope.SenderRef"/>.</param>
-    /// <param name="RecipientRef">A numeric recipient; see <see cref="IOutboundEnvelope.RecipientRef"/>.</param>
+    /// <param name="Numeric">The numeric sender and/or recipient, or <see langword="null"/> when both are literal or absent.</param>
     internal sealed record OutboundEnvelope(
         object Message,
         string? SenderPath,
         string? RecipientPath,
-        ArteryNumericRef? SenderRef = null,
-        ArteryNumericRef? RecipientRef = null) : IOutboundEnvelope
+        NumericWireRefs? Numeric = null) : IOutboundEnvelope
     {
+        /// <summary>Creates an envelope whose sender and/or recipient are numeric.</summary>
+        public OutboundEnvelope(
+            object message, string? senderPath, string? recipientPath, ArteryNumericRef? senderRef, ArteryNumericRef? recipientRef)
+            : this(message, senderPath, recipientPath, NumericWireRefs.Of(senderRef, recipientRef))
+        {
+        }
+
+        /// <inheritdoc/>
+        public ArteryNumericRef? SenderRef => Numeric?.Sender;
+
+        /// <inheritdoc/>
+        public ArteryNumericRef? RecipientRef => Numeric?.Recipient;
+
         /// <inheritdoc/>
         public bool IsControl { get; } = Message is IArteryControlMessage;
     }

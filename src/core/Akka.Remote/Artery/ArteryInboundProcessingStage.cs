@@ -187,7 +187,7 @@ namespace Akka.Remote.Artery
             int inboundLanes = 1,
             int inboundLaneBufferSize = 0,
             IInboundContext? inboundContext = null,
-            Action<object, InboundWireRefs>? dispatchOrdinary = null,
+            InboundOrdinaryDispatch? dispatchOrdinary = null,
             Action<int>? onLanesInitialized = null,
             SharedTestState? testState = null)
         {
@@ -266,7 +266,7 @@ namespace Akka.Remote.Artery
         public IInboundContext? InboundContext { get; }
 
         /// <summary>See the constructor parameter of the same name. <see langword="null"/> when <see cref="InboundLanes"/> is 1.</summary>
-        public Action<object, InboundWireRefs>? DispatchOrdinary { get; }
+        public InboundOrdinaryDispatch? DispatchOrdinary { get; }
 
         /// <summary>See the constructor parameter of the same name.</summary>
         public Action<int>? OnLanesInitialized { get; }
@@ -333,10 +333,11 @@ namespace Akka.Remote.Artery
                 Refs = refs;
             }
 
-            public ReadOnlySequence<byte> Payload { get; }
-            public int SerializerId { get; }
-            public string Manifest { get; }
-            public InboundWireRefs Refs { get; }
+            // Fields, not properties, so the consumer can pass Refs by `in` without a copy.
+            public readonly ReadOnlySequence<byte> Payload;
+            public readonly int SerializerId;
+            public readonly string Manifest;
+            public readonly InboundWireRefs Refs;
         }
 
         private sealed class Logic : GraphStageLogic, IInHandler, IOutHandler
@@ -607,6 +608,16 @@ namespace Akka.Remote.Artery
                     {
                         element = DecodeFrame(frameBody);
                     }
+                    catch (ArteryEnvelopeException ex) when (ex.ReceivedVersion is { } received)
+                    {
+                        // Every frame of this connection would fail the same way and the handshake can never
+                        // complete, so say so once and fail the connection instead of logging per frame.
+                        Log.Error(
+                            "Closing the inbound Artery connection: the peer sent envelope version [{0}] but this node only understands version [{1}]. Both ends must run compatible Akka.NET versions.",
+                            received, ArteryEnvelopeHeader.CurrentVersion);
+                        FailStage(ex);
+                        return;
+                    }
                     catch (Exception ex)
                     {
                         Log.Warning(ex, "Transient error decoding an inbound Artery frame; connection remains live.");
@@ -633,7 +644,7 @@ namespace Akka.Remote.Artery
                 if (payload is IArteryControlMessage)
                     return new InboundEnvelope(payload, null, null, decoded.Header.OriginUid, decoded.Header.SerializerId, manifest);
 
-                if (!TryReadRefs(decoded, out var refs))
+                if (!TryReadRefs(decoded, deferSender: false, out var refs))
                 {
                     Log.Warning(
                         "Dropping inbound ordinary-stream message of type [{0}]: unsupported or missing recipient " +
@@ -642,18 +653,21 @@ namespace Akka.Remote.Artery
                 }
 
                 return new InboundEnvelope(
-                    payload, refs.SenderPath, refs.RecipientPath, decoded.Header.OriginUid, decoded.Header.SerializerId, manifest,
-                    refs.SenderRef, refs.RecipientRef);
+                    payload, refs.ResolveSenderPath(), refs.RecipientPath, decoded.Header.OriginUid, decoded.Header.SerializerId, manifest,
+                    NumericWireRefs.Of(refs.SenderRef, refs.RecipientRef));
             }
 
             /// <summary>
-            /// Reads the sender and recipient of an ordinary frame, each as a literal path or a numeric
-            /// record. Returns <see langword="false"/> when the recipient is absent or not readable (COMPRESSED,
-            /// or NUMERIC with the reserved define flag): the message cannot be delivered and the frame is
-            /// dropped. A sender that is not readable degrades to "no sender", as before. A malformed record
-            /// throws <see cref="ArteryEnvelopeException"/>, which drops this one frame and leaves the stream up.
+            /// Reads the sender and recipient of an ordinary frame, each as a literal path, a numeric record, or
+            /// a define-flagged numeric record (resolved through its attached path, as a literal). Returns
+            /// <see langword="false"/> when the recipient is absent or not readable (COMPRESSED tag): the message
+            /// cannot be delivered and the frame is dropped. A sender that is not readable degrades to "no
+            /// sender", as before -- including a numeric sender whose owner is not the frame's origin, which no
+            /// sender writes (a ref the origin does not own is always a literal). A malformed record throws
+            /// <see cref="ArteryEnvelopeException"/>, which drops this one frame and leaves the stream up.
+            /// With <paramref name="deferSender"/> a plain literal sender is left as undecoded bytes.
             /// </summary>
-            private static bool TryReadRefs(in ArteryEnvelopeDecoded decoded, out InboundWireRefs refs)
+            private bool TryReadRefs(in ArteryEnvelopeDecoded decoded, bool deferSender, out InboundWireRefs refs)
             {
                 refs = default;
 
@@ -671,18 +685,26 @@ namespace Akka.Remote.Artery
                 }
 
                 string? senderPath = null;
+                ReadOnlyMemory<byte> senderUtf8 = default;
                 ArteryNumericRef? senderRef = null;
                 if (decoded.SenderKind == ArteryTagKind.Numeric)
                 {
                     if (decoded.TryGetSenderNumeric(out var numeric))
-                        senderRef = numeric;
+                    {
+                        if (numeric.OwnerUid == decoded.Header.OriginUid)
+                            senderRef = numeric;
+                        else if (Log.IsDebugEnabled)
+                            Log.Debug(
+                                "Ignoring numeric sender id [{0}] owned by uid [{1}] in a frame from origin uid [{2}]: a ref the origin does not own is never written numerically.",
+                                numeric.Id, numeric.OwnerUid, decoded.Header.OriginUid);
+                    }
                 }
-                else if (decoded.TryGetSenderPath(out var s))
+                else if (!(deferSender && decoded.TryGetSenderLiteralUtf8(out senderUtf8)) && decoded.TryGetSenderPath(out var s))
                 {
                     senderPath = s;
                 }
 
-                refs = new InboundWireRefs(senderPath, senderRef, recipientPath, recipientRef, decoded.Header.OriginUid);
+                refs = new InboundWireRefs(senderPath, senderUtf8, senderRef, recipientPath, recipientRef, decoded.Header.OriginUid);
                 return true;
             }
 
@@ -756,7 +778,7 @@ namespace Akka.Remote.Artery
             private static async Task RunLaneConsumer(
                 ChannelReader<LaneWorkItem> reader,
                 Akka.Serialization.Serialization serialization,
-                Action<object, InboundWireRefs> dispatch,
+                InboundOrdinaryDispatch dispatch,
                 ILoggingAdapter log)
             {
                 try
@@ -768,7 +790,7 @@ namespace Akka.Remote.Artery
                             try
                             {
                                 var message = serialization.Deserialize(item.Payload, item.SerializerId, item.Manifest);
-                                dispatch(message, item.Refs);
+                                dispatch(message, in item.Refs);
                             }
                             catch (Exception ex)
                             {
@@ -798,6 +820,16 @@ namespace Akka.Remote.Artery
                     try
                     {
                         handled = ProcessFrameLaneMode(frameBody);
+                    }
+                    catch (ArteryEnvelopeException ex) when (ex.ReceivedVersion is { } received)
+                    {
+                        // Every frame of this connection would fail the same way and the handshake can never
+                        // complete, so say so once and fail the connection instead of logging per frame.
+                        Log.Error(
+                            "Closing the inbound Artery connection: the peer sent envelope version [{0}] but this node only understands version [{1}]. Both ends must run compatible Akka.NET versions.",
+                            received, ArteryEnvelopeHeader.CurrentVersion);
+                        FailStage(ex);
+                        return;
                     }
                     catch (Exception ex)
                     {
@@ -928,7 +960,7 @@ namespace Akka.Remote.Artery
                     }
                 }
 
-                if (!TryReadRefs(decoded, out var refs))
+                if (!TryReadRefs(decoded, deferSender: true, out var refs))
                 {
                     Log.Warning(
                         "Dropping inbound ordinary-stream message (serializer id [{0}]): unsupported or missing recipient " +
@@ -951,8 +983,8 @@ namespace Akka.Remote.Artery
                     // lane key" remarks.
                     if (decoded.Header.SerializerId == _stage.SelectionMessageSerializerId)
                         laneIndex = LaneFor(BuildSelectionLaneKey(decoded.Payload) ?? recipientPath, _stage.InboundLanes);
-                    else if (ArteryTempRefs.TryGetTempIdFromLiteral(recipientPath, out var literalTempId))
-                        laneIndex = Association.SelectLane(ArteryLaneKey.ForTemporary(literalTempId), _stage.InboundLanes);
+                    else if (ArteryLaneKey.TrySelectTemporaryLiteral(recipientPath, _stage.InboundLanes, out var temporaryLane))
+                        laneIndex = temporaryLane;
                     else
                         laneIndex = LaneFor(recipientPath, _stage.InboundLanes);
                 }

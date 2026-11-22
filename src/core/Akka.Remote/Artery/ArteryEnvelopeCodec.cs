@@ -284,7 +284,8 @@ namespace Akka.Remote.Artery
             var version = h[ArteryEnvelopeHeader.VersionOffset];
             if (version != ArteryEnvelopeHeader.CurrentVersion)
                 throw new ArteryEnvelopeException(
-                    $"Unsupported Artery envelope version {version}; this decoder only understands version {ArteryEnvelopeHeader.CurrentVersion}.");
+                    $"Unsupported Artery envelope version {version}; this decoder only understands version {ArteryEnvelopeHeader.CurrentVersion}.",
+                    version);
 
             var flags = h[ArteryEnvelopeHeader.FlagsOffset];
             if ((flags & ArteryEnvelopeHeader.ReservedFlagsMask) != 0)
@@ -499,10 +500,10 @@ namespace Akka.Remote.Artery
         Numeric = 3,
 
         /// <summary>
-        /// A numeric record with the define flag set. Reserved: no sender writes it and its record layout is
-        /// not defined yet, so a decoder cannot read the ref. The receiver drops the frame (it is not
-        /// delivered to a guessed target, and the stream is not faulted), which is no worse than any other
-        /// at-most-once loss and is the only outcome that cannot misdeliver.
+        /// A numeric record with the define flag set: the record is followed by the ref's path as a
+        /// <c>[u16 LE length][UTF-8]</c> literal. A decoder that keeps no definitions resolves it through
+        /// that path exactly like a LITERAL (see <see cref="ArteryEnvelopeHeader.DefineTagFlag"/>), so
+        /// <c>TryGetSenderPath</c> / <c>TryGetRecipientPath</c> return the attached path. Not valid as a manifest.
         /// </summary>
         NumericDefine = 4
     }
@@ -551,10 +552,10 @@ namespace Akka.Remote.Artery
         /// when LITERAL. Returns <see langword="false"/> when COMPRESSED -- see
         /// <see cref="SenderCompressedIndex"/>; resolving a compressed index to a ref is future work.
         /// </summary>
-        public bool TryGetSenderPath(out string? path) => TryResolveTag(Header.SenderTag, out path);
+        public bool TryGetSenderPath(out string? path) => TryResolveTag(Header.SenderTag, allowRefs: true, out path);
 
         /// <summary>Resolves the recipient ref's path. See <see cref="TryGetSenderPath"/> for ABSENT/LITERAL/COMPRESSED semantics.</summary>
-        public bool TryGetRecipientPath(out string? path) => TryResolveTag(Header.RecipientTag, out path);
+        public bool TryGetRecipientPath(out string? path) => TryResolveTag(Header.RecipientTag, allowRefs: true, out path);
 
         /// <summary>
         /// Resolves the manifest. ABSENT decodes to <see cref="string.Empty"/> (an empty manifest is
@@ -562,7 +563,7 @@ namespace Akka.Remote.Artery
         /// </summary>
         public bool TryGetManifest(out string manifest)
         {
-            if (TryResolveTag(Header.ManifestTag, out var resolved))
+            if (TryResolveTag(Header.ManifestTag, allowRefs: false, out var resolved))
             {
                 manifest = resolved ?? string.Empty;
                 return true;
@@ -637,12 +638,15 @@ namespace Akka.Remote.Artery
 
         private static int DecodeCompressedIndex(uint tag) => (int)(tag & ArteryEnvelopeHeader.CompressedIndexMask);
 
-        private bool TryResolveTag(uint tag, out string? value)
+        private bool TryResolveTag(uint tag, bool allowRefs, out string? value)
         {
             switch (ClassifyTag(tag))
             {
                 case ArteryTagKind.Absent:
                     value = null;
+                    return true;
+                case ArteryTagKind.NumericDefine when allowRefs:
+                    value = ResolveLiteral(DefinePathTag(tag));
                     return true;
                 case ArteryTagKind.Compressed:
                 case ArteryTagKind.Numeric:
@@ -654,6 +658,63 @@ namespace Akka.Remote.Artery
                     value = ResolveLiteral(tag);
                     return true;
             }
+        }
+
+        /// <summary>
+        /// The literal tag of the path attached to a define-flagged numeric record: the record's own offset
+        /// plus its length. The record itself is bounds-checked here; the literal is bounds-checked by the
+        /// literal readers.
+        /// </summary>
+        private uint DefinePathTag(uint tag)
+        {
+            var recordLength = (tag & ArteryEnvelopeHeader.OwnerPresentTagFlag) != 0
+                ? ArteryEnvelopeHeader.NumericOwnerLength + ArteryEnvelopeHeader.NumericIdLength
+                : ArteryEnvelopeHeader.NumericIdLength;
+            var offset = (long)(tag & ArteryEnvelopeHeader.TagOffsetMask);
+            if (offset < ArteryEnvelopeHeader.HeaderLength)
+                throw new ArteryEnvelopeException(
+                    $"Define record offset {offset} is inside the fixed header (must be >= {ArteryEnvelopeHeader.HeaderLength}).");
+            if (offset + recordLength > Header.PayloadOffset)
+                throw new ArteryEnvelopeException(
+                    $"Define record at offset {offset} (length {recordLength}) extends past the payload offset ({Header.PayloadOffset}).");
+
+            return (uint)(offset + recordLength);
+        }
+
+        /// <summary>
+        /// For a LITERAL sender in one contiguous segment, the still-undecoded UTF-8 bytes, so a receiver that
+        /// never reads the sender need not build a string. Returns <see langword="false"/> (decode with
+        /// <see cref="TryGetSenderPath"/> instead) for any other shape, an empty literal, or a literal split
+        /// across segments. The memory aliases the frame, so it is valid exactly as long as <see cref="Payload"/> is.
+        /// </summary>
+        public bool TryGetSenderLiteralUtf8(out ReadOnlyMemory<byte> utf8)
+        {
+            utf8 = default;
+            if (SenderKind != ArteryTagKind.Literal)
+                return false;
+
+            var offset = (long)Header.SenderTag;
+            if (offset < ArteryEnvelopeHeader.HeaderLength
+                || offset + ArteryEnvelopeHeader.LiteralLengthPrefixSize > Header.PayloadOffset)
+                throw new ArteryEnvelopeException($"Literal tag offset {offset} is outside the literal region.");
+
+            Span<byte> lenBuf = stackalloc byte[ArteryEnvelopeHeader.LiteralLengthPrefixSize];
+            _frameBody.Slice(offset, ArteryEnvelopeHeader.LiteralLengthPrefixSize).CopyTo(lenBuf);
+            var length = BinaryPrimitives.ReadUInt16LittleEndian(lenBuf);
+            var dataStart = offset + ArteryEnvelopeHeader.LiteralLengthPrefixSize;
+            if (dataStart + length > Header.PayloadOffset)
+                throw new ArteryEnvelopeException(
+                    $"Literal at offset {offset} (length {length}) extends past the payload offset ({Header.PayloadOffset}).");
+
+            if (length == 0)
+                return false;
+
+            var slice = _frameBody.Slice(dataStart, length);
+            if (!slice.IsSingleSegment)
+                return false;
+
+            utf8 = slice.First;
+            return true;
         }
 
         private string ResolveLiteral(uint tagOffsetRaw)

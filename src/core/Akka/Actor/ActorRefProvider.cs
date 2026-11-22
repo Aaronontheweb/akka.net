@@ -421,7 +421,9 @@ namespace Akka.Actor
         {
             if (path.Parent != _tempNode)
                 throw new InvalidOperationException("Cannot UnregisterTempActor() with anything not obtained from tempPath()");
-            _tempContainer.RemoveChild(path.Name);
+            // An Ask future is registered by number; third-party code that unregisters it by path must find it.
+            if (!_tempContainer.TryRemoveChildByAnyKey(path.Name))
+                _tempContainer.RemoveChild(path.Name); // not registered: logs the same debug line as before
         }
 
         /// <inheritdoc cref="IActorRefProvider.CreateFutureRef{T}"/>

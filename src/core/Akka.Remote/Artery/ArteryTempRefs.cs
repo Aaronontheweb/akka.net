@@ -58,7 +58,7 @@ namespace Akka.Remote.Artery
 
         /// <summary>
         /// Extracts the temp id from an <see cref="ActorPath"/> of the form <c>/temp/&lt;canonical name&gt;</c>
-        /// that carries no uid.
+        /// that carries no uid. Reads only <c>Name</c> and <c>Parent</c>, so it allocates nothing.
         /// </summary>
         public static bool TryGetTempId(ActorPath path, out long tempId)
         {
@@ -66,10 +66,8 @@ namespace Akka.Remote.Artery
             if (path.Uid != ActorCell.UndefinedUid)
                 return false;
 
-            var elements = path.Elements;
-            return elements.Count == 2
-                && elements[0] == "temp"
-                && Base64Encoding.TryBase64DecodeLong(elements[1].AsSpan(), out tempId);
+            return path.Parent is { Name: "temp", Parent: RootActorPath }
+                && Base64Encoding.TryBase64DecodeLong(path.Name.AsSpan(), out tempId);
         }
     }
 }

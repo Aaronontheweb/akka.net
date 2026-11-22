@@ -169,6 +169,10 @@ namespace Akka.Actor
         // materialisation wins so every caller sees one instance.
         private ActorPath CreatePath()
         {
+            // The public constructor takes the path as given -- including null, which stays null.
+            if (_tempNode is null)
+                return null;
+
             var path = _tempNode / _tempId.Base64Encode();
             return Interlocked.CompareExchange(ref _path, path, null) ?? path;
         }
@@ -948,6 +952,18 @@ namespace Akka.Actor
         }
 
         /// <summary>
+        /// INTERNAL API. Removes the child registered under <paramref name="name"/>, whether it was registered
+        /// by that name or by the number the canonical Base64 name encodes. Returns whether one was removed.
+        /// </summary>
+        internal bool TryRemoveChildByAnyKey(string name)
+        {
+            if (Base64Encoding.TryBase64DecodeLong(name.AsSpan(), out var id) && _numericChildren.TryRemove(id, out _))
+                return true;
+
+            return _children.TryRemove(name, out _);
+        }
+
+        /// <summary>
         /// INTERNAL API. Looks up a child registered under a string name.
         /// </summary>
         internal bool TryGetChildByName(string name, out IInternalActorRef child) => _children.TryGetValue(name, out child);
@@ -1014,12 +1030,15 @@ override def getChild(name: Iterator[String]): InternalActorRef = {
             var firstName = name[0];
             if (string.IsNullOrEmpty(firstName))
                 return this;
-            if (_children.TryGetValue(firstName, out var child))
-                return child.GetChild(name.NoCopySlice(1));
-            if (!_numericChildren.IsEmpty
-                && Base64Encoding.TryBase64DecodeLong(firstName.AsSpan(), out var id)
+            // Lookup order: the container's children are overwhelmingly Ask futures, registered by number, and
+            // their names are canonical base64 counters, so decode the name (no locks, no allocation) and try the
+            // numeric table first; only a name that is not such a counter, or is not registered by number, falls
+            // through to the name-keyed table. No emptiness guards: each is one dictionary lookup.
+            if (Base64Encoding.TryBase64DecodeLong(firstName.AsSpan(), out var id)
                 && _numericChildren.TryGetValue(id, out var numericChild))
                 return numericChild.GetChild(name.NoCopySlice(1));
+            if (_children.TryGetValue(firstName, out var child))
+                return child.GetChild(name.NoCopySlice(1));
             return ActorRefs.Nobody;
         }
 
