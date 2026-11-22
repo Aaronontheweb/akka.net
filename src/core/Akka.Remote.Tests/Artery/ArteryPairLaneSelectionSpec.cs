@@ -14,6 +14,7 @@ using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Configuration;
 using Akka.Remote.Artery;
+using Akka.Remote.Configuration;
 using Akka.TestKit;
 using Akka.TestKit.Extensions;
 using FluentAssertions;
