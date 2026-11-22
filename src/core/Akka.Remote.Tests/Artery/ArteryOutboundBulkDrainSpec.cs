@@ -257,8 +257,8 @@ namespace Akka.Remote.Tests.Artery
         {
             var (writes, frames) = await RunRoundTripAsync(lanes, bulkDrain: true, count: 400, expectFlowTotals: true);
 
-            frames.Should().BeGreaterThanOrEqualTo(400);
-            writes.Should().BeGreaterThan(0).And.BeLessThanOrEqualTo(frames);
+            frames.Should().BeGreaterThan(399);
+            writes.Should().BeInRange(1, frames);
         }
 
         [Fact(DisplayName = "Bulk drain should hand the connection many frames per write when a single lane queued a burst")]
