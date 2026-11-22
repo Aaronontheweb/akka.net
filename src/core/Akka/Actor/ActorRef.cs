@@ -1,4 +1,4 @@
-﻿//-----------------------------------------------------------------------
+﻿﻿//-----------------------------------------------------------------------
 // <copyright file="ActorRef.cs" company="Akka.NET Project">
 //     Copyright (C) 2009-2022 Lightbend Inc. <http://www.lightbend.com>
 //     Copyright (C) 2013-2025 .NET Foundation <https://github.com/akkadotnet/akka.net>
@@ -97,9 +97,20 @@ namespace Akka.Actor
     /// <summary>
     /// INTERNAL API.
     ///
+    /// Implemented by refs whose <c>Tell</c> never reads the sender it is given, so a transport may skip
+    /// resolving the sender of an incoming message addressed to one.
+    /// </summary>
+    internal interface IIgnoresSender
+    {
+        bool IgnoresSender { get; }
+    }
+
+    /// <summary>
+    /// INTERNAL API.
+    ///
     /// ActorRef implementation used for one-off tasks.
     /// </summary>
-    public class FutureActorRef<T> : MinimalActorRef
+    public class FutureActorRef<T> : MinimalActorRef, IIgnoresSender
     {
         private readonly TaskCompletionSource<T> _result;
         private readonly ActorPath _path;
@@ -117,6 +128,10 @@ namespace Akka.Actor
             _path = path;
             _provider = provider;
         }
+
+        // TellInternal below never reads its sender (an undeliverable message is dead-lettered with this ref as
+        // the sender). Exact type only: a subclass may override TellInternal and use the sender.
+        bool IIgnoresSender.IgnoresSender => GetType() == typeof(FutureActorRef<T>);
 
         /// <summary>
         /// The path associated with this one-off actor reference.

@@ -1158,7 +1158,9 @@ namespace Akka.Remote.Artery
         /// </summary>
         private void DeliverOrdinaryMessage(IActorRef recipient, object message, string? senderPath)
         {
-            var sender = senderPath is { } sp
+            // A recipient that never reads its sender (the future behind an Ask) gets the same sender as a frame
+            // with none, so the sender path is not parsed and no ref is allocated for it.
+            var sender = senderPath is { } sp && recipient is not IIgnoresSender { IgnoresSender: true }
                 ? Provider.ResolveActorRefWithLocalAddress(sp, DefaultAddress)
                 : (IActorRef)System.DeadLetters;
 
