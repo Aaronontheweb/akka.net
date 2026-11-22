@@ -257,7 +257,7 @@ namespace Akka.Remote.Tests.Artery
             var h = BuildHarness(materializer, resendInterval: TimeSpan.FromSeconds(30));
             var peer = h.CompleteHandshake(remoteUid: 555L);
 
-            await h.Sub.RequestAsync(3);
+            await h.Sub.RequestAsync(4); // two original sends plus the two-entry resend
             await h.Pub.SendNextAsync(SystemMessageElement("m1"));
             await h.Pub.SendNextAsync(SystemMessageElement("m2"));
             await h.Sub.ExpectNextAsync(TimeSpan.FromSeconds(3)); // seq 1
