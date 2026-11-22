@@ -528,7 +528,7 @@ namespace Akka.Remote.Artery
             // ActorMaterializerSettings.Create(System) already injects the default materializer
             // config as a fallback (ActorMaterializer.cs), so no separate InjectTopLevelFallback
             // call is needed here.
-            var settings = ActorMaterializerSettings.Create(System);
+            var settings = ApplyStreamOverrides(ActorMaterializerSettings.Create(System), _settings);
             var haveShutDown = new AtomicBoolean();
             var supervisor = System.SystemActorOf(
                 StreamSupervisor.Props(settings, haveShutDown).WithDispatcher(settings.Dispatcher),
@@ -541,6 +541,32 @@ namespace Akka.Remote.Artery
                 supervisor: supervisor,
                 haveShutDown: haveShutDown,
                 flowNames: EnumerableActorName.Create("remote"));
+        }
+
+        /// <summary>
+        /// Applies <c>advanced.stream-input-buffer-size</c> and <c>advanced.stream-sync-processing-limit</c>
+        /// to the settings of Artery's own materializer. Both default to 0, which returns
+        /// <paramref name="settings"/> unchanged (the values inherited from <c>akka.stream.materializer</c>).
+        /// </summary>
+        /// <remarks>
+        /// Every Artery graph is a single fused interpreter with no asynchronous boundary of its own,
+        /// so the input buffer size reaches it as the default <see cref="Attributes.InputBuffer"/>
+        /// and as the per-run event chunk of each interpreter shell
+        /// (<c>max-input-buffer-size * internal port count</c>). The sync processing limit is the number of
+        /// events an interpreter actor runs per mailbox message; it is read from the materializer's
+        /// own settings, not from attributes, which is why it has to be set here.
+        /// </remarks>
+        internal static ActorMaterializerSettings ApplyStreamOverrides(ActorMaterializerSettings settings, ArterySettings artery)
+        {
+            if (artery.StreamInputBufferSize > 0)
+                settings = settings.WithInputBuffer(
+                    Math.Min(settings.InitialInputBufferSize, artery.StreamInputBufferSize),
+                    artery.StreamInputBufferSize);
+
+            if (artery.StreamSyncProcessingLimit > 0)
+                settings = settings.WithSyncProcessingLimit(artery.StreamSyncProcessingLimit);
+
+            return settings;
         }
 
         // Runs on the scheduler: it must never throw. Poll logs, and does not rethrow, what the source throws.
@@ -1877,7 +1903,9 @@ namespace Akka.Remote.Artery
 
             try
             {
-                var mergeHubSource = MergeHub.Source<ReadOnlySequence<byte>>();
+                // Per-lane window into the merge: advanced.outbound-hub-buffer-size (default 16, the
+                // same value the parameterless MergeHub.Source<T>() uses).
+                var mergeHubSource = MergeHub.Source<ReadOnlySequence<byte>>(_settings.OutboundHubBufferSize);
 
                 // INNER CONNECTION RESTART (Pekko's connectionFlowWithRestart,
                 // ArteryTcpTransport.scala): the TCP connection ALONE is wrapped in

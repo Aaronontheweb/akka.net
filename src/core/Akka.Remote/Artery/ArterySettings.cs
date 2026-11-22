@@ -102,6 +102,37 @@ namespace Akka.Remote.Artery
         public int OutboundLanes { get; }
 
         /// <summary>
+        /// Default for <see cref="OutboundHubBufferSize"/>; equal to the buffer size the parameterless
+        /// <c>MergeHub.Source&lt;T&gt;()</c> factory uses.
+        /// </summary>
+        internal const int DefaultOutboundHubBufferSize = 16;
+
+        /// <summary>
+        /// <c>akka.remote.artery.advanced.outbound-hub-buffer-size</c>: the per-producer buffer of the
+        /// <c>MergeHub</c> that merges the ordinary outbound lanes (only materialized when
+        /// <see cref="OutboundLanes"/> &gt; 1). Each lane may have at most this many encoded frames
+        /// queued in the hub; the hub grants a lane more demand in steps of half this value (rounded
+        /// up) as it dequeues that lane's frames.
+        /// </summary>
+        public int OutboundHubBufferSize { get; }
+
+        /// <summary>
+        /// <c>akka.remote.artery.advanced.stream-input-buffer-size</c>: when greater than 0, overrides
+        /// the materializer's max input buffer size (and caps the initial one) for every stream
+        /// Artery materializes. 0 (the default) inherits <c>akka.stream.materializer</c>.
+        /// Must be a power of two.
+        /// </summary>
+        public int StreamInputBufferSize { get; }
+
+        /// <summary>
+        /// <c>akka.remote.artery.advanced.stream-sync-processing-limit</c>: when greater than 0,
+        /// overrides the number of stream events an Artery interpreter actor processes per mailbox
+        /// message before it re-enqueues a resume. 0 (the default) inherits
+        /// <c>akka.stream.materializer.sync-processing-limit</c>.
+        /// </summary>
+        public int StreamSyncProcessingLimit { get; }
+
+        /// <summary>
         /// <c>akka.remote.artery.advanced.test-mode</c> (Pekko key parity): enables the
         /// failure-injection test stages (<see cref="OutboundTestStage"/> /
         /// <see cref="InboundTestStage"/>) used by the multi-node TestConductor's
@@ -340,6 +371,23 @@ namespace Akka.Remote.Artery
             if (OutboundLanes < 1)
                 throw new ConfigurationException(
                     $"akka.remote.artery.advanced.outbound-lanes must be >= 1, but was [{OutboundLanes}].");
+
+            OutboundHubBufferSize = arteryConfig.GetInt("advanced.outbound-hub-buffer-size", DefaultOutboundHubBufferSize);
+            if (OutboundHubBufferSize < 1)
+                throw new ConfigurationException(
+                    $"akka.remote.artery.advanced.outbound-hub-buffer-size must be >= 1, but was [{OutboundHubBufferSize}].");
+
+            StreamInputBufferSize = arteryConfig.GetInt("advanced.stream-input-buffer-size", 0);
+            if (StreamInputBufferSize < 0 || (StreamInputBufferSize & (StreamInputBufferSize - 1)) != 0)
+                throw new ConfigurationException(
+                    "akka.remote.artery.advanced.stream-input-buffer-size must be 0 (inherit akka.stream.materializer) " +
+                    $"or a positive power of two, but was [{StreamInputBufferSize}].");
+
+            StreamSyncProcessingLimit = arteryConfig.GetInt("advanced.stream-sync-processing-limit", 0);
+            if (StreamSyncProcessingLimit < 0)
+                throw new ConfigurationException(
+                    "akka.remote.artery.advanced.stream-sync-processing-limit must be 0 (inherit akka.stream.materializer) " +
+                    $"or greater than 0, but was [{StreamSyncProcessingLimit}].");
 
             HandshakeTimeout = GetPositiveTimeSpan(arteryConfig, "advanced.handshake-timeout", TimeSpan.FromSeconds(20));
             HandshakeRetryInterval = GetPositiveTimeSpan(arteryConfig, "advanced.handshake-retry-interval", TimeSpan.FromSeconds(1));
