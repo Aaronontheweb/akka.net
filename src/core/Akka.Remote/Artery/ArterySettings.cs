@@ -104,7 +104,7 @@ namespace Akka.Remote.Artery
         /// <summary>
         /// <c>akka.remote.artery.advanced.numeric-refs</c>: when <see langword="true"/>, a temporary Ask ref
         /// owned by this system is SENT as a numeric record instead of a path literal -- as the sender of a
-        /// request, and as the recipient of a reply addressed to a <see cref="RemoteTempActorRef"/>. Default off.
+        /// request, and as the recipient of a reply addressed to a <see cref="RemoteTempActorRef"/>. Default on.
         /// Affects only what this system writes: the decoder always accepts every shape, so a node with this
         /// off interoperates with one that has it on.
         /// </summary>
@@ -350,7 +350,7 @@ namespace Akka.Remote.Artery
                 throw new ConfigurationException(
                     $"akka.remote.artery.advanced.outbound-lanes must be >= 1, but was [{OutboundLanes}].");
 
-            NumericRefs = arteryConfig.GetBoolean("advanced.numeric-refs", false);
+            NumericRefs = arteryConfig.GetBoolean("advanced.numeric-refs", true);
 
             HandshakeTimeout = GetPositiveTimeSpan(arteryConfig, "advanced.handshake-timeout", TimeSpan.FromSeconds(20));
             HandshakeRetryInterval = GetPositiveTimeSpan(arteryConfig, "advanced.handshake-retry-interval", TimeSpan.FromSeconds(1));

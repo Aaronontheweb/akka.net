@@ -758,6 +758,7 @@ namespace Akka.Remote.Tests.Artery
             new object[] { true, true },
             new object[] { true, false },
             new object[] { false, true },
+            new object[] { false, false },
         };
 
         public sealed class EchoActor : ReceiveActor

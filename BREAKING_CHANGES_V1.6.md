@@ -91,7 +91,7 @@ add `Wire` when the bytes on the wire change.
   and the decoder rejects any other version, so a node on this build cannot talk to an earlier v1.6 beta over
   Artery. A peer on another version now gets one error log naming both versions and its connection is failed,
   instead of a per-frame warning. The sender and recipient fields gain a numeric shape; with
-  `akka.remote.artery.advanced.numeric-refs = on` (default `off`) a
+  `akka.remote.artery.advanced.numeric-refs = on` (the default; set it to `off` to write path strings only) a
   node writes its own temporary Ask refs that way, and every node decodes every shape. Receive-side behaviors follow: a numeric reply to a plain
   Ask future (exactly `FutureActorRef<T>` created from a temp id) does not resolve its sender, so an
   unparseable sender path on such a frame no longer drops it; a numeric record that names a system UID other than
