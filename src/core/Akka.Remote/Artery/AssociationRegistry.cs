@@ -1367,6 +1367,19 @@ namespace Akka.Remote.Artery
         }
 
         /// <summary>
+        /// Compare-and-set rollback of <see cref="AdvanceInboundSystemMessageSeq"/>: the shared expectation returns
+        /// to <paramref name="seqNo"/> only if it is still <c>seqNo + 1</c> (nobody advanced it further).
+        /// </summary>
+        public void RollbackInboundSystemMessageSeq(long originUid, long seqNo)
+        {
+            lock (_handshakeLock)
+            {
+                if (_sharedExpectedSeq.TryGetValue(originUid, out var shared) && shared == seqNo + 1)
+                    _sharedExpectedSeq[originUid] = seqNo;
+            }
+        }
+
+        /// <summary>
         /// A point-in-time snapshot of every association currently known to this registry. Used by
         /// <c>ArteryRemoting.Shutdown</c> to complete every association's outbound channel.
         /// </summary>

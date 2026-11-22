@@ -276,22 +276,22 @@ namespace Akka.Remote.Tests.Artery
             var delivered = new System.Collections.Concurrent.ConcurrentQueue<string>();
             var materializer = ActorMaterializer.Create(Sys);
 
-            TestPublisher.Probe<IInboundEnvelope> Start() =>
+            (TestPublisher.Probe<IInboundEnvelope> Pub, Task Done) Start() =>
                 this.SourceProbe<IInboundEnvelope>()
                     .Via(Flow.FromGraph(new SystemMessageAckerStage(context)))
-                    .To(Sink.ForEach<IInboundEnvelope>(e => delivered.Enqueue(((TestSystemMessage)e.Message).Name)))
+                    .ToMaterialized(Sink.ForEach<IInboundEnvelope>(e => delivered.Enqueue(((TestSystemMessage)e.Message).Name)), Keep.Both)
                     .Run(materializer);
 
             // Each connection sends the same ascending window, like an old and a new connection overlapping.
-            var pubs = new[] { Start(), Start() };
-            await Task.WhenAll(pubs.Select(pub => Task.Run(async () =>
+            var streams = new[] { Start(), Start() };
+            await Task.WhenAll(streams.Select(stream => Task.Run(async () =>
             {
                 for (var seq = 1L; seq <= count; seq++)
-                    await pub.SendNextAsync(Envelope(Sme(seq, peer, seq.ToString()), peer.Uid));
+                    await stream.Pub.SendNextAsync(Envelope(Sme(seq, peer, seq.ToString()), peer.Uid));
+                stream.Pub.SendComplete();
             })));
 
-            await AwaitAssertAsync(() => delivered.Count.Should().BeGreaterOrEqualTo(count), TimeSpan.FromSeconds(10));
-            await Task.Delay(300);
+            await Task.WhenAll(streams.Select(stream => stream.Done)).WaitAsync(TimeSpan.FromSeconds(10));
             delivered.Select(long.Parse).OrderBy(x => x).Should().Equal(Enumerable.Range(1, count).Select(x => (long)x));
         }
 
@@ -453,6 +453,90 @@ namespace Akka.Remote.Tests.Artery
             ((TestSystemMessage)(await sub.ExpectNextAsync(TimeSpan.FromSeconds(3))).Message).Name.Should().Be("stranger");
             sentControl.Should().ContainSingle().Which.Message.Should().BeOfType<SysAck>();
             registry.SharedExpectationCount.Should().Be(0, "an unregistered uid gets no shared entry");
+        }
+
+        [Theory(DisplayName = "Should_PreserveConnectionProgress_When_SharedPrefixIsRemoved")]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Should_PreserveConnectionProgress_When_SharedPrefixIsRemoved(bool restoreA1)
+        {
+            var a1 = NewRemotePeer(223L);
+            var a0 = NewRemotePeer(222L);
+            var registry = new AssociationRegistry();
+            registry.CompleteHandshake(a1.Address, a1);
+
+            var delivered = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            var replies = new System.Collections.Concurrent.ConcurrentQueue<object>();
+            var context = new AssociationRegistryInboundContext(registry, NewLocal(), (_, message) => replies.Enqueue(message));
+            var materializer = ActorMaterializer.Create(Sys);
+
+            TestPublisher.Probe<IInboundEnvelope> Open() =>
+                this.SourceProbe<IInboundEnvelope>()
+                    .Via(Flow.FromGraph(new SystemMessageAckerStage(context)))
+                    .To(Sink.ForEach<IInboundEnvelope>(e => delivered.Enqueue(((TestSystemMessage)e.Message).Name)))
+                    .Run(materializer);
+
+            var c1 = Open();
+            await c1.SendNextAsync(Envelope(Sme(1L, a1, "m1"), a1.Uid));
+            await AwaitAssertAsync(() => delivered.Count.Should().Be(1), TimeSpan.FromSeconds(3));
+            c1.SendComplete();
+
+            // The replay of seq 1 on a new connection is suppressed through the shared expectation ...
+            var c2 = Open();
+            await c2.SendNextAsync(Envelope(Sme(1L, a1, "m1"), a1.Uid));
+            await AwaitAssertAsync(() => replies.OfType<SysAck>().Count().Should().Be(2), TimeSpan.FromSeconds(3));
+
+            // ... and the shared entry is then removed by a handshake of another uid.
+            registry.CompleteHandshake(a0.Address, a0);
+            if (restoreA1)
+                registry.CompleteHandshake(a1.Address, a1);
+
+            // That connection must still know the prefix, as a connection that had delivered it itself would.
+            await c2.SendNextAsync(Envelope(Sme(2L, a1, "m2"), a1.Uid));
+            await AwaitAssertAsync(() => delivered.Should().Contain("m2"), TimeSpan.FromSeconds(3));
+            replies.OfType<SysNack>().Should().BeEmpty();
+            c2.SendComplete();
+        }
+
+        [Fact(DisplayName = "Should_RedeliverOnNewStage_When_AcceptanceFailedBeforeThePush")]
+        public async Task Should_RedeliverOnNewStage_When_AcceptanceFailedBeforeThePush()
+        {
+            var peer = NewRemotePeer();
+            var (registry, _, _) = NewContext(peer);
+            var fail = true;
+            var context = new AssociationRegistryInboundContext(registry, NewLocal(), (_, _) =>
+            {
+                if (fail)
+                    throw new InvalidOperationException("control send failed");
+            });
+
+            // The first stage fails while acknowledging seq 1; nothing was emitted.
+            var (pub1, sub1) = Materialize(context);
+            await sub1.RequestAsync(1);
+            await pub1.SendNextAsync(Envelope(Sme(1L, peer, "m1"), peer.Uid));
+            (await sub1.ExpectErrorAsync()).Should().BeOfType<InvalidOperationException>();
+
+            // The replay on a new connection must not be suppressed by a reservation that was never emitted.
+            fail = false;
+            var (pub2, sub2) = Materialize(context);
+            await sub2.RequestAsync(1);
+            await pub2.SendNextAsync(Envelope(Sme(1L, peer, "m1"), peer.Uid));
+            ((TestSystemMessage)(await sub2.ExpectNextAsync(TimeSpan.FromSeconds(3))).Message).Name.Should().Be("m1");
+        }
+
+        [Fact(DisplayName = "Should_NotRollBackSharedExpectation_When_AnotherConnectionAdvancedItFurther")]
+        public void Should_NotRollBackSharedExpectation_When_AnotherConnectionAdvancedItFurther()
+        {
+            var peer = NewRemotePeer();
+            var (registry, _, _) = NewContext(peer);
+            registry.AdvanceInboundSystemMessageSeq(peer.Uid, 1L, localExpected: 1L).Should().Be(1L);
+            registry.AdvanceInboundSystemMessageSeq(peer.Uid, 2L, localExpected: 1L).Should().Be(2L);
+
+            registry.RollbackInboundSystemMessageSeq(peer.Uid, 1L); // seq 2 was accepted meanwhile: no effect
+            registry.AdvanceInboundSystemMessageSeq(peer.Uid, 0L, localExpected: 1L).Should().Be(3L);
+
+            registry.RollbackInboundSystemMessageSeq(peer.Uid, 2L); // still n + 1: rolled back
+            registry.AdvanceInboundSystemMessageSeq(peer.Uid, 0L, localExpected: 1L).Should().Be(2L);
         }
     }
 }

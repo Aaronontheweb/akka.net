@@ -360,6 +360,52 @@ namespace Akka.Remote.Tests.Artery
             ((SystemMessageEnvelope)(await h.Sub.ExpectNextAsync(TimeSpan.FromSeconds(2))).Message).SeqNo.Should().Be(1L);
         }
 
+        [Fact(DisplayName = "Should_DeliverNewSeqOne_When_PeerOscillationResetsSenderBeforeReconnect", Skip = "known limit: sender numbering reset by a stale handshake is indistinguishable from a replay without a numbering epoch")]
+        public async Task Should_DeliverNewSeqOne_When_PeerOscillationResetsSenderBeforeReconnect()
+        {
+            var materializer = ActorMaterializer.Create(Sys);
+            var h = BuildHarness(materializer, resendInterval: TimeSpan.FromSeconds(30));
+            var b1 = h.CompleteHandshake(remoteUid: 555L);
+            var a = NewLocal();
+
+            var receiverRegistry = new AssociationRegistry();
+            receiverRegistry.CompleteHandshake(a.Address, a);
+            var context = new AssociationRegistryInboundContext(receiverRegistry, b1, (_, _) => { });
+
+            (TestPublisher.Probe<IInboundEnvelope> Pub, TestSubscriber.Probe<IInboundEnvelope> Sub) Open() =>
+                this.SourceProbe<IInboundEnvelope>()
+                    .Via(Flow.FromGraph(new SystemMessageAckerStage(context)))
+                    .ToMaterialized(this.SinkProbe<IInboundEnvelope>(), Keep.Both)
+                    .Run(materializer);
+
+            IInboundEnvelope Inbound(SystemMessageEnvelope message) => new InboundEnvelope(message, null, null, a.Uid, 0, "");
+
+            await h.Sub.RequestAsync(2);
+            var first = Open();
+            await first.Sub.RequestAsync(1);
+
+            await h.Pub.SendNextAsync(SystemMessageElement("old"));
+            var oldMessage = (SystemMessageEnvelope)(await h.Sub.ExpectNextAsync(TimeSpan.FromSeconds(3))).Message;
+            await first.Pub.SendNextAsync(Inbound(oldMessage));
+            await first.Sub.ExpectNextAsync(TimeSpan.FromSeconds(3));
+            h.DeliverControlMessage(b1.Uid, new SysAck(1L, b1));
+            await AwaitAssertAsync(() => h.State.Buffer.Count.Should().Be(0), TimeSpan.FromSeconds(3));
+            first.Pub.SendComplete();
+
+            // The sender's own uid never changes; only its view of the peer oscillates, which resets numbering.
+            h.CompleteHandshake(remoteUid: 554L);
+            h.CompleteHandshake(remoteUid: 555L);
+
+            var second = Open();
+            await second.Sub.RequestAsync(1);
+            await h.Pub.SendNextAsync(SystemMessageElement("new"));
+            var newMessage = (SystemMessageEnvelope)(await h.Sub.ExpectNextAsync(TimeSpan.FromSeconds(3))).Message;
+            newMessage.SeqNo.Should().Be(1L);
+
+            await second.Pub.SendNextAsync(Inbound(newMessage));
+            await second.Sub.ExpectNextAsync(TimeSpan.FromSeconds(3)); // the new message is delivered, not treated as a replay
+        }
+
         [Fact(DisplayName = "the resend timer periodically resends the whole unacknowledged window while any entry remains unacked")]
         public async Task Should_Resend_Unacked_Window_Periodically()
         {

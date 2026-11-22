@@ -121,6 +121,13 @@ namespace Akka.Remote.Artery
         /// <paramref name="localExpected"/>. See <see cref="AssociationRegistry.AdvanceInboundSystemMessageSeq"/>.
         /// </summary>
         long AdvanceInboundSystemMessageSeq(long originUid, long seqNo, long localExpected);
+
+        /// <summary>
+        /// Undoes the shared advance for <paramref name="seqNo"/> when acceptance failed before the message was
+        /// emitted: the shared expectation goes back to <paramref name="seqNo"/> only if it is still
+        /// <c>seqNo + 1</c>, so a value another connection has advanced further is never rolled back.
+        /// </summary>
+        void RollbackInboundSystemMessageSeq(long originUid, long seqNo);
     }
 
     /// <summary>
@@ -178,5 +185,9 @@ namespace Akka.Remote.Artery
         /// <inheritdoc/>
         public long AdvanceInboundSystemMessageSeq(long originUid, long seqNo, long localExpected) =>
             _registry.AdvanceInboundSystemMessageSeq(originUid, seqNo, localExpected);
+
+        /// <inheritdoc/>
+        public void RollbackInboundSystemMessageSeq(long originUid, long seqNo) =>
+            _registry.RollbackInboundSystemMessageSeq(originUid, seqNo);
     }
 }

@@ -54,6 +54,9 @@ namespace Akka.Remote.Artery
     /// the per-connection memory applies, as before. Two connections of one origin accept each seq once (the
     /// shared compare-and-advance is atomic); strict order is guaranteed per connection, not across two
     /// simultaneously open connections of one origin.
+    /// Known limit: a sender that resets its numbering while the receiver's shared entry for it survives
+    /// (for example after a stale handshake of an earlier incarnation of the peer) has a NEW seq 1 treated as
+    /// a replay of the old one; without a numbering epoch on the wire that is indistinguishable from a replay.
     /// <see cref="ClearSystemMessageDelivery"/> deliberately never crosses the wire in this
     /// implementation (see its own type docs).
     /// </para>
@@ -118,17 +121,34 @@ namespace Akka.Remote.Artery
                 var local = _expectedByOriginUid.TryGetValue(originUid, out var e) ? e : 1L;
                 var expected = _stage.Context.AdvanceInboundSystemMessageSeq(originUid, sme.SeqNo, local);
 
+                // The effective expectation (which may come from the shared state) is also this connection's
+                // own memory from now on, so it still knows the prefix if the shared entry is later removed.
+                if (expected > local)
+                    _expectedByOriginUid[originUid] = expected;
+
                 if (sme.SeqNo == expected)
                 {
                     _expectedByOriginUid[originUid] = expected + 1;
-                    SendAck(sme.AckReplyTo, expected);
 
-                    // Re-emitted as an ORDINARY-shaped envelope -- IsControl computes to false since
-                    // the inner message is not an IArteryControlMessage, so it flows straight through
-                    // ArteryRemoting.DispatchInbound's existing ordinary-message path unchanged
-                    // (that path is updated to dispatch via SendSystemMessage, not Tell, when the
-                    // resolved Message is an ISystemMessage).
-                    Push(_stage.Out, new InboundEnvelope(sme.Message, null, sme.RecipientPath, originUid, SerializerId: 0, Manifest: string.Empty));
+                    // The shared expectation has already advanced: a failure before the push must not leave
+                    // it claiming a message that was never emitted.
+                    try
+                    {
+                        SendAck(sme.AckReplyTo, expected);
+
+                        // Re-emitted as an ORDINARY-shaped envelope -- IsControl computes to false since
+                        // the inner message is not an IArteryControlMessage, so it flows straight through
+                        // ArteryRemoting.DispatchInbound's existing ordinary-message path unchanged
+                        // (that path is updated to dispatch via SendSystemMessage, not Tell, when the
+                        // resolved Message is an ISystemMessage).
+                        Push(_stage.Out, new InboundEnvelope(sme.Message, null, sme.RecipientPath, originUid, SerializerId: 0, Manifest: string.Empty));
+                    }
+                    catch
+                    {
+                        _stage.Context.RollbackInboundSystemMessageSeq(originUid, expected);
+                        throw;
+                    }
+
                     return;
                 }
 
