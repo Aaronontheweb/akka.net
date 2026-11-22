@@ -7,7 +7,6 @@
 
 #nullable enable
 
-using System.Collections.Generic;
 using Akka.Streams;
 using Akka.Streams.Stage;
 
@@ -24,7 +23,7 @@ namespace Akka.Remote.Artery
     /// InboundQuarantineCheck -> [control only: SystemMessageAcker -- dedup + ACK] -> messageDispatcherSink</c>).
     ///
     /// <para>
-    /// <b>Per-sender-uid expected-seq map, NO inbound reorder buffer (design.md, verified against
+    /// <b>Per-sender-uid expected seq, NO inbound reorder buffer (design.md, verified against
     /// Pekko's deliberately simpler Artery protocol -- see <see cref="SystemMessageEnvelope"/>'s
     /// type-level remarks).</b> For each inbound <see cref="SystemMessageEnvelope"/>:
     /// <list type="bullet">
@@ -43,19 +42,12 @@ namespace Akka.Remote.Artery
     /// </para>
     ///
     /// <para>
-    /// <b>Eviction policy (design.md's open decision -- "Pekko has an unbounded-growth TODO; do at
-    /// least incarnation-based cleanup").</b> This stage's expected-seq dictionary is scoped to the
-    /// ONE accepted TCP connection it is materialized on (design.md: exactly one control connection
-    /// per association). A genuinely new incarnation (the peer's <c>ActorSystem</c> restarted under a
-    /// new uid) requires a brand-new inbound connection -- which materializes a BRAND-NEW
-    /// <see cref="SystemMessageAckerStage"/> instance with an empty dictionary. So incarnation-based
-    /// cleanup falls out of the connection lifecycle for free; no additional eviction bookkeeping is
-    /// implemented (a single long-lived connection that somehow cycled through many peer incarnations
-    /// without ever reconnecting could still accumulate stale-uid entries -- the same open TODO Pekko
-    /// has, not fully closed here either, per design.md's explicit "do at least" floor).
-    /// <see cref="ClearSystemMessageDelivery"/> deliberately never crosses the wire in this
-    /// implementation (see its own type docs) so there is no wire-triggered eviction path to wire up
-    /// here.
+    /// <b>State lifetime.</b> The expected-seq map is NOT per connection: the sender's
+    /// <see cref="SystemMessageDeliveryState"/> survives reconnects, so a fresh stage per accepted
+    /// connection must resume at the same expectation. It lives in the <see cref="AssociationRegistry"/>
+    /// (via <see cref="IInboundContext.AdvanceInboundSystemMessageSeq"/>), is dropped when the origin uid
+    /// is quarantined or superseded by a new incarnation, and so holds at most one entry per association.
+    /// <see cref="ClearSystemMessageDelivery"/> deliberately never crosses the wire.
     /// </para>
     /// </summary>
     internal sealed class SystemMessageAckerStage : GraphStage<FlowShape<IInboundEnvelope, IInboundEnvelope>>
@@ -78,9 +70,6 @@ namespace Akka.Remote.Artery
         private sealed class Logic : GraphStageLogic, IInHandler, IOutHandler
         {
             private readonly SystemMessageAckerStage _stage;
-
-            /// <summary>Next expected seq number, per sender uid. Absent == 1 (nothing seen yet).</summary>
-            private readonly Dictionary<long, long> _expectedByOriginUid = new();
 
             public Logic(SystemMessageAckerStage stage) : base(stage.Shape)
             {
@@ -115,11 +104,18 @@ namespace Akka.Remote.Artery
 
             private void HandleSystemMessageEnvelope(long originUid, SystemMessageEnvelope sme)
             {
-                var expected = _expectedByOriginUid.TryGetValue(originUid, out var e) ? e : 1L;
+                // Shared, connection-independent state; advanced atomically when seq == expected.
+                var expected = _stage.Context.AdvanceInboundSystemMessageSeq(originUid, sme.SeqNo);
+
+                if (expected == 0L)
+                {
+                    // Unknown, superseded or quarantined origin: nothing to acknowledge.
+                    Pull(_stage.In);
+                    return;
+                }
 
                 if (sme.SeqNo == expected)
                 {
-                    _expectedByOriginUid[originUid] = expected + 1;
                     SendAck(sme.AckReplyTo, expected);
 
                     // Re-emitted as an ORDINARY-shaped envelope -- IsControl computes to false since

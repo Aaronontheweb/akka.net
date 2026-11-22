@@ -300,19 +300,41 @@ namespace Akka.Remote.Artery
             private void ProcessAck(long seqNo)
             {
                 while (State.Buffer.Count > 0 && State.Buffer.Peek().Seq <= seqNo)
+                {
                     State.Buffer.Dequeue();
+                    _noProgressNackResent = false;
+                }
             }
+
+            /// <summary>
+            /// True after an immediate resend triggered by a Nack that acknowledged nothing; cleared by any
+            /// Ack/Nack that does. Per materialization: a restarted stream starts with it cleared.
+            /// </summary>
+            private bool _noProgressNackResent;
 
             private void ProcessNack(long seqNo)
             {
+                var progress = false;
                 while (State.Buffer.Count > 0 && State.Buffer.Peek().Seq <= seqNo)
+                {
                     State.Buffer.Dequeue();
+                    progress = true;
+                }
+
+                if (progress)
+                    _noProgressNackResent = false;
 
                 // Immediate tail resend -- do not wait for the next resend-timer tick. Skipped if a
                 // batch is already queued (bounds memory; see the type-level backpressure remarks).
-                if (State.Buffer.Count > 0 && _outQueue.Count == 0)
+                // A Nack that acknowledged nothing resends immediately only once; further no-progress
+                // Nacks are left to the resend timer, which stays the sole retry path, so a persistent
+                // receiver-side desync costs one resend per interval instead of a resend per Nack.
+                if (State.Buffer.Count > 0 && _outQueue.Count == 0 && (progress || !_noProgressNackResent))
+                {
+                    _noProgressNackResent = !progress;
                     foreach (var entry in State.Buffer)
                         _outQueue.Enqueue(entry.Envelope);
+                }
             }
 
             public void OnPush()
