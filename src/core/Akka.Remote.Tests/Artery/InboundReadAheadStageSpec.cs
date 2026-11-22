@@ -135,7 +135,7 @@ namespace Akka.Remote.Tests.Artery
 
             await sub.RequestAsync(1);
             var batch = await sub.ExpectNextAsync(TimeSpan.FromSeconds(5));
-            batch.Length.Should().BeGreaterThanOrEqualTo(3 * chunkLength);
+            batch.Length.Should().BeGreaterOrEqualTo(3 * chunkLength);
 
             // Handing the buffer downstream frees capacity, so reading resumes.
             if (pub.Pending == 0)
