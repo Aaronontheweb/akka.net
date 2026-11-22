@@ -158,6 +158,8 @@ namespace Akka.Remote.Tests.Artery
         private static void SetTag(byte[] frame, int tagOffset, uint tag) =>
             System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(frame.AsSpan(4 + tagOffset), tag);
 
+        private ActorMaterializer? _materializer;
+
         private const long SentinelOrigin = 43;
         private const string SentinelRecipient = "akka://local/user/a";
 
@@ -206,19 +208,14 @@ namespace Akka.Remote.Tests.Artery
             var chunks = split is null ? new[] { bytes } : split(bytes).ToArray();
             chunks.SelectMany(c => c).Should().Equal(bytes, "the split must preserve the byte stream");
 
-            var materializer = ActorMaterializer.Create(Sys);
-            try
-            {
-                await Source.From(chunks.Select(c => new ReadOnlySequence<byte>(c))).Via(stage)
-                    .RunWith(Sink.Ignore<IInboundEnvelope>(), materializer)
-                    .WaitAsync(TimeSpan.FromSeconds(10));
-                await done.Task.WaitAsync(TimeSpan.FromSeconds(10));
-                return delivered.Where(d => !Equals(d.Message, "sentinel")).ToList();
-            }
-            finally
-            {
-                materializer.Shutdown();
-            }
+            // One materializer per test instance, reused by every run (a test may run hundreds of
+            // streams); it is released with the actor system when the spec is disposed.
+            _materializer ??= ActorMaterializer.Create(Sys);
+            await Source.From(chunks.Select(c => new ReadOnlySequence<byte>(c))).Via(stage)
+                .RunWith(Sink.Ignore<IInboundEnvelope>(), _materializer)
+                .WaitAsync(TimeSpan.FromSeconds(10));
+            await done.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            return delivered.Where(d => !Equals(d.Message, "sentinel")).ToList();
         }
 
         [Fact(DisplayName = "Deferred decode: the stage honours the flag only when lanes > 1")]
