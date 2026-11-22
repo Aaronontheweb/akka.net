@@ -189,7 +189,8 @@ namespace Akka.Remote.Artery
             IInboundContext? inboundContext = null,
             Action<object, InboundWireRefs>? dispatchOrdinary = null,
             Action<int>? onLanesInitialized = null,
-            SharedTestState? testState = null)
+            SharedTestState? testState = null,
+            int inboundLaneSpinIterations = 0)
         {
             if (inboundLanes < 1)
                 throw new ArgumentOutOfRangeException(nameof(inboundLanes), inboundLanes, "Must be >= 1.");
@@ -203,6 +204,7 @@ namespace Akka.Remote.Artery
             TimeProvider = timeProvider;
             InboundLanes = inboundLanes;
             InboundLaneBufferSize = inboundLaneBufferSize;
+            InboundLaneSpinIterations = inboundLaneSpinIterations;
             InboundContext = inboundContext;
             DispatchOrdinary = dispatchOrdinary;
             OnLanesInitialized = onLanesInitialized;
@@ -261,6 +263,9 @@ namespace Akka.Remote.Artery
 
         /// <summary>See the constructor parameter of the same name.</summary>
         public int InboundLaneBufferSize { get; }
+
+        /// <summary>Maximum spin iterations a lane consumer waits for the next item before parking; 0 disables spinning.</summary>
+        public int InboundLaneSpinIterations { get; }
 
         /// <summary>See the constructor parameter of the same name. <see langword="null"/> when <see cref="InboundLanes"/> is 1.</summary>
         public IInboundContext? InboundContext { get; }
@@ -723,7 +728,8 @@ namespace Akka.Remote.Artery
                     var log = _laneLog;
                     var serialization = _stage.Serialization;
                     var dispatch = _stage.DispatchOrdinary!;
-                    _ = Task.Run(() => RunLaneConsumer(reader, serialization, dispatch, log));
+                    var spinIterations = _stage.InboundLaneSpinIterations;
+                    _ = Task.Run(() => RunLaneConsumer(reader, serialization, dispatch, log, spinIterations));
                 }
 
                 _lanes = lanes;
@@ -750,13 +756,15 @@ namespace Akka.Remote.Artery
                 ChannelReader<LaneWorkItem> reader,
                 Akka.Serialization.Serialization serialization,
                 Action<object, InboundWireRefs> dispatch,
-                ILoggingAdapter log)
+                ILoggingAdapter log,
+                int spinIterations)
             {
                 try
                 {
                     while (await reader.WaitToReadAsync().ConfigureAwait(false))
                     {
-                        while (reader.TryRead(out var item))
+                        var hasItem = reader.TryRead(out var item);
+                        while (hasItem)
                         {
                             try
                             {
@@ -771,6 +779,9 @@ namespace Akka.Remote.Artery
                                     "(serializer id [{0}], manifest [{1}]); connection remains live.",
                                     item.SerializerId, item.Manifest);
                             }
+
+                            hasItem = reader.TryRead(out item) ||
+                                      (spinIterations > 0 && TrySpinRead(reader, spinIterations, out item));
                         }
                     }
                 }
@@ -778,6 +789,27 @@ namespace Akka.Remote.Artery
                 {
                     log.Warning(ex, "Inbound Artery lane consumer loop terminated unexpectedly.");
                 }
+            }
+
+            /// <summary>
+            /// Bounded busy-wait for the next item, so a consumer on a latency-bound lane can avoid a
+            /// park/wake cycle. Never sleeps or yields the time slice, and stops as soon as the
+            /// channel has completed.
+            /// </summary>
+            private static bool TrySpinRead(ChannelReader<LaneWorkItem> reader, int spinIterations, out LaneWorkItem item)
+            {
+                var spinner = new SpinWait();
+                for (var i = 0; i < spinIterations; i++)
+                {
+                    if (reader.Completion.IsCompleted)
+                        break;
+                    spinner.SpinOnce(sleep1Threshold: -1);
+                    if (reader.TryRead(out item))
+                        return true;
+                }
+
+                item = default;
+                return false;
             }
 
             private void DrainReadyFramesLaneMode()
