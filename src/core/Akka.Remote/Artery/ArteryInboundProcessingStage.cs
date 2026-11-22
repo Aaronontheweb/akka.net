@@ -179,6 +179,10 @@ namespace Akka.Remote.Artery
         /// <see langword="null"/> (the default, and the only value when test-mode is off) disables
         /// the lane-path blackhole check entirely.
         /// </param>
+        /// <param name="inboundLaneSpinIterations">
+        /// Only used when <paramref name="inboundLanes"/> &gt; 1: maximum number of spin iterations a lane
+        /// consumer performs after draining its queue before it parks. 0 (the default) never spins.
+        /// </param>
         public ArteryInboundProcessingStage(
             int maxFrameLength,
             int maxLargeFrameLength,
