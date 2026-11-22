@@ -45,20 +45,31 @@ namespace Akka.Remote.Artery
     /// <para>
     /// <b>Expectation = per-connection memory + shared state.</b> This stage keeps its per-connection
     /// expected-seq map exactly as before, so within one connection it never forgets, whatever handshakes do.
-    /// In addition the <see cref="AssociationRegistry"/> keeps a shared expectation per origin uid (via
-    /// <see cref="IInboundContext.AdvanceInboundSystemMessageSeq"/>), because the sender's
+    /// In addition the <see cref="AssociationRegistry"/> keeps a shared expectation per sender
+    /// <see cref="UniqueAddress"/> (address and uid, as in the reference implementation; via
+    /// <see cref="IInboundContext.AdmitInboundSystemMessage"/>), because the sender's
     /// <see cref="SystemMessageDeliveryState"/> survives reconnects while a new stage starts empty. The
-    /// effective expectation is the larger of the two and both advance on delivery, so a NEW connection from
-    /// the SAME uid resumes where the previous one stopped instead of at 1. The shared entry is created by the
-    /// first accepted message of a uid that has completed a handshake and is never removed (as in the reference
-    /// implementation: one long per distinct peer incarnation that delivered a system message, for the lifetime of
-    /// the ActorSystem), so a uid that is superseded and seen again still resumes. A uid without a completed
-    /// handshake and without an entry uses the per-connection memory only. Two connections of one origin accept each seq once (the
-    /// shared compare-and-advance is atomic); strict order is guaranteed per connection, not across two
-    /// simultaneously open connections of one origin.
-    /// Known limit: a sender that resets its numbering while the receiver's shared entry for it survives
-    /// (for example after a stale handshake of an earlier incarnation of the peer) has a NEW seq 1 treated as
-    /// a replay of the old one; without a numbering epoch on the wire that is indistinguishable from a replay.
+    /// effective expectation is the larger of the two, so a NEW connection from the SAME sender resumes where the
+    /// previous one stopped instead of at 1. The shared entry is created by the first admitted message of a sender
+    /// that has completed a handshake and is never removed (one entry per distinct peer incarnation that delivered
+    /// a system message, for the lifetime of the ActorSystem, as in the reference implementation), so a sender that
+    /// is superseded and seen again still resumes. A sender without a completed handshake and without an entry
+    /// uses the per-connection memory only.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Reserve, commit, abort.</b> Admitting sequence number n reserves it in the shared state; it only becomes
+    /// part of the shared (committed) expectation once the Ack was sent and the message pushed. If either fails, or
+    /// the stage stops first, the reservation is released and the expectation is unchanged. While n is reserved, any
+    /// other connection that receives n drops it silently (no delivery, no Ack or Nack, no memory), so the sender's
+    /// resend timer retries it; frames above n are a gap as usual, answered with the last committed value. Two
+    /// connections of one sender therefore never deliver a sequence number twice, and never acknowledge one that
+    /// was not emitted. Strict order is guaranteed per connection, not across two simultaneously open connections
+    /// of one sender. Remaining assumptions: the same address AND uid reused by a genuinely new process is
+    /// indistinguishable from a replay (as in the reference implementation), and a sender that resets its numbering
+    /// while the receiver's entry for it survives (for example after a stale handshake of an earlier incarnation of
+    /// the peer) has a NEW seq 1 treated as a replay; without a numbering epoch on the wire that is indistinguishable
+    /// from a replay.
     /// <see cref="ClearSystemMessageDelivery"/> deliberately never crosses the wire in this
     /// implementation (see its own type docs).
     /// </para>
@@ -118,22 +129,44 @@ namespace Akka.Remote.Artery
 
             public void OnDownstreamFinish(System.Exception cause) => InternalOnDownstreamFinish(cause);
 
+            /// <summary>The reservation this stage holds (origin, seq) until it commits or aborts it.</summary>
+            private (UniqueAddress Origin, long SeqNo)? _reserved;
+
+            public override void PostStop()
+            {
+                // A stage that stops while holding a reservation must release it, or the sequence number
+                // would stay in flight and every other connection would drop it.
+                if (_reserved is { } r)
+                {
+                    _reserved = null;
+                    _stage.Context.AbortInboundSystemMessage(r.Origin, r.SeqNo);
+                }
+            }
+
             private void HandleSystemMessageEnvelope(long originUid, SystemMessageEnvelope sme)
             {
                 var local = _expectedByOriginUid.TryGetValue(originUid, out var e) ? e : 1L;
-                var expected = _stage.Context.AdvanceInboundSystemMessageSeq(originUid, sme.SeqNo, local);
+                var admission = _stage.Context.AdmitInboundSystemMessage(originUid, sme.AckReplyTo, sme.SeqNo, local);
+                var expected = admission.Expected;
 
-                // The effective expectation (which may come from the shared state) is also this connection's
-                // own memory from now on, so it still knows the prefix if the shared entry is later removed.
+                if (admission.Kind == InboundAdmissionKind.Busy)
+                {
+                    // Another connection is delivering this very sequence number and has not committed it yet:
+                    // stay silent (no delivery, no Ack/Nack, no memory) so the sender's resend timer retries it.
+                    Pull(_stage.In);
+                    return;
+                }
+
+                // The effective expectation is committed state only, and from now on also this connection's own
+                // memory, so it still knows the prefix however the shared state changes later.
                 if (expected > local)
                     _expectedByOriginUid[originUid] = expected;
 
-                if (sme.SeqNo == expected)
+                if (admission.Kind == InboundAdmissionKind.Accept)
                 {
-                    _expectedByOriginUid[originUid] = expected + 1;
+                    if (admission.Reserved)
+                        _reserved = (sme.AckReplyTo, sme.SeqNo);
 
-                    // The shared expectation has already advanced: a failure before the push must not leave
-                    // it claiming a message that was never emitted.
                     try
                     {
                         SendAck(sme.AckReplyTo, expected);
@@ -147,10 +180,13 @@ namespace Akka.Remote.Artery
                     }
                     catch
                     {
-                        _stage.Context.RollbackInboundSystemMessageSeq(originUid, expected);
+                        ReleaseReservation(commit: false);
                         throw;
                     }
 
+                    // Acked and pushed: only now does the sequence number count as delivered.
+                    _expectedByOriginUid[originUid] = expected + 1;
+                    ReleaseReservation(commit: true);
                     return;
                 }
 
@@ -168,6 +204,18 @@ namespace Akka.Remote.Artery
                 }
 
                 Pull(_stage.In);
+            }
+
+            private void ReleaseReservation(bool commit)
+            {
+                if (_reserved is not { } r)
+                    return;
+
+                _reserved = null;
+                if (commit)
+                    _stage.Context.CommitInboundSystemMessage(r.Origin, r.SeqNo);
+                else
+                    _stage.Context.AbortInboundSystemMessage(r.Origin, r.SeqNo);
             }
 
             private void SendAck(UniqueAddress replyTo, long seqNo) =>

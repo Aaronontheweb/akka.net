@@ -114,20 +114,20 @@ namespace Akka.Remote.Artery
 
         /// <summary>
         /// Shared, connection-independent part of the system-message acker's expectation for
-        /// <paramref name="originUid"/>. Compares <paramref name="seqNo"/> with
-        /// <c>max(<paramref name="localExpected"/>, shared expectation)</c>, advances the shared expectation
-        /// when equal (atomically, never backwards), and returns that effective expectation. The shared entry is
-        /// created for a uid that has completed a handshake and is never removed; a uid without a completed
-        /// handshake and without an entry uses just <paramref name="localExpected"/>. See <see cref="AssociationRegistry.AdvanceInboundSystemMessageSeq"/>.
+        /// <paramref name="origin"/> (the sender's address and uid; <paramref name="originUid"/> is the uid of the
+        /// frame header and must equal <c>origin.Uid</c> for shared state to be used). Reserves, never
+        /// commits: a returned <see cref="InboundAdmissionKind.Accept"/> with <c>Reserved</c> must be followed by
+        /// <see cref="CommitInboundSystemMessage"/> once the Ack was sent and the message pushed, or by
+        /// <see cref="AbortInboundSystemMessage"/> if that failed. See
+        /// <see cref="AssociationRegistry.AdmitInboundSystemMessage"/>.
         /// </summary>
-        long AdvanceInboundSystemMessageSeq(long originUid, long seqNo, long localExpected);
+        InboundAdmission AdmitInboundSystemMessage(long originUid, UniqueAddress origin, long seqNo, long localExpected);
 
-        /// <summary>
-        /// Undoes the shared advance for <paramref name="seqNo"/> when acceptance failed before the message was
-        /// emitted: the shared expectation goes back to <paramref name="seqNo"/> only if it is still
-        /// <c>seqNo + 1</c>, so a value another connection has advanced further is never rolled back.
-        /// </summary>
-        void RollbackInboundSystemMessageSeq(long originUid, long seqNo);
+        /// <summary>Commits a reserved sequence number: the shared expectation becomes <paramref name="seqNo"/> + 1.</summary>
+        void CommitInboundSystemMessage(UniqueAddress origin, long seqNo);
+
+        /// <summary>Releases a reserved sequence number that was not emitted; the expectation is unchanged.</summary>
+        void AbortInboundSystemMessage(UniqueAddress origin, long seqNo);
     }
 
     /// <summary>
@@ -183,11 +183,15 @@ namespace Akka.Remote.Artery
             _registry.TryGetByUid(originUid)?.TryClaimHeartbeatQuarantineNotice(InboundQuarantineCheckStage.HeartbeatNoticeInterval) ?? false;
 
         /// <inheritdoc/>
-        public long AdvanceInboundSystemMessageSeq(long originUid, long seqNo, long localExpected) =>
-            _registry.AdvanceInboundSystemMessageSeq(originUid, seqNo, localExpected);
+        public InboundAdmission AdmitInboundSystemMessage(long originUid, UniqueAddress origin, long seqNo, long localExpected) =>
+            _registry.AdmitInboundSystemMessage(originUid, origin, seqNo, localExpected);
 
         /// <inheritdoc/>
-        public void RollbackInboundSystemMessageSeq(long originUid, long seqNo) =>
-            _registry.RollbackInboundSystemMessageSeq(originUid, seqNo);
+        public void CommitInboundSystemMessage(UniqueAddress origin, long seqNo) =>
+            _registry.CommitInboundSystemMessage(origin, seqNo);
+
+        /// <inheritdoc/>
+        public void AbortInboundSystemMessage(UniqueAddress origin, long seqNo) =>
+            _registry.AbortInboundSystemMessage(origin, seqNo);
     }
 }

@@ -193,5 +193,65 @@ namespace Akka.Remote.Tests.Artery
                 await b.System.Terminate().AwaitWithTimeout(10.Seconds());
             }
         }
+
+        [Theory(DisplayName = "Should_DrainBothWindows_When_ControlConnectionsDropWithUnackedMessagesInBothDirections")]
+        [InlineData(1)]
+        [InlineData(2)]
+        public async Task Should_DrainBothWindows_When_ControlConnectionsDropWithUnackedMessagesInBothDirections(int drops)
+        {
+            var (a, b) = (Node.Create("BothUnackedA"), Node.Create("BothUnackedB"));
+            try
+            {
+                await ExpectRealTerminatedAsync(a, b, "warm-ab");
+                await ExpectRealTerminatedAsync(b, a, "warm-ba");
+                await AwaitDrainedAsync(a, b);
+                await AwaitDrainedAsync(b, a);
+
+                var aIdentity = b.AssociationTo(a).CurrentState.UniqueRemoteAddress;
+                var bIdentity = a.AssociationTo(b).CurrentState.UniqueRemoteAddress;
+                var acksFromA = a.Acks;
+                var acksFromB = b.Acks;
+
+                // Both sides receive the other's Watch but their Acks are lost, so both windows are unacknowledged.
+                a.DropAcks = true;
+                b.DropAcks = true;
+                var ab = await WatchAsync(a, b, "pending-ab");
+                var ba = await WatchAsync(b, a, "pending-ba");
+                await AwaitAssertAsync(() =>
+                {
+                    a.Acks.Should().BeGreaterThan(acksFromA);
+                    b.Acks.Should().BeGreaterThan(acksFromB);
+                }, 5.Seconds());
+                a.AssociationTo(b).SystemMessageDeliveryState.Buffer.Count.Should().BeGreaterThan(0);
+                b.AssociationTo(a).SystemMessageDeliveryState.Buffer.Count.Should().BeGreaterThan(0);
+
+                for (var i = 0; i < drops; i++)
+                {
+                    await DropControlConnectionAsync(a);
+                    await DropControlConnectionAsync(b);
+                }
+
+                a.DropAcks = false;
+                b.DropAcks = false;
+                await AwaitDrainedAsync(a, b);
+                await AwaitDrainedAsync(b, a);
+                b.AssociationTo(a).CurrentState.UniqueRemoteAddress.Should().Be(aIdentity);
+                a.AssociationTo(b).CurrentState.UniqueRemoteAddress.Should().Be(bIdentity);
+                (a.Nacks + b.Nacks).Should().Be(0);
+
+                // Each Watch took effect exactly once: one real Terminated per watcher.
+                ab.Target.Tell(PoisonPill.Instance);
+                ba.Target.Tell(PoisonPill.Instance);
+                (await ab.Probe.ExpectMsgAsync<Terminated>(5.Seconds())).AddressTerminated.Should().BeFalse();
+                (await ba.Probe.ExpectMsgAsync<Terminated>(5.Seconds())).AddressTerminated.Should().BeFalse();
+                await ab.Probe.ExpectNoMsgAsync(300.Milliseconds());
+                await ba.Probe.ExpectNoMsgAsync(300.Milliseconds());
+            }
+            finally
+            {
+                await a.System.Terminate().AwaitWithTimeout(10.Seconds());
+                await b.System.Terminate().AwaitWithTimeout(10.Seconds());
+            }
+        }
     }
 }
