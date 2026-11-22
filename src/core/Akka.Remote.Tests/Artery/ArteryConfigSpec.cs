@@ -82,6 +82,8 @@ namespace Akka.Remote.Tests.Artery
             // until the scaling gates pass -- see ArterySettings.InboundLanes's remarks.
             settings.InboundLanes.Should().Be(1);
             settings.InboundLaneBufferSize.Should().Be(4096);
+            settings.InboundReadBatching.Should().BeFalse();
+            settings.InboundReadAheadMaxBytes.Should().Be(256 * 1024);
             settings.OutboundLanes.Should().Be(1);
             settings.HandshakeTimeout.Should().Be(20.Seconds());
             settings.HandshakeRetryInterval.Should().Be(1.Seconds());

@@ -1013,7 +1013,12 @@ namespace Akka.Remote.Artery
                 : new ArteryInboundProcessingStage(
                     _settings.MaximumFrameSize, _settings.MaximumLargeFrameSize, System.Serialization, System.Scheduler);
 
-            var decoded = Flow.Create<ReadOnlySequence<byte>>()
+            // advanced.inbound-read-batching: off composes the identical chain as before.
+            var received = _settings.InboundReadBatching
+                ? Flow.Create<ReadOnlySequence<byte>>().Via(new InboundReadAheadStage(_settings.InboundReadAheadMaxBytes))
+                : Flow.Create<ReadOnlySequence<byte>>();
+
+            var decoded = received
                 .Via(_killSwitch.Flow<ReadOnlySequence<byte>>())
                 .Via(processingStage);
 

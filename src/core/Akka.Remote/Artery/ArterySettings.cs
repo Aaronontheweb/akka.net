@@ -86,6 +86,22 @@ namespace Akka.Remote.Artery
         public int InboundLaneBufferSize { get; }
 
         /// <summary>
+        /// <c>advanced.inbound-read-batching</c>: when on, every accepted connection gets an
+        /// <see cref="Artery.InboundReadAheadStage"/> in front of its processing stage, which
+        /// keeps the next socket read in flight while the current chunk is processed and hands
+        /// all buffered chunks to the frame parser in one push. Off by default (pipeline
+        /// unchanged).
+        /// </summary>
+        public bool InboundReadBatching { get; }
+
+        /// <summary>
+        /// <c>advanced.inbound-read-ahead-max-bytes</c>: read-ahead stops (back-pressure) once this
+        /// many received bytes are buffered and not yet handed to the processing stage. Only read
+        /// when <see cref="InboundReadBatching"/> is on.
+        /// </summary>
+        public long InboundReadAheadMaxBytes { get; }
+
+        /// <summary>
         /// Number of independent, bounded ordinary-outbound channels ("lanes") each association
         /// fans ordinary-stream sends across, Pekko-faithful (<c>Association.scala</c>'s
         /// <c>outboundLanes</c>/<c>OrdinaryQueueIndex</c> array): a message's recipient uid is
@@ -333,6 +349,12 @@ namespace Akka.Remote.Artery
             if (InboundLaneBufferSize <= 0)
                 throw new ConfigurationException(
                     $"akka.remote.artery.advanced.inbound-lane-buffer-size must be greater than 0, but was [{InboundLaneBufferSize}].");
+
+            InboundReadBatching = arteryConfig.GetBoolean("advanced.inbound-read-batching", false);
+            InboundReadAheadMaxBytes = arteryConfig.GetByteSize("advanced.inbound-read-ahead-max-bytes", 256 * 1024) ?? 256 * 1024;
+            if (InboundReadAheadMaxBytes <= 0)
+                throw new ConfigurationException(
+                    $"akka.remote.artery.advanced.inbound-read-ahead-max-bytes must be greater than 0, but was [{InboundReadAheadMaxBytes}].");
 
             TestMode = arteryConfig.GetBoolean("advanced.test-mode", false);
 
