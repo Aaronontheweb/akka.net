@@ -1260,11 +1260,24 @@ namespace Akka.Remote.Artery
         private readonly ConcurrentDictionary<long, Association> _byUid = new();
 
         /// <summary>
+        /// How many superseded ("retired") uids per association keep their expected system-message seq.
+        /// A late handshake can make a superseded uid eligible again; it then resumes where it left off
+        /// instead of restarting at seq 1 and being redelivered. Only if more than this many newer
+        /// incarnations of one address are registered while that late handshake is outstanding is the
+        /// oldest history evicted, and such a uid would restart at seq 1 if registered again.
+        /// </summary>
+        internal const int MaxRetiredUidsPerAssociation = 8;
+
+        /// <summary>
         /// Next expected system-message seq per origin uid, shared by every inbound control connection
-        /// of this system. Guarded by <see cref="_inboundSeqLock"/>; holds at most one entry per
-        /// association (see <see cref="AdvanceInboundSystemMessageSeq"/>).
+        /// of this system. Guarded by <see cref="_inboundSeqLock"/>. Holds the entry of each association's
+        /// current uid plus at most <see cref="MaxRetiredUidsPerAssociation"/> retired uids per association
+        /// (see <see cref="AdvanceInboundSystemMessageSeq"/>).
         /// </summary>
         private readonly Dictionary<long, long> _inboundExpectedSeq = new();
+
+        /// <summary>Retired uids per association, oldest first. Guarded by <see cref="_inboundSeqLock"/>.</summary>
+        private readonly Dictionary<Association, List<long>> _retiredUids = new();
 
         private readonly object _inboundSeqLock = new();
         private readonly int _outboundQueueCapacity;
@@ -1330,7 +1343,8 @@ namespace Akka.Remote.Artery
         /// <paramref name="originUid"/> and, when they are equal, advances the expectation. Returns the
         /// expectation as it was BEFORE the call, so the caller delivers on <c>seqNo == result</c>.
         /// Returns <c>0</c> (never a valid expectation) when the uid is not in the uid index (no completed
-        /// handshake, or superseded by a new incarnation) or is quarantined; the caller must drop the frame.
+        /// handshake, or superseded by a new incarnation), is not its association's current uid, or is
+        /// quarantined; the caller must drop the frame.
         ///
         /// <para>
         /// The state lives here, not in the per-connection <see cref="SystemMessageAckerStage"/>, because the
@@ -1344,11 +1358,15 @@ namespace Akka.Remote.Artery
         /// </para>
         ///
         /// <para>
-        /// Lifecycle: an entry is created lazily at seq 1 and lives until <see cref="Complete"/> (under the
-        /// same lock) replaces its uid with a new incarnation. Entries exist only for uids present in the
-        /// reverse index, so the map holds at most one entry per association. Frames of a quarantined uid are
-        /// dropped upstream by <see cref="InboundQuarantineCheckStage"/>; the quarantine check here only
-        /// matters for a frame that races the quarantine, and then also removes the entry.
+        /// Lifecycle: an entry is created lazily at seq 1, only for an association's current uid. When
+        /// <see cref="Complete"/> supersedes that uid with a new incarnation, the entry is retired, not
+        /// deleted: eligibility is still decided by the uid index, the current-uid check and quarantine, but
+        /// the expectation survives so a uid made eligible again by a late handshake resumes exactly where it
+        /// was. At most <see cref="MaxRetiredUidsPerAssociation"/> retired entries are kept per association,
+        /// oldest evicted first, so the map is bounded by (1 + that) per association. Frames of a quarantined
+        /// uid are dropped upstream by <see cref="InboundQuarantineCheckStage"/> and its entry normally
+        /// remains until the uid is superseded; a quarantined uid stays quarantined, so keeping the entry
+        /// is harmless.
         /// </para>
         /// </summary>
         public long AdvanceInboundSystemMessageSeq(long originUid, long seqNo)
@@ -1358,11 +1376,11 @@ namespace Akka.Remote.Artery
                 if (!_byUid.TryGetValue(originUid, out var association))
                     return 0L;
 
-                if (association.IsQuarantined(originUid))
-                {
-                    _inboundExpectedSeq.Remove(originUid);
+                // The index can briefly hold a uid whose association has already moved on (concurrent
+                // completions publish their index changes in either order): only the current uid counts.
+                if (association.CurrentState.UniqueRemoteAddress is not { } current || current.Uid != originUid ||
+                    association.IsQuarantined(originUid))
                     return 0L;
-                }
 
                 var expected = _inboundExpectedSeq.TryGetValue(originUid, out var e) ? e : 1L;
                 if (seqNo == expected)
@@ -1401,6 +1419,21 @@ namespace Akka.Remote.Artery
             return Complete(association, peer, association.CompleteOutboundHandshake(peer));
         }
 
+        /// <summary>Marks <paramref name="uid"/> retired for <paramref name="association"/>, evicting the oldest beyond the bound. Caller holds the lock.</summary>
+        private void Retire(Association association, long uid)
+        {
+            if (!_retiredUids.TryGetValue(association, out var retired))
+                _retiredUids[association] = retired = new List<long>();
+
+            retired.Remove(uid);
+            retired.Add(uid);
+            while (retired.Count > MaxRetiredUidsPerAssociation)
+            {
+                _inboundExpectedSeq.Remove(retired[0]);
+                retired.RemoveAt(0);
+            }
+        }
+
         private AssociationState Complete(
             Association association,
             UniqueAddress peer,
@@ -1408,10 +1441,15 @@ namespace Akka.Remote.Artery
         {
             var (previous, updated) = transition;
 
-            // Same lock as AdvanceInboundSystemMessageSeq: a superseded uid's sequence state is dropped
-            // atomically with its reverse-index entry, so a late frame of the old uid cannot recreate it.
+            // Same lock as AdvanceInboundSystemMessageSeq: a superseded uid leaves the index and is retired
+            // (its sequence state is kept, bounded) atomically, so a late frame cannot observe a half state.
             lock (_inboundSeqLock)
             {
+                // A retired uid that becomes eligible again is no longer retired; its history resumes.
+                // Done before retiring the uid it replaces, so that retirement cannot evict it.
+                if (_retiredUids.TryGetValue(association, out var retired))
+                    retired.Remove(peer.Uid);
+
                 if (!ReferenceEquals(previous, updated) &&
                     previous.UniqueRemoteAddress is { } previousPeer &&
                     previousPeer.Uid != peer.Uid)
@@ -1420,7 +1458,7 @@ namespace Akka.Remote.Artery
                     // association (a concurrent, newer mapping is never clobbered).
                     ((ICollection<KeyValuePair<long, Association>>)_byUid).Remove(
                         new KeyValuePair<long, Association>(previousPeer.Uid, association));
-                    _inboundExpectedSeq.Remove(previousPeer.Uid);
+                    Retire(association, previousPeer.Uid);
                 }
 
                 _byUid[peer.Uid] = association;

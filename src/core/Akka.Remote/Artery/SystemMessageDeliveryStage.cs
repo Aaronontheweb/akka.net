@@ -476,6 +476,7 @@ namespace Akka.Remote.Artery
                 State.Buffer.Clear();
                 State.NextSeq = 1;
                 State.CurrentIncarnation = incarnation;
+                _noProgressNackResent = false;
                 DiscardQueuedSystemMessages();
             }
 

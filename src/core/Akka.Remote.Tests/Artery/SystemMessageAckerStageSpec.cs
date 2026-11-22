@@ -326,5 +326,79 @@ namespace Akka.Remote.Tests.Artery
             await Task.Delay(300);
             delivered.Select(long.Parse).OrderBy(x => x).Should().Equal(Enumerable.Range(1, count).Select(x => (long)x));
         }
+
+        [Fact(DisplayName = "Should_Not_Redeliver_When_Superseded_Handshake_Arrives_Late")]
+        public async Task Should_Not_Redeliver_When_Superseded_Handshake_Arrives_Late()
+        {
+            var oldPeer = NewRemotePeer(222L);
+            var newPeer = NewRemotePeer(223L);
+            var (registry, context, _) = NewContext(oldPeer);
+            var (pub, sub) = Materialize(context);
+
+            await sub.RequestAsync(2);
+            await pub.SendNextAsync(Envelope(Sme(1L, oldPeer, "m1"), oldPeer.Uid));
+            await sub.ExpectNextAsync(TimeSpan.FromSeconds(3));
+
+            registry.CompleteHandshake(newPeer.Address, newPeer);
+            registry.CompleteHandshake(oldPeer.Address, oldPeer); // a delayed handshake of the superseded incarnation
+
+            await pub.SendNextAsync(Envelope(Sme(1L, oldPeer, "m1-replay"), oldPeer.Uid));
+            await sub.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(300));
+        }
+
+        [Fact(DisplayName = "Should_AcceptNextSeq_When_HandshakesOscillateBetweenIncarnations")]
+        public async Task Should_AcceptNextSeq_When_HandshakesOscillateBetweenIncarnations()
+        {
+            var a0 = NewRemotePeer(222L);
+            var a1 = NewRemotePeer(223L);
+            var (registry, context, sentControl) = NewContext(a0);
+            registry.CompleteHandshake(a1.Address, a1);
+            var (pub, sub) = Materialize(context);
+
+            await sub.RequestAsync(3);
+            await pub.SendNextAsync(Envelope(Sme(1L, a1, "k1"), a1.Uid));
+            await pub.SendNextAsync(Envelope(Sme(2L, a1, "k2"), a1.Uid));
+            await sub.ExpectNextAsync(TimeSpan.FromSeconds(3));
+            await sub.ExpectNextAsync(TimeSpan.FromSeconds(3));
+
+            registry.CompleteHandshake(a0.Address, a0);
+            registry.CompleteHandshake(a1.Address, a1);
+
+            await pub.SendNextAsync(Envelope(Sme(3L, a1, "k3"), a1.Uid));
+            ((TestSystemMessage)(await sub.ExpectNextAsync(TimeSpan.FromSeconds(3))).Message).Name.Should().Be("k3");
+            sentControl.Select(x => x.Message).OfType<SysNack>().Should().BeEmpty();
+            sentControl[^1].Message.Should().Be(new SysAck(3L, NewLocal()));
+        }
+
+        [Fact(DisplayName = "Should_ResumeRetiredUid_When_WithinRetentionBound")]
+        public void Should_ResumeRetiredUid_When_WithinRetentionBound()
+        {
+            var peers = Enumerable.Range(0, AssociationRegistry.MaxRetiredUidsPerAssociation + 1).Select(i => NewRemotePeer(300L + i)).ToArray();
+            var registry = new AssociationRegistry();
+            registry.CompleteHandshake(peers[0].Address, peers[0]);
+            registry.AdvanceInboundSystemMessageSeq(peers[0].Uid, 1L).Should().Be(1L);
+
+            // The first uid ends up as the oldest of exactly MaxRetiredUidsPerAssociation retired uids.
+            foreach (var peer in peers.Skip(1))
+                registry.CompleteHandshake(peer.Address, peer);
+            registry.CompleteHandshake(peers[0].Address, peers[0]);
+
+            registry.AdvanceInboundSystemMessageSeq(peers[0].Uid, 99L).Should().Be(2L);
+        }
+
+        [Fact(DisplayName = "Should_RestartEvictedUidAtSeqOne_When_RetentionBoundIsExceeded")]
+        public void Should_RestartEvictedUidAtSeqOne_When_RetentionBoundIsExceeded()
+        {
+            var peers = Enumerable.Range(0, AssociationRegistry.MaxRetiredUidsPerAssociation + 2).Select(i => NewRemotePeer(300L + i)).ToArray();
+            var registry = new AssociationRegistry();
+            registry.CompleteHandshake(peers[0].Address, peers[0]);
+            registry.AdvanceInboundSystemMessageSeq(peers[0].Uid, 1L).Should().Be(1L);
+
+            foreach (var peer in peers.Skip(1))
+                registry.CompleteHandshake(peer.Address, peer); // one more than the bound: the first uid is evicted
+            registry.CompleteHandshake(peers[0].Address, peers[0]);
+
+            registry.AdvanceInboundSystemMessageSeq(peers[0].Uid, 99L).Should().Be(1L);
+        }
     }
 }

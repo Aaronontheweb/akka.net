@@ -298,6 +298,44 @@ namespace Akka.Remote.Tests.Artery
             ((SystemMessageEnvelope)(await h.Sub.ExpectNextAsync(TimeSpan.FromSeconds(2))).Message).SeqNo.Should().Be(1L);
         }
 
+        [Fact(DisplayName = "Should_IgnoreAckAtNextSeqAndPopAtLastSent_When_AckBoundaryIsReached")]
+        public async Task Should_IgnoreAckAtNextSeqAndPopAtLastSent_When_AckBoundaryIsReached()
+        {
+            var materializer = ActorMaterializer.Create(Sys);
+            var h = BuildHarness(materializer, resendInterval: TimeSpan.FromSeconds(30));
+            var peer = h.CompleteHandshake(remoteUid: 777L);
+
+            await h.Sub.RequestAsync(3);
+            await h.Pub.SendNextAsync(SystemMessageElement("m1"));
+            await h.Sub.ExpectNextAsync(TimeSpan.FromSeconds(3)); // seq 1; next seq to assign is 2
+
+            h.DeliverControlMessage(peer.Uid, new SysAck(2L, peer)); // == NextSeq: never sent, ignored
+            h.DeliverControlMessage(peer.Uid, new SysNack(0L, peer)); // proves seq 1 is still buffered
+            ((SystemMessageEnvelope)(await h.Sub.ExpectNextAsync(TimeSpan.FromSeconds(2))).Message).SeqNo.Should().Be(1L);
+
+            h.DeliverControlMessage(peer.Uid, new SysAck(1L, peer)); // == NextSeq - 1: acknowledges the sent seq
+            await AwaitAssertAsync(() => h.State.Buffer.Count.Should().Be(0), TimeSpan.FromSeconds(3));
+        }
+
+        [Fact(DisplayName = "Should_IgnoreNackAtNextSeqAndPopAtLastSent_When_NackBoundaryIsReached")]
+        public async Task Should_IgnoreNackAtNextSeqAndPopAtLastSent_When_NackBoundaryIsReached()
+        {
+            var materializer = ActorMaterializer.Create(Sys);
+            var h = BuildHarness(materializer, resendInterval: TimeSpan.FromSeconds(30));
+            var peer = h.CompleteHandshake(remoteUid: 778L);
+
+            await h.Sub.RequestAsync(3);
+            await h.Pub.SendNextAsync(SystemMessageElement("m1"));
+            await h.Sub.ExpectNextAsync(TimeSpan.FromSeconds(3)); // seq 1; next seq to assign is 2
+
+            h.DeliverControlMessage(peer.Uid, new SysNack(2L, peer)); // == NextSeq: ignored, no pop, no resend
+            await h.Sub.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(300));
+            h.State.Buffer.Count.Should().Be(1);
+
+            h.DeliverControlMessage(peer.Uid, new SysNack(1L, peer)); // == NextSeq - 1: pops seq 1
+            await AwaitAssertAsync(() => h.State.Buffer.Count.Should().Be(0), TimeSpan.FromSeconds(3));
+        }
+
         [Fact(DisplayName = "the resend timer periodically resends the whole unacknowledged window while any entry remains unacked")]
         public async Task Should_Resend_Unacked_Window_Periodically()
         {
