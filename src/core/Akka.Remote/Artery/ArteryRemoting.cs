@@ -249,7 +249,7 @@ namespace Akka.Remote.Artery
         private sealed class PendingRemoteDeployedResolve
         {
             public readonly object Gate = new();
-            public readonly Queue<(object Message, string? SenderPath)> Buffered = new();
+            public readonly Queue<(object Message, IActorRef Sender)> Buffered = new();
             public bool Done;
             public int AttemptsLeft = RetryResolveRemoteDeployedRecipientAttempts;
         }
@@ -865,8 +865,6 @@ namespace Akka.Remote.Artery
                 return;
             }
 
-            var senderPath = sender.IsNobody() ? null : sender.Path.ToSerializationFormatWithAddress(DefaultAddress);
-
             if (message is DaemonMsgCreate)
             {
                 // Remote deployment orders DaemonMsgCreate ahead of the Watch RemoteDaemon sends
@@ -879,11 +877,107 @@ namespace Akka.Remote.Artery
                 // Pekko's direct controlQueue.offer (Association.scala: "must be sent over the control
                 // stream because remote deployment process depends on message ordering for
                 // DaemonMsgCreate and Watch messages").
-                EnqueueDaemonMsgCreate(remoteAddress, message, senderPath, recipientPath);
+                EnqueueDaemonMsgCreate(
+                    remoteAddress, message,
+                    sender.IsNobody() ? null : sender.Path.ToSerializationFormatWithAddress(DefaultAddress),
+                    recipientPath);
                 return;
             }
 
-            EnqueueOutbound(remoteAddress, message, senderPath, recipientPath, recipient);
+            ResolveOutboundSender(sender, out var senderPath, out var senderRef);
+            EnqueueOutbound(association, new OutboundEnvelope(message, senderPath, recipientPath, senderRef), recipient);
+        }
+
+        /// <summary>
+        /// Chooses how the sender goes on the wire. A temp (Ask) ref created by THIS system is written as a
+        /// numeric record when <see cref="ArterySettings.NumericRefs"/> allows it (the frame's origin UID names
+        /// the owner); every other sender -- a ref owned by another system, including one forwarded here, or any
+        /// custom ref -- is a literal path, and no sender is neither.
+        /// </summary>
+        /// <remarks>
+        /// The own-temp-ref test must come before <see cref="ActorRefExtensions.IsNobody"/>: that reads
+        /// <c>Path</c>, which would materialise the path this shape exists to avoid. A temp ref of this
+        /// system is never nobody, so skipping the check for it changes nothing.
+        /// </remarks>
+        private void ResolveOutboundSender(IActorRef sender, out string? senderPath, out ArteryNumericRef? senderRef)
+        {
+            senderPath = null;
+            senderRef = null;
+
+            if (TryGetOwnTemporaryRef(sender, out var own))
+                senderRef = own;
+            else if (!sender.IsNobody())
+                senderPath = sender.Path.ToSerializationFormatWithAddress(DefaultAddress);
+        }
+
+        /// <summary>
+        /// <see langword="true"/> when numeric refs may be written and <paramref name="actorRef"/> is a temp ref
+        /// created by THIS system's local provider. A temp ref of a different ActorSystem, even in the same
+        /// process, is never numeric: the frame's origin UID would name the wrong owner. The large-message stream
+        /// is literal-only, so enabling it turns numeric refs off rather than splitting the rule per stream.
+        /// </summary>
+        private bool TryGetOwnTemporaryRef(IActorRef actorRef, out ArteryNumericRef value)
+        {
+            if (_settings.NumericRefs &&
+                !_settings.LargeMessageChannelEnabled &&
+                actorRef is ITempActorRef { TempId: >= 0 } temp &&
+                actorRef is IInternalActorRef internalRef &&
+                ReferenceEquals(internalRef.Provider, Provider.LocalProvider))
+            {
+                value = ArteryNumericRef.ForTemporary(_localUniqueAddress.Uid, temp.TempId);
+                return true;
+            }
+
+            value = default;
+            return false;
+        }
+
+        /// <summary>
+        /// The send path of a <see cref="RemoteTempActorRef"/>: addresses the reply by (owner UID, counter) with
+        /// no path formatting. Anything it cannot express numerically (system messages, remote deployment,
+        /// selections, the large-message stream, the switch being off) is handed back to the ordinary path.
+        /// </summary>
+        internal void SendToTempRef(object message, IActorRef sender, RemoteTempActorRef recipient)
+        {
+            if (!_settings.NumericRefs ||
+                _settings.LargeMessageChannelEnabled ||
+                message is ISystemMessage or DaemonMsgCreate or ActorSelectionMessage)
+            {
+                Send(message, sender, recipient);
+                return;
+            }
+
+            var association = recipient.Association;
+
+            // Incarnation fence: the ref names a temp ref of the peer incarnation that sent the request. If
+            // the association has since moved to another uid (restart, new handshake), the asker is gone.
+            if (association.CurrentState.UniqueRemoteAddress is not { } peer || peer.Uid != recipient.OwnerUid)
+            {
+                _log.Debug(
+                    "Dead-lettering [{0}] addressed to temp ref [{1}] of uid [{2}]: the association's current peer is [{3}].",
+                    message.GetType(), recipient.TempId, recipient.OwnerUid,
+                    association.CurrentState.UniqueRemoteAddress is { } current ? current.Uid.ToString() : "unknown");
+                System.DeadLetters.Tell(message, sender);
+                return;
+            }
+
+            if (association.IsQuarantined(peer.Uid))
+            {
+                if (association.ShouldLogQuarantineDrop(peer.Uid))
+                    _log.Warning(
+                        "Dropping messages to quarantined association [{0}] (uid [{1}]); further drops for this " +
+                        "association/uid will not be logged individually.", association.RemoteAddress, peer.Uid);
+
+                System.DeadLetters.Tell(message, sender);
+                return;
+            }
+
+            ResolveOutboundSender(sender, out var senderPath, out var senderRef);
+            EnqueueOutbound(
+                association,
+                new OutboundEnvelope(
+                    message, senderPath, null, senderRef, ArteryNumericRef.ForTemporary(recipient.OwnerUid, recipient.TempId)),
+                recipient);
         }
 
         /// <inheritdoc/>
@@ -1057,7 +1151,7 @@ namespace Akka.Remote.Artery
             connection.HandleWith(Flow.FromSinkAndSource(inboundSink, Source.Empty<ReadOnlySequence<byte>>()), _materializer!);
         }
 
-        private void DispatchInbound(IInboundEnvelope env)
+        internal void DispatchInbound(IInboundEnvelope env)
         {
             if (env.IsControl)
             {
@@ -1068,13 +1162,13 @@ namespace Akka.Remote.Artery
                 return;
             }
 
-            if (env.RecipientPath is null)
+            if (env.RecipientPath is null && env.RecipientRef is null)
             {
                 _log.Warning("Dropping inbound Artery ordinary-stream envelope with no recipient path, carrying [{0}]", env.Message.GetType());
                 return;
             }
 
-            if (env.Message is ISystemMessage systemMessage)
+            if (env.Message is ISystemMessage systemMessage && env.RecipientPath is not null)
             {
                 // Reliable system-message delivery (design.md gate G3): SystemMessageAckerStage has
                 // already deduplicated/ordered this -- dispatch via SendSystemMessage, mirroring
@@ -1086,7 +1180,9 @@ namespace Akka.Remote.Artery
                 return;
             }
 
-            DispatchOrdinaryMessage(env.Message, env.SenderPath, env.RecipientPath);
+            DispatchOrdinaryMessage(
+                env.Message,
+                new InboundWireRefs(env.SenderPath, env.SenderRef, env.RecipientPath, env.RecipientRef, env.OriginUid));
         }
 
         /// <summary>
@@ -1098,8 +1194,15 @@ namespace Akka.Remote.Artery
         /// identical semantics, regardless of which caller invokes it -- lanes change WHERE this
         /// runs (a dedicated lane thread vs. this connection's own stage thread), never WHAT it does.
         /// </summary>
-        private void DispatchOrdinaryMessage(object message, string? senderPath, string recipientPath)
+        private void DispatchOrdinaryMessage(object message, InboundWireRefs refs)
         {
+            if (refs.RecipientRef is { } recipientRef)
+            {
+                DispatchToNumericRecipient(message, recipientRef, refs);
+                return;
+            }
+
+            var recipientPath = refs.RecipientPath!;
             var recipient = Provider.ResolveActorRefWithLocalAddress(recipientPath, DefaultAddress);
 
             // Defensive-only safety branch mirroring DispatchInbound's ISystemMessage handling
@@ -1126,7 +1229,7 @@ namespace Akka.Remote.Artery
             // best effort retry").
             if (IsUnresolvedRemoteDeployedRecipient(recipient))
             {
-                BufferUnresolvedRemoteDeployedRecipient(recipientPath, message, senderPath, recipient);
+                BufferUnresolvedRemoteDeployedRecipient(recipientPath, message, ResolveInboundSender(refs), recipient);
                 return;
             }
 
@@ -1141,13 +1244,100 @@ namespace Akka.Remote.Artery
                 {
                     if (!pending.Done)
                     {
-                        pending.Buffered.Enqueue((message, senderPath));
+                        pending.Buffered.Enqueue((message, ResolveInboundSender(refs)));
                         return;
                     }
                 }
             }
 
-            DeliverOrdinaryMessage(recipient, message, senderPath);
+            DeliverOrdinaryMessage(recipient, message, SenderFor(recipient, refs));
+        }
+
+        /// <summary>
+        /// The sender to deliver with. A recipient that never reads its sender (the promise behind an Ask) gets
+        /// dead letters -- the value used for a frame with no sender -- so the sender is not parsed and no ref is
+        /// allocated for it. Every other recipient gets the resolved sender.
+        /// </summary>
+        private IActorRef SenderFor(IActorRef recipient, in InboundWireRefs refs) =>
+            recipient is ITempActorRef { IgnoresSender: true } ? System.DeadLetters : ResolveInboundSender(refs);
+
+        /// <summary>
+        /// Delivers a message whose recipient arrived as a numeric record. Temporary-ref ids are resolved
+        /// from this system's own temp container by integer lookup, with no string or path work. Anything that
+        /// cannot be delivered goes to dead letters -- a record owned by another system UID (a reply meant for a
+        /// previous incarnation of this node, or a misaddressed frame), an id whose Ask already completed or
+        /// timed out, an id in a namespace nothing here resolves, or a system message (those travel by path) --
+        /// never to some other actor.
+        /// </summary>
+        private void DispatchToNumericRecipient(object message, ArteryNumericRef recipient, in InboundWireRefs refs)
+        {
+            if (message is ISystemMessage)
+            {
+                System.DeadLetters.Tell(message, ResolveInboundSender(refs));
+                return;
+            }
+
+            if (recipient.OwnerUid != _localUniqueAddress.Uid)
+            {
+                _log.Debug(
+                    "Dead-lettering [{0}] addressed to id [{1}] of system uid [{2}]; this system's uid is [{3}].",
+                    message.GetType(), recipient.Id, recipient.OwnerUid, _localUniqueAddress.Uid);
+                System.DeadLetters.Tell(message, ResolveInboundSender(refs));
+                return;
+            }
+
+            if (!recipient.IsTemporary)
+            {
+                _log.Warning(
+                    "Dead-lettering [{0}] addressed to id [{1}]: no resolver handles ids outside the temporary-ref namespace.",
+                    message.GetType(), recipient.Id);
+                System.DeadLetters.Tell(message, ResolveInboundSender(refs));
+                return;
+            }
+
+            if (((ITempIdRegistry)Provider).TryGetTempActor(recipient.TemporaryCounter, out var target))
+            {
+                target.Tell(message, SenderFor(target, refs));
+                return;
+            }
+
+            var sender = ResolveInboundSender(refs);
+
+            // Not registered (the Ask completed or timed out): dead-letter against the same empty ref the
+            // literal form resolves to (the local /temp/<name> path), without parsing a path or touching
+            // the path caches.
+            new EmptyLocalActorRef(Provider, Provider.RootPath / "temp" / recipient.TemporaryCounter.Base64Encode(), System.EventStream)
+                .Tell(message, sender);
+        }
+
+        /// <summary>
+        /// The sender of an inbound ordinary frame as an <see cref="IActorRef"/>: a lightweight
+        /// <see cref="RemoteTempActorRef"/> for a numeric temporary-ref sender, the resolved literal path
+        /// otherwise, or dead letters when the frame carried no sender.
+        /// </summary>
+        private IActorRef ResolveInboundSender(in InboundWireRefs refs)
+        {
+            if (refs.SenderRef is { } senderRef)
+            {
+                // Senders are only ever written numerically by their owner, which is the frame's origin; replies go
+                // back over that origin's association. Anything else is not a ref this system can address.
+                if (senderRef.IsTemporary &&
+                    senderRef.OwnerUid == refs.OriginUid &&
+                    _registry.TryGetByUid(refs.OriginUid) is { } association &&
+                    association.CurrentState.UniqueRemoteAddress is { } peer &&
+                    peer.Uid == refs.OriginUid)
+                {
+                    return new RemoteTempActorRef(this, DefaultAddress, association, peer.Address, peer.Uid, senderRef.TemporaryCounter);
+                }
+
+                // Not a numeric sender this node can resolve, or the origin's association moved on (new
+                // incarnation) between decode and dispatch.
+                return System.DeadLetters;
+            }
+
+            return refs.SenderPath is { } sp
+                ? Provider.ResolveActorRefWithLocalAddress(sp, DefaultAddress)
+                : System.DeadLetters;
         }
 
         /// <summary>
@@ -1156,12 +1346,8 @@ namespace Akka.Remote.Artery
         /// (<see cref="RetryResolveRemoteDeployedRecipient"/>) delivers with EXACTLY the same
         /// semantics as a direct dispatch.
         /// </summary>
-        private void DeliverOrdinaryMessage(IActorRef recipient, object message, string? senderPath)
+        private void DeliverOrdinaryMessage(IActorRef recipient, object message, IActorRef sender)
         {
-            var sender = senderPath is { } sp
-                ? Provider.ResolveActorRefWithLocalAddress(sp, DefaultAddress)
-                : (IActorRef)System.DeadLetters;
-
             // Mirrors classic's DefaultMessageDispatcher semantics without depending on classic types:
             // an unresolvable recipient resolves to an EmptyLocalActorRef, whose Tell publishes a
             // DeadLetter automatically.
@@ -1190,7 +1376,7 @@ namespace Akka.Remote.Artery
         /// (prior give-up) skip the machinery and dead-letter immediately, mirroring Pekko's banned
         /// branch verbatim.
         /// </summary>
-        private void BufferUnresolvedRemoteDeployedRecipient(string recipientPath, object message, string? senderPath, IActorRef emptyRecipient)
+        private void BufferUnresolvedRemoteDeployedRecipient(string recipientPath, object message, IActorRef sender, IActorRef emptyRecipient)
         {
             // Shutdown guard: the transport is tearing down, so the DaemonMsgCreate this message is
             // waiting on will never be processed, Shutdown()'s drain of the pending buffers may
@@ -1198,7 +1384,7 @@ namespace Akka.Remote.Artery
             // scheduler. Account the message to dead letters immediately instead.
             if (_isShutdown)
             {
-                DeliverOrdinaryMessage(emptyRecipient, message, senderPath);
+                DeliverOrdinaryMessage(emptyRecipient, message, sender);
                 return;
             }
 
@@ -1215,7 +1401,7 @@ namespace Akka.Remote.Artery
                     _log.Warning(
                         "Message for banned (terminated, unresolved) remote deployed recipient [{0}].",
                         recipientPath);
-                    DeliverOrdinaryMessage(emptyRecipient, message, senderPath);
+                    DeliverOrdinaryMessage(emptyRecipient, message, sender);
                     return;
                 }
 
@@ -1234,7 +1420,7 @@ namespace Akka.Remote.Artery
                     {
                         // A racing creator won AND already completed/removed its entry -- re-check
                         // from the top (the path may now be banned, resolvable, or need a new entry).
-                        if (TryDeliverIfNowResolved(recipientPath, message, senderPath))
+                        if (TryDeliverIfNowResolved(recipientPath, message, sender))
                             return;
                         continue;
                     }
@@ -1244,7 +1430,7 @@ namespace Akka.Remote.Artery
                 {
                     if (!pending.Done)
                     {
-                        pending.Buffered.Enqueue((message, senderPath));
+                        pending.Buffered.Enqueue((message, sender));
                         return;
                     }
                 }
@@ -1252,7 +1438,7 @@ namespace Akka.Remote.Artery
                 // The entry completed between lookup and lock: its flush has fully finished (Done
                 // latches only after delivery, under the gate). Either the actor exists now, or the
                 // path just got banned -- re-resolve and loop.
-                if (TryDeliverIfNowResolved(recipientPath, message, senderPath))
+                if (TryDeliverIfNowResolved(recipientPath, message, sender))
                     return;
             }
         }
@@ -1263,13 +1449,13 @@ namespace Akka.Remote.Artery
         /// otherwise <see langword="false"/> so the caller loops back through the ban check /
         /// fresh-entry path.
         /// </summary>
-        private bool TryDeliverIfNowResolved(string recipientPath, object message, string? senderPath)
+        private bool TryDeliverIfNowResolved(string recipientPath, object message, IActorRef sender)
         {
             var recipient = Provider.ResolveActorRefWithLocalAddress(recipientPath, DefaultAddress);
             if (IsUnresolvedRemoteDeployedRecipient(recipient))
                 return false;
 
-            DeliverOrdinaryMessage(recipient, message, senderPath);
+            DeliverOrdinaryMessage(recipient, message, sender);
             return true;
         }
 
@@ -1318,8 +1504,8 @@ namespace Akka.Remote.Artery
 
                 while (pending.Buffered.Count > 0)
                 {
-                    var (message, senderPath) = pending.Buffered.Dequeue();
-                    DeliverOrdinaryMessage(recipient, message, senderPath);
+                    var (message, sender) = pending.Buffered.Dequeue();
+                    DeliverOrdinaryMessage(recipient, message, sender);
                 }
 
                 pending.Done = true;
@@ -1419,18 +1605,29 @@ namespace Akka.Remote.Artery
             if (cached != UnresolvedSendRoute)
                 return cached;
 
+            // Lane key: see ArteryLaneKey. A temp ref has no uid, so it keys on its counter -- the same key
+            // whether the frame carries it numerically or as a literal path.
+            long laneKey;
+            if (recipient is RemoteTempActorRef tempRecipient)
+                laneKey = ArteryLaneKey.ForTemporary(tempRecipient.TempId);
+            else if (ArteryTempRefs.TryGetTempId(recipient.Path, out var literalTempId))
+                laneKey = ArteryLaneKey.ForTemporary(literalTempId);
+            else
+                laneKey = recipient.Path.Uid;
+
             var computed = _settings.LargeMessageChannelEnabled &&
                             _settings.LargeMessageDestinations.Find(recipient.Path.Elements) is not null
                 ? LargeMessageRoute
-                : Association.SelectLane(recipient.Path.Uid, association.OutboundLanes);
+                : Association.SelectLane(laneKey, association.OutboundLanes);
 
             recipient.CachedSendQueueIndex = computed;
             return computed;
         }
 
-        private void EnqueueOutbound(Address remoteAddress, object message, string? senderPath, string? recipientPath, RemoteActorRef recipient)
+        private void EnqueueOutbound(Association association, OutboundEnvelope envelope, RemoteActorRef recipient)
         {
-            var association = _registry.AssociationFor(remoteAddress);
+            var remoteAddress = association.RemoteAddress;
+            var message = envelope.Message;
             var route = ResolveSendRoute(recipient, association);
 
             // Large-message stream routing (task 10.2), Pekko-faithful precedence: control > large
@@ -1447,7 +1644,7 @@ namespace Akka.Remote.Artery
             // the same anchor -- never leaks into a selection send's routing.
             if (route == LargeMessageRoute && message is not ActorSelectionMessage)
             {
-                if (!association.TryEnqueueLarge(new OutboundEnvelope(message, senderPath, recipientPath)))
+                if (!association.TryEnqueueLarge(envelope))
                 {
                     // Same direct-to-event-stream Dropped semantics as the ordinary queue's PR
                     // #8346 fix (see below) -- soft drop, never a quarantine.
@@ -1469,7 +1666,7 @@ namespace Akka.Remote.Artery
             // above; the ref's cache is left untouched for its own future non-selection sends).
             var laneIndex = route == LargeMessageRoute ? 0 : route;
 
-            if (!association.TryEnqueueOutbound(new OutboundEnvelope(message, senderPath, recipientPath), laneIndex))
+            if (!association.TryEnqueueOutbound(envelope, laneIndex))
             {
                 // Publish DIRECTLY to the event stream -- mirrors Pekko's Association.dropped().
                 // NOT routed through System.DeadLetters.Tell (that would double-wrap: Tell to the

@@ -53,6 +53,18 @@ namespace Akka.Remote.Artery
         /// </summary>
         string? RecipientPath { get; }
 
+        /// <summary>
+        /// The sender when it arrived as a numeric record (owner resolved: an omitted owner is
+        /// <see cref="OriginUid"/>); <see cref="SenderPath"/> is then <see langword="null"/>.
+        /// </summary>
+        ArteryNumericRef? SenderRef { get; }
+
+        /// <summary>
+        /// The recipient when it arrived as a numeric record; <see cref="RecipientPath"/> is then
+        /// <see langword="null"/> even for an ordinary-stream message.
+        /// </summary>
+        ArteryNumericRef? RecipientRef { get; }
+
         /// <summary>The sending system's UID, decoded from the envelope's fixed header.</summary>
         long OriginUid { get; }
 
@@ -93,9 +105,57 @@ namespace Akka.Remote.Artery
     /// <param name="OriginUid">The sending system's UID.</param>
     /// <param name="SerializerId">The serializer id used to deserialize <see cref="Message"/>.</param>
     /// <param name="Manifest">The manifest string decoded from the envelope's header -- see <see cref="IInboundEnvelope.Manifest"/>.</param>
-    internal sealed record InboundEnvelope(object Message, string? SenderPath, string? RecipientPath, long OriginUid, int SerializerId, string Manifest) : IInboundEnvelope
+    /// <param name="SenderRef">See <see cref="IInboundEnvelope.SenderRef"/>.</param>
+    /// <param name="RecipientRef">See <see cref="IInboundEnvelope.RecipientRef"/>.</param>
+    internal sealed record InboundEnvelope(
+        object Message,
+        string? SenderPath,
+        string? RecipientPath,
+        long OriginUid,
+        int SerializerId,
+        string Manifest,
+        ArteryNumericRef? SenderRef = null,
+        ArteryNumericRef? RecipientRef = null) : IInboundEnvelope
     {
         /// <inheritdoc/>
         public bool IsControl { get; } = Message is IArteryControlMessage;
+    }
+
+    /// <summary>
+    /// INTERNAL API.
+    ///
+    /// The decoded sender and recipient of one inbound ordinary frame, carried from the decoder (or across
+    /// an inbound lane) to <c>ArteryRemoting.DispatchOrdinaryMessage</c>. Each side is either a literal wire
+    /// path or a numeric ref; a recipient is always one of the two for an ordinary message.
+    /// </summary>
+    internal readonly struct InboundWireRefs
+    {
+        /// <summary>Initializes a new instance of the <see cref="InboundWireRefs"/> struct.</summary>
+        public InboundWireRefs(
+            string? senderPath, ArteryNumericRef? senderRef,
+            string? recipientPath, ArteryNumericRef? recipientRef,
+            long originUid)
+        {
+            SenderPath = senderPath;
+            SenderRef = senderRef;
+            RecipientPath = recipientPath;
+            RecipientRef = recipientRef;
+            OriginUid = originUid;
+        }
+
+        /// <summary>The sender's literal wire path, or <see langword="null"/> (no sender, or a numeric sender).</summary>
+        public string? SenderPath { get; }
+
+        /// <summary>The sender, when it arrived as a numeric record.</summary>
+        public ArteryNumericRef? SenderRef { get; }
+
+        /// <summary>The recipient's literal wire path, or <see langword="null"/> for a numeric recipient.</summary>
+        public string? RecipientPath { get; }
+
+        /// <summary>The recipient, when it arrived as a numeric record.</summary>
+        public ArteryNumericRef? RecipientRef { get; }
+
+        /// <summary>The sending system's UID (the frame's origin).</summary>
+        public long OriginUid { get; }
     }
 }

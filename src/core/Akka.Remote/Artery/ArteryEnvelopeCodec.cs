@@ -163,6 +163,23 @@ namespace Akka.Remote.Artery
             string? senderPath,
             string? recipientPath,
             object message,
+            ArrayPool<byte>? pool = null) =>
+            Encode(serialization, originUid, senderPath, null, recipientPath, null, message, pool);
+
+        /// <summary>
+        /// As the literal-only single-pass encode, but either ref field may instead be NUMERIC. When
+        /// <paramref name="senderRef"/> / <paramref name="recipientRef"/> is non-null that field is written
+        /// as a numeric record (owner UID omitted when it is <paramref name="originUid"/>) and the matching
+        /// path is ignored.
+        /// </summary>
+        public static Akka.Serialization.PooledPayloadWriter Encode(
+            Akka.Serialization.Serialization serialization,
+            long originUid,
+            string? senderPath,
+            ArteryNumericRef? senderRef,
+            string? recipientPath,
+            ArteryNumericRef? recipientRef,
+            object message,
             ArrayPool<byte>? pool = null)
         {
             if (serialization is null)
@@ -171,15 +188,15 @@ namespace Akka.Remote.Artery
                 throw new ArgumentNullException(nameof(message));
 
             return Akka.Serialization.Serialization.WithTransport(serialization.System,
-                (serialization, originUid, senderPath, recipientPath, message, pool), static state =>
+                (serialization, originUid, senderPath, senderRef, recipientPath, recipientRef, message, pool), static state =>
             {
                 var serializer = state.serialization.FindSerializerV2For(state.message);
                 var manifest = Akka.Serialization.Serialization.ManifestFor(serializer, state.message) ?? string.Empty;
 
                 const int reservedPrefixLength = ArteryEnvelopeHeader.FrameLengthFieldLength + ArteryEnvelopeHeader.HeaderLength;
                 var capacityHint = reservedPrefixLength
-                    + LiteralWireSize(state.senderPath, out var senderByteCount)
-                    + LiteralWireSize(state.recipientPath, out var recipientByteCount)
+                    + RefWireSize(state.senderPath, state.senderRef, state.originUid, out var senderByteCount)
+                    + RefWireSize(state.recipientPath, state.recipientRef, state.originUid, out var recipientByteCount)
                     + LiteralWireSize(manifest, out var manifestByteCount);
 
                 // Fold in the serializer's own size hint (a hint only -- the frame length is still
@@ -197,8 +214,12 @@ namespace Akka.Remote.Artery
                     writer.GetSpan(reservedPrefixLength);
                     writer.Advance(reservedPrefixLength);
 
-                    var senderTag = WriteLiteral(writer, state.senderPath, senderByteCount);
-                    var recipientTag = WriteLiteral(writer, state.recipientPath, recipientByteCount);
+                    var senderTag = state.senderRef is { } numericSender
+                        ? WriteNumeric(writer, numericSender, state.originUid)
+                        : WriteLiteral(writer, state.senderPath, senderByteCount);
+                    var recipientTag = state.recipientRef is { } numericRecipient
+                        ? WriteNumeric(writer, numericRecipient, state.originUid)
+                        : WriteLiteral(writer, state.recipientPath, recipientByteCount);
                     var manifestTag = WriteLiteral(writer, manifest, manifestByteCount);
 
                     var payloadOffset = writer.WrittenCount - ArteryEnvelopeHeader.FrameLengthFieldLength;
@@ -380,6 +401,49 @@ namespace Akka.Remote.Artery
             return (uint)tagOffset;
         }
 
+        /// <summary>
+        /// Writes a NUMERIC record -- <c>[i64 LE ownerUid]?[i64 LE id]</c>, the owner omitted when it is the
+        /// frame's origin -- and returns its tag.
+        /// </summary>
+        private static uint WriteNumeric(Akka.Serialization.PooledPayloadWriter writer, ArteryNumericRef value, long originUid)
+        {
+            var tagOffset = writer.WrittenCount - ArteryEnvelopeHeader.FrameLengthFieldLength;
+            if (tagOffset >= ArteryEnvelopeHeader.LiteralOffsetExclusiveMax)
+                throw new ArteryEnvelopeException($"Numeric record offset {tagOffset} does not fit the 24-bit tag offset space.");
+
+            var ownerPresent = value.OwnerUid != originUid;
+            var length = NumericRecordLength(ownerPresent);
+            var span = writer.GetSpan(length);
+            if (ownerPresent)
+            {
+                BinaryPrimitives.WriteInt64LittleEndian(span, value.OwnerUid);
+                BinaryPrimitives.WriteInt64LittleEndian(span.Slice(ArteryEnvelopeHeader.NumericOwnerLength), value.Id);
+            }
+            else
+            {
+                BinaryPrimitives.WriteInt64LittleEndian(span, value.Id);
+            }
+
+            writer.Advance(length);
+            return ArteryEnvelopeHeader.NumericTagFlag
+                | (ownerPresent ? ArteryEnvelopeHeader.OwnerPresentTagFlag : 0u)
+                | (uint)tagOffset;
+        }
+
+        private static int NumericRecordLength(bool ownerPresent) =>
+            ownerPresent ? ArteryEnvelopeHeader.NumericOwnerLength + ArteryEnvelopeHeader.NumericIdLength : ArteryEnvelopeHeader.NumericIdLength;
+
+        private static int RefWireSize(string? path, ArteryNumericRef? numeric, long originUid, out int literalByteCount)
+        {
+            if (numeric is { } value)
+            {
+                literalByteCount = 0;
+                return NumericRecordLength(value.OwnerUid != originUid);
+            }
+
+            return LiteralWireSize(path, out literalByteCount);
+        }
+
         private static int ValidatedUtf8ByteCount(string value)
         {
             var byteCount = Encoding.UTF8.GetByteCount(value);
@@ -409,9 +473,10 @@ namespace Akka.Remote.Artery
     /// <summary>
     /// INTERNAL API.
     ///
-    /// The classification of an Artery tag (sender / recipient / manifest), per design.md's CLOSED
-    /// tag scheme: tag <c>0x00000000</c> is ABSENT; a non-zero top byte is COMPRESSED; anything else
-    /// is a LITERAL absolute byte offset.
+    /// The classification of an Artery tag (sender / recipient / manifest): tag <c>0x00000000</c> is
+    /// ABSENT; a zero top byte is a LITERAL absolute byte offset; a top byte made only of the known ref
+    /// flags that includes the numeric flag is NUMERIC (or NUMERIC with the define flag); any other
+    /// non-zero top byte is COMPRESSED (reserved).
     /// </summary>
     internal enum ArteryTagKind : byte
     {
@@ -425,7 +490,21 @@ namespace Akka.Remote.Artery
         /// The tag is a compression-table index (low 16 bits). Resolving a COMPRESSED index to an
         /// actor ref / manifest string is future work (ref/manifest compression, deferred post-MVP).
         /// </summary>
-        Compressed = 2
+        Compressed = 2,
+
+        /// <summary>
+        /// The ref is a numeric record (see <see cref="ArteryEnvelopeHeader.NumericTagFlag"/>). Only valid
+        /// in the sender and recipient positions.
+        /// </summary>
+        Numeric = 3,
+
+        /// <summary>
+        /// A numeric record with the define flag set. Reserved: no sender writes it and its record layout is
+        /// not defined yet, so a decoder cannot read the ref. The receiver drops the frame (it is not
+        /// delivered to a guessed target, and the stream is not faulted), which is no worse than any other
+        /// at-most-once loss and is the only outcome that cannot misdeliver.
+        /// </summary>
+        NumericDefine = 4
     }
 
     /// <summary>
@@ -507,7 +586,53 @@ namespace Akka.Remote.Artery
             if (tag == ArteryEnvelopeHeader.AbsentTag)
                 return ArteryTagKind.Absent;
 
-            return (tag & ArteryEnvelopeHeader.CompressedTagMask) != 0 ? ArteryTagKind.Compressed : ArteryTagKind.Literal;
+            var flags = tag & ArteryEnvelopeHeader.CompressedTagMask;
+            if (flags == 0)
+                return ArteryTagKind.Literal;
+
+            if ((flags & ~ArteryEnvelopeHeader.KnownRefFlagsMask) != 0 || (flags & ArteryEnvelopeHeader.NumericTagFlag) == 0)
+                return ArteryTagKind.Compressed;
+
+            return (flags & ArteryEnvelopeHeader.DefineTagFlag) != 0 ? ArteryTagKind.NumericDefine : ArteryTagKind.Numeric;
+        }
+
+        /// <summary>
+        /// Reads the sender when <see cref="SenderKind"/> is <see cref="ArteryTagKind.Numeric"/>; an omitted
+        /// owner is the frame's origin. Returns <see langword="false"/> for any other kind.
+        /// </summary>
+        /// <exception cref="ArteryEnvelopeException">The record lies outside the literal region.</exception>
+        public bool TryGetSenderNumeric(out ArteryNumericRef value) => TryReadNumeric(Header.SenderTag, out value);
+
+        /// <summary>Reads the recipient when <see cref="RecipientKind"/> is <see cref="ArteryTagKind.Numeric"/>. See <see cref="TryGetSenderNumeric"/>.</summary>
+        public bool TryGetRecipientNumeric(out ArteryNumericRef value) => TryReadNumeric(Header.RecipientTag, out value);
+
+        private bool TryReadNumeric(uint tag, out ArteryNumericRef value)
+        {
+            value = default;
+            if (ClassifyTag(tag) != ArteryTagKind.Numeric)
+                return false;
+
+            var ownerPresent = (tag & ArteryEnvelopeHeader.OwnerPresentTagFlag) != 0;
+            var length = ownerPresent
+                ? ArteryEnvelopeHeader.NumericOwnerLength + ArteryEnvelopeHeader.NumericIdLength
+                : ArteryEnvelopeHeader.NumericIdLength;
+
+            var offset = (long)(tag & ArteryEnvelopeHeader.TagOffsetMask);
+            if (offset < ArteryEnvelopeHeader.HeaderLength)
+                throw new ArteryEnvelopeException(
+                    $"Numeric tag offset {offset} is inside the fixed header (must be >= {ArteryEnvelopeHeader.HeaderLength}).");
+            if (offset + length > Header.PayloadOffset)
+                throw new ArteryEnvelopeException(
+                    $"Numeric record at offset {offset} (length {length}) extends past the payload offset ({Header.PayloadOffset}).");
+
+            Span<byte> buf = stackalloc byte[ArteryEnvelopeHeader.NumericOwnerLength + ArteryEnvelopeHeader.NumericIdLength];
+            _frameBody.Slice(offset, length).CopyTo(buf);
+            value = ownerPresent
+                ? new ArteryNumericRef(
+                    BinaryPrimitives.ReadInt64LittleEndian(buf),
+                    BinaryPrimitives.ReadInt64LittleEndian(buf.Slice(ArteryEnvelopeHeader.NumericOwnerLength)))
+                : new ArteryNumericRef(Header.OriginUid, BinaryPrimitives.ReadInt64LittleEndian(buf));
+            return true;
         }
 
         private static int DecodeCompressedIndex(uint tag) => (int)(tag & ArteryEnvelopeHeader.CompressedIndexMask);
@@ -520,6 +645,9 @@ namespace Akka.Remote.Artery
                     value = null;
                     return true;
                 case ArteryTagKind.Compressed:
+                case ArteryTagKind.Numeric:
+                case ArteryTagKind.NumericDefine:
+                    // Not a string: COMPRESSED is unsupported, NUMERIC is read through TryGet*Numeric.
                     value = null;
                     return false;
                 default:

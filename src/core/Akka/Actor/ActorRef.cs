@@ -97,12 +97,34 @@ namespace Akka.Actor
     /// <summary>
     /// INTERNAL API.
     ///
+    /// A temporary actor reference identified by the numeric counter value that names it below the
+    /// system's <c>/temp</c> node (the name is <c>Base64Encode(TempId)</c>).
+    /// </summary>
+    internal interface ITempActorRef
+    {
+        /// <summary>
+        /// The temp id, or -1 when the reference was not created from a temp id.
+        /// </summary>
+        long TempId { get; }
+
+        /// <summary>
+        /// <see langword="true"/> when this ref's <c>Tell</c> never reads the sender it is given, so a
+        /// transport may skip resolving the sender of an incoming message addressed to it.
+        /// </summary>
+        bool IgnoresSender { get; }
+    }
+
+    /// <summary>
+    /// INTERNAL API.
+    ///
     /// ActorRef implementation used for one-off tasks.
     /// </summary>
-    public class FutureActorRef<T> : MinimalActorRef
+    public class FutureActorRef<T> : MinimalActorRef, ITempActorRef
     {
         private readonly TaskCompletionSource<T> _result;
-        private readonly ActorPath _path;
+        private ActorPath _path;
+        private readonly ActorPath _tempNode;
+        private readonly long _tempId;
         private readonly IActorRefProvider _provider;
 
         /// <summary>
@@ -115,13 +137,41 @@ namespace Akka.Actor
         {
             _result = result;
             _path = path;
+            _tempId = -1;
             _provider = provider;
         }
 
         /// <summary>
+        /// INTERNAL API. Creates a reference identified by a numeric temp id below <paramref name="tempNode"/>;
+        /// its <see cref="Path"/> (tempNode / Base64(tempId)) is only built when first requested.
+        /// </summary>
+        internal FutureActorRef(TaskCompletionSource<T> result, long tempId, ActorPath tempNode, IActorRefProvider provider)
+        {
+            _result = result;
+            _tempId = tempId;
+            _tempNode = tempNode;
+            _provider = provider;
+        }
+
+        /// <inheritdoc/>
+        long ITempActorRef.TempId => _tempId;
+
+        // TellInternal below never reads its sender (an undeliverable message is dead-lettered with this ref
+        // as the sender). Exact type only: a subclass may override TellInternal and use the sender.
+        bool ITempActorRef.IgnoresSender => GetType() == typeof(FutureActorRef<T>);
+
+        /// <summary>
         /// The path associated with this one-off actor reference.
         /// </summary>
-        public override ActorPath Path => _path;
+        public override ActorPath Path => Volatile.Read(ref _path) ?? CreatePath();
+
+        // The path is a pure function of (tempNode, tempId) and ActorPath is immutable; the first
+        // materialisation wins so every caller sees one instance.
+        private ActorPath CreatePath()
+        {
+            var path = _tempNode / _tempId.Base64Encode();
+            return Interlocked.CompareExchange(ref _path, path, null) ?? path;
+        }
 
         /// <summary>
         /// The provider that created this one-off actor reference.
@@ -798,6 +848,10 @@ namespace Akka.Actor
 
         private readonly ConcurrentDictionary<string, IInternalActorRef> _children = new();
 
+        // Secondary index for children registered by temp id (see AddChild(long, ...)); such children
+        // are not in _children, but remain reachable by their canonical Base64 name.
+        private readonly ConcurrentDictionary<long, IInternalActorRef> _numericChildren = new();
+
         /// <summary>
         /// Initializes a container with its provider, actor path, parent reference, and logger.
         /// </summary>
@@ -871,6 +925,39 @@ namespace Akka.Actor
         }
 
         /// <summary>
+        /// INTERNAL API. Registers a child under the numeric id whose canonical Base64 encoding is its name.
+        /// </summary>
+        internal void AddChild(long id, IInternalActorRef actor)
+        {
+            _numericChildren.AddOrUpdate(id, actor, (_, v) =>
+            {
+                Log.Warning("{0} replacing child {1} ({2} -> {3})", id, actor, v, actor);
+                return v;
+            });
+        }
+
+        /// <summary>
+        /// INTERNAL API. Removes the child registered under a numeric id.
+        /// </summary>
+        internal void RemoveChild(long id)
+        {
+            if (!_numericChildren.TryRemove(id, out _))
+            {
+                Log.Debug("{0} trying to remove non-child {1}", Path, id);
+            }
+        }
+
+        /// <summary>
+        /// INTERNAL API. Looks up a child registered under a string name.
+        /// </summary>
+        internal bool TryGetChildByName(string name, out IInternalActorRef child) => _children.TryGetValue(name, out child);
+
+        /// <summary>
+        /// INTERNAL API. Looks up a child registered under a numeric id.
+        /// </summary>
+        internal bool TryGetChild(long id, out IInternalActorRef child) => _numericChildren.TryGetValue(id, out child);
+
+        /// <summary>
         /// Removes the child registered under the supplied name, if present.
         /// </summary>
         /// <param name="name">The name of the child to remove.</param>
@@ -929,6 +1016,10 @@ override def getChild(name: Iterator[String]): InternalActorRef = {
                 return this;
             if (_children.TryGetValue(firstName, out var child))
                 return child.GetChild(name.NoCopySlice(1));
+            if (!_numericChildren.IsEmpty
+                && Base64Encoding.TryBase64DecodeLong(firstName.AsSpan(), out var id)
+                && _numericChildren.TryGetValue(id, out var numericChild))
+                return numericChild.GetChild(name.NoCopySlice(1));
             return ActorRefs.Nobody;
         }
 
@@ -940,7 +1031,7 @@ override def getChild(name: Iterator[String]): InternalActorRef = {
         {
             get
             {
-                return !_children.IsEmpty;
+                return !_children.IsEmpty || !_numericChildren.IsEmpty;
             }
         }
 
@@ -951,6 +1042,11 @@ override def getChild(name: Iterator[String]): InternalActorRef = {
         public void ForEachChild(Action<IInternalActorRef> action)
         {
             foreach (IInternalActorRef child in _children.Values)
+            {
+                action(child);
+            }
+
+            foreach (var child in _numericChildren.Values)
             {
                 action(child);
             }

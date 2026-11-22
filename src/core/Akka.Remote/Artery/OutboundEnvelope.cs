@@ -48,6 +48,17 @@ namespace Akka.Remote.Artery
         string? RecipientPath { get; }
 
         /// <summary>
+        /// When non-null, the sender is written as a numeric record and <see cref="SenderPath"/> is unused.
+        /// Only a ref owned by the sending system may be written this way; any other sender is a literal.
+        /// </summary>
+        ArteryNumericRef? SenderRef { get; }
+
+        /// <summary>
+        /// When non-null, the recipient is written as a numeric record and <see cref="RecipientPath"/> is unused (null).
+        /// </summary>
+        ArteryNumericRef? RecipientRef { get; }
+
+        /// <summary>
         /// Cheap, precomputed (at construction, not re-tested per stage) flag: <see langword="true"/>
         /// when <see cref="Message"/> is an <see cref="IArteryControlMessage"/>. Stages dispatch on
         /// this instead of re-running an <c>is</c> type-test on every element at every stage.
@@ -66,7 +77,14 @@ namespace Akka.Remote.Artery
     /// <param name="Message">The message to serialize as the envelope's payload.</param>
     /// <param name="SenderPath">The sender's wire-format path, or <see langword="null"/> for no sender.</param>
     /// <param name="RecipientPath">The recipient's wire-format path, or <see langword="null"/> for control messages.</param>
-    internal sealed record OutboundEnvelope(object Message, string? SenderPath, string? RecipientPath) : IOutboundEnvelope
+    /// <param name="SenderRef">A numeric sender; see <see cref="IOutboundEnvelope.SenderRef"/>.</param>
+    /// <param name="RecipientRef">A numeric recipient; see <see cref="IOutboundEnvelope.RecipientRef"/>.</param>
+    internal sealed record OutboundEnvelope(
+        object Message,
+        string? SenderPath,
+        string? RecipientPath,
+        ArteryNumericRef? SenderRef = null,
+        ArteryNumericRef? RecipientRef = null) : IOutboundEnvelope
     {
         /// <inheritdoc/>
         public bool IsControl { get; } = Message is IArteryControlMessage;

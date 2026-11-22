@@ -160,9 +160,31 @@ namespace Akka.Actor
     }
 
     /// <summary>
+    /// INTERNAL API.
+    ///
+    /// Numeric view of a provider's temp container: refs created by <see cref="IActorRefProvider.CreateFutureRef{T}"/>
+    /// carry the counter value that names them, and can be registered, removed and looked up by
+    /// that value without formatting or parsing their path.
+    /// </summary>
+    internal interface ITempIdRegistry
+    {
+        /// <summary>Registers <paramref name="actorRef"/> under temp id <paramref name="tempId"/>.</summary>
+        void RegisterTempActor(IInternalActorRef actorRef, long tempId);
+
+        /// <summary>Removes the temp actor registered under <paramref name="tempId"/>.</summary>
+        void UnregisterTempActor(long tempId);
+
+        /// <summary>
+        /// Looks up the temp actor registered under <paramref name="tempId"/>, whether it was registered
+        /// by id or by its canonical path name.
+        /// </summary>
+        bool TryGetTempActor(long tempId, out IInternalActorRef actorRef);
+    }
+
+    /// <summary>
     ///     Class LocalActorRefProvider. This class cannot be inherited.
     /// </summary>
-    public sealed class LocalActorRefProvider : IActorRefProvider
+    public sealed class LocalActorRefProvider : IActorRefProvider, ITempIdRegistry
     {
         private readonly Settings _settings;
         private readonly EventStream _eventStream;
@@ -405,11 +427,31 @@ namespace Akka.Actor
         /// <inheritdoc cref="IActorRefProvider.CreateFutureRef{T}"/>
         public FutureActorRef<T> CreateFutureRef<T>(TaskCompletionSource<T> tcs)
         {
-            //create a new tempcontainer path
-            var path = TempPath();
-
-            var future = new FutureActorRef<T>(tcs, path, this);
+            // The id is drawn from the same counter as TempPath(); the path is built lazily.
+            var future = new FutureActorRef<T>(tcs, _tempNumber.GetAndIncrement(), _tempNode, this);
             return future;
+        }
+
+        /// <inheritdoc/>
+        void ITempIdRegistry.RegisterTempActor(IInternalActorRef actorRef, long tempId)
+        {
+            _tempContainer.AddChild(tempId, actorRef);
+        }
+
+        /// <inheritdoc/>
+        void ITempIdRegistry.UnregisterTempActor(long tempId)
+        {
+            _tempContainer.RemoveChild(tempId);
+        }
+
+        /// <inheritdoc/>
+        bool ITempIdRegistry.TryGetTempActor(long tempId, out IInternalActorRef actorRef)
+        {
+            if (_tempContainer.TryGetChild(tempId, out actorRef))
+                return true;
+
+            // Registered through the path-based API (e.g. a PromiseActorRef): fall back to its name.
+            return _tempContainer.TryGetChildByName(tempId.Base64Encode(), out actorRef);
         }
 
         /// <summary>
