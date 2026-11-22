@@ -1944,25 +1944,33 @@ namespace Akka.Remote.Artery
                 // publishes a Dropped event, because this late in the pipeline -- after encode and
                 // the lane merge -- there is no IOutboundEnvelope left to hand back through
                 // ReturnUndelivered.
+                void OnBatchDropped(long bytes)
+                {
+                    _log.Debug(
+                        "Outbound Artery ordinary-lanes write batch to [{0}] held {1} bytes of " +
+                        "already-encoded frame data when its stream stopped; dropping it.",
+                        remoteAddress, bytes);
+
+                    System.EventStream.Publish(new Dropped(
+                        $"{bytes} bytes of already-encoded Artery frame data",
+                        $"Outbound Artery ordinary-lanes write batch to [{remoteAddress}] held {bytes} " +
+                        "bytes of already-encoded frame data across one or more lanes when its stream stopped",
+                        ActorRefs.NoSender,
+                        System.DeadLetters));
+                }
+
+                // advanced.outbound-write-coalescing: the contiguous coalescing stage takes the
+                // place of the 16 KiB segment-chaining batch stage.
+                IGraph<FlowShape<ReadOnlySequence<byte>, ReadOnlySequence<byte>>, NotUsed> batchStage =
+                    _settings.OutboundWriteCoalescing
+                        ? new OutboundWriteCoalescingStage(_settings.OutboundWriteCoalescingMaxBytes, OnBatchDropped)
+                        : new LaneWriteBatchStage(LaneWriteBatchMaxBytes, OnBatchDropped);
+
                 ((mergeSink, mergeTailTermination), _) = mergeHubSource
                     .Via(_killSwitch.Flow<ReadOnlySequence<byte>>())
                     .Via(laneKillSwitch.Flow<ReadOnlySequence<byte>>())
                     .WatchTermination(Keep.Both)
-                    .Via(Flow.FromGraph(new LaneWriteBatchStage(LaneWriteBatchMaxBytes,
-                        onDropped: bytes =>
-                        {
-                            _log.Debug(
-                                "Outbound Artery ordinary-lanes write batch to [{0}] held {1} bytes of " +
-                                "already-encoded frame data when its stream stopped; dropping it.",
-                                remoteAddress, bytes);
-
-                            System.EventStream.Publish(new Dropped(
-                                $"{bytes} bytes of already-encoded Artery frame data",
-                                $"Outbound Artery ordinary-lanes write batch to [{remoteAddress}] held {bytes} " +
-                                "bytes of already-encoded frame data across one or more lanes when its stream stopped",
-                                ActorRefs.NoSender,
-                                System.DeadLetters));
-                        })))
+                    .Via(Flow.FromGraph(batchStage))
                     .Via(connectionWithRestart)
                     .ToMaterialized(Sink.Ignore<ReadOnlySequence<byte>>(), Keep.Both)
                     .Run(_materializer!);
@@ -2417,10 +2425,34 @@ namespace Akka.Remote.Artery
                         restartSettings);
 
                     UniqueKillSwitch killSwitch;
-                    ((killSwitch, terminationWatch), _) = frames
+                    var watched = frames
                         .Via(_killSwitch.Flow<ReadOnlySequence<byte>>())
                         .ViaMaterialized(KillSwitches.Single<ReadOnlySequence<byte>>(), Keep.Right)
-                        .WatchTermination(Keep.Both)
+                        .WatchTermination(Keep.Both);
+
+                    // advanced.outbound-write-coalescing (ordinary stream only): coalesce frames
+                    // queued behind the connection flow's restart boundary into one element.
+                    if (_settings.OutboundWriteCoalescing && !isLargeStream)
+                    {
+                        watched = watched.Via(Flow.FromGraph(new OutboundWriteCoalescingStage(
+                            _settings.OutboundWriteCoalescingMaxBytes,
+                            onDropped: bytes =>
+                            {
+                                _log.Debug(
+                                    "Outbound Artery {0} write-coalescing buffer to [{1}] held {2} bytes of " +
+                                    "already-encoded frame data when its stream stopped; dropping it.",
+                                    streamId, remoteAddress, bytes);
+
+                                System.EventStream.Publish(new Dropped(
+                                    $"{bytes} bytes of already-encoded Artery frame data",
+                                    $"Outbound Artery {streamId} write-coalescing buffer to [{remoteAddress}] held {bytes} " +
+                                    "bytes of already-encoded frame data when its stream stopped",
+                                    ActorRefs.NoSender,
+                                    System.DeadLetters));
+                            })));
+                    }
+
+                    ((killSwitch, terminationWatch), _) = watched
                         .Via(connectionWithRestart)
                         .ToMaterialized(Sink.Ignore<ReadOnlySequence<byte>>(), Keep.Both)
                         .Run(_materializer!);

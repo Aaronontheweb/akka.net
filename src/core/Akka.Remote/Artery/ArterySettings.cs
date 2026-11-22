@@ -102,6 +102,17 @@ namespace Akka.Remote.Artery
         public int OutboundLanes { get; }
 
         /// <summary>
+        /// <c>akka.remote.artery.advanced.outbound-write-coalescing</c>: when on, the ordinary outbound
+        /// stream coalesces queued encoded frames into one contiguous buffer (up to
+        /// <see cref="OutboundWriteCoalescingMaxBytes"/>) ahead of the restart-wrapped TCP connection
+        /// flow. Off by default (the existing pipeline shape).
+        /// </summary>
+        public bool OutboundWriteCoalescing { get; }
+
+        /// <summary><c>akka.remote.artery.advanced.outbound-write-coalescing-max-bytes</c>.</summary>
+        public int OutboundWriteCoalescingMaxBytes { get; }
+
+        /// <summary>
         /// <c>akka.remote.artery.advanced.test-mode</c> (Pekko key parity): enables the
         /// failure-injection test stages (<see cref="OutboundTestStage"/> /
         /// <see cref="InboundTestStage"/>) used by the multi-node TestConductor's
@@ -340,6 +351,14 @@ namespace Akka.Remote.Artery
             if (OutboundLanes < 1)
                 throw new ConfigurationException(
                     $"akka.remote.artery.advanced.outbound-lanes must be >= 1, but was [{OutboundLanes}].");
+
+            OutboundWriteCoalescing = arteryConfig.GetBoolean("advanced.outbound-write-coalescing", false);
+            var coalescingMaxBytes = arteryConfig.GetByteSize("advanced.outbound-write-coalescing-max-bytes", 64 * 1024) ?? 64 * 1024;
+            if (coalescingMaxBytes <= 0 || coalescingMaxBytes > 16 * 1024 * 1024)
+                throw new ConfigurationException(
+                    "akka.remote.artery.advanced.outbound-write-coalescing-max-bytes must be greater than 0 and no " +
+                    $"greater than 16 MiB, but was [{coalescingMaxBytes}].");
+            OutboundWriteCoalescingMaxBytes = (int)coalescingMaxBytes;
 
             HandshakeTimeout = GetPositiveTimeSpan(arteryConfig, "advanced.handshake-timeout", TimeSpan.FromSeconds(20));
             HandshakeRetryInterval = GetPositiveTimeSpan(arteryConfig, "advanced.handshake-retry-interval", TimeSpan.FromSeconds(1));
