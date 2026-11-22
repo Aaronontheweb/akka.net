@@ -885,7 +885,7 @@ namespace Akka.Remote.Artery
             }
 
             ResolveOutboundSender(sender, out var senderPath, out var senderRef);
-            EnqueueOutbound(association, new OutboundEnvelope(message, senderPath, recipientPath, senderRef), recipient);
+            EnqueueOutbound(association, new OutboundEnvelope(message, senderPath, recipientPath, senderRef, null), recipient);
         }
 
         /// <summary>
