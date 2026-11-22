@@ -850,6 +850,11 @@ namespace Akka.Remote.Artery
             {
                 var decoded = ArteryEnvelopeCodec.Decode(frameBody);
 
+                // Log differences with deferred decode on (frames are dropped either way): a malformed
+                // manifest or sender literal is no longer detected before the gates below. A bad
+                // manifest from an unknown origin yields the unknown-origin warning, and from a
+                // quarantined origin a debug log, instead of the transient-decode warning; a bad
+                // sender literal is rejected on the lane with the same warning.
                 // In deferred-decode mode the manifest string is NOT decoded here: only its tag
                 // kind is checked. It is decoded below, only on the rare branches that need it
                 // (control-classified frame, quarantined origin), and otherwise on the lane.

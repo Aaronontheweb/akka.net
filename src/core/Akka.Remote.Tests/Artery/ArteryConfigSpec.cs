@@ -112,6 +112,18 @@ namespace Akka.Remote.Tests.Artery
             settings.TcpPipeBufferSize.Should().Be(1024 * 1024);
         }
 
+        [Theory(DisplayName = "Should_ParseInboundLaneDeferredDecode_When_ConfigProvided")]
+        [InlineData("on", true)]
+        [InlineData("off", false)]
+        public void Should_ParseInboundLaneDeferredDecode_When_ConfigProvided(string value, bool expected)
+        {
+            var arteryConfig = ConfigurationFactory.ParseString($"akka.remote.artery.advanced.inbound-lane-deferred-decode = {value}")
+                .WithFallback(RemoteConfigFactory.Default())
+                .GetConfig("akka.remote.artery");
+
+            new ArterySettings(arteryConfig).InboundLaneDeferredDecode.Should().Be(expected);
+        }
+
         [Theory(DisplayName = "Should_ThrowConfigurationException_When_ArterySettingIsInvalid")]
         [InlineData("akka.remote.artery.advanced.maximum-frame-size = 0b")]
         [InlineData("akka.remote.artery.advanced.maximum-frame-size = 20000000b")] // > 0x00FFFFFF (16 MiB - 1)
