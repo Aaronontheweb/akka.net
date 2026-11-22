@@ -286,15 +286,34 @@ namespace Akka.Remote.Artery
                 switch (evt.Message)
                 {
                     case Ack ack when evt.OriginUid == currentUid:
+                        if (AcknowledgesUnsent(ack.SeqNo))
+                            break;
                         ProcessAck(ack.SeqNo);
                         break;
 
                     case Nack nack when evt.OriginUid == currentUid:
+                        if (AcknowledgesUnsent(nack.SeqNo))
+                            break;
                         ProcessNack(nack.SeqNo);
                         break;
                 }
 
                 TryDeliver();
+            }
+
+            /// <summary>
+            /// The receiver's expected seq outlives connections, so after a sender-side reset of
+            /// <see cref="SystemMessageDeliveryState.NextSeq"/> its replies can refer to numbers this
+            /// numbering has not assigned yet. Such a reply acknowledges nothing that was sent and must not
+            /// pop the buffer.
+            /// </summary>
+            private bool AcknowledgesUnsent(long seqNo)
+            {
+                if (seqNo < State.NextSeq)
+                    return false;
+
+                Log.Debug("Ignoring Ack/Nack [{0}] from [{1}]: next seq to assign is [{2}].", seqNo, _stage.Context.RemoteAddress, State.NextSeq);
+                return true;
             }
 
             private void ProcessAck(long seqNo)

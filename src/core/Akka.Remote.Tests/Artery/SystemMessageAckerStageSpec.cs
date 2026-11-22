@@ -266,5 +266,65 @@ namespace Akka.Remote.Tests.Artery
             await pub.SendNextAsync(Envelope(Sme(1L, newPeer, "new1"), newPeer.Uid));
             ((TestSystemMessage)(await sub.ExpectNextAsync(TimeSpan.FromSeconds(3))).Message).Name.Should().Be("new1");
         }
+
+        [Fact(DisplayName = "Should_DropWithoutAckOrNack_When_OriginUidIsNotRegistered")]
+        public async Task Should_DropWithoutAckOrNack_When_OriginUidIsNotRegistered()
+        {
+            var (_, context, sentControl) = NewContext(NewRemotePeer(222L));
+            var stranger = NewRemotePeer(999L);
+            var (pub, sub) = Materialize(context);
+
+            await sub.RequestAsync(1);
+            await pub.SendNextAsync(Envelope(Sme(1L, stranger, "stranger"), stranger.Uid));
+            await sub.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(300));
+            sentControl.Should().BeEmpty();
+        }
+
+        [Fact(DisplayName = "Should_DropWithoutAckOrNack_When_OriginUidIsQuarantined")]
+        public async Task Should_DropWithoutAckOrNack_When_OriginUidIsQuarantined()
+        {
+            var peer = NewRemotePeer();
+            var (registry, context, sentControl) = NewContext(peer);
+            var (pub, sub) = Materialize(context);
+
+            await sub.RequestAsync(2);
+            await pub.SendNextAsync(Envelope(Sme(1L, peer, "m1"), peer.Uid));
+            await sub.ExpectNextAsync(TimeSpan.FromSeconds(3));
+
+            registry.AssociationFor(peer.Address).Quarantine(peer.Uid).Should().BeTrue();
+            await pub.SendNextAsync(Envelope(Sme(2L, peer, "m2"), peer.Uid));
+            await sub.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(300));
+            sentControl.Should().HaveCount(1, "only the Ack of seq 1; the quarantined uid's next frame is neither delivered nor answered");
+        }
+
+        [Fact(DisplayName = "Should_DeliverEachSeqOnce_When_TwoStagesRunConcurrentlyForSameOrigin")]
+        public async Task Should_DeliverEachSeqOnce_When_TwoStagesRunConcurrentlyForSameOrigin()
+        {
+            const int count = 200;
+            var peer = NewRemotePeer();
+            var (registry, _, _) = NewContext(peer);
+            // A no-op reply hook: the stages run on different threads, which a plain List would not tolerate.
+            var context = new AssociationRegistryInboundContext(registry, NewLocal(), (_, _) => { });
+            var delivered = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            var materializer = ActorMaterializer.Create(Sys);
+
+            TestPublisher.Probe<IInboundEnvelope> Start() =>
+                this.SourceProbe<IInboundEnvelope>()
+                    .Via(Flow.FromGraph(new SystemMessageAckerStage(context)))
+                    .To(Sink.ForEach<IInboundEnvelope>(e => delivered.Enqueue(((TestSystemMessage)e.Message).Name)))
+                    .Run(materializer);
+
+            // Each connection sends the same ascending window, like an old and a new connection overlapping.
+            var pubs = new[] { Start(), Start() };
+            await Task.WhenAll(pubs.Select(pub => Task.Run(async () =>
+            {
+                for (var seq = 1L; seq <= count; seq++)
+                    await pub.SendNextAsync(Envelope(Sme(seq, peer, seq.ToString()), peer.Uid));
+            })));
+
+            await AwaitAssertAsync(() => delivered.Count.Should().BeGreaterThanOrEqualTo(count), TimeSpan.FromSeconds(10));
+            await Task.Delay(300);
+            delivered.Select(long.Parse).OrderBy(x => x).Should().Equal(Enumerable.Range(1, count).Select(x => (long)x));
+        }
     }
 }

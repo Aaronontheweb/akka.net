@@ -279,6 +279,25 @@ namespace Akka.Remote.Tests.Artery
             ((SystemMessageEnvelope)(await h.Sub.ExpectNextAsync(TimeSpan.FromSeconds(2))).Message).SeqNo.Should().Be(2L);
         }
 
+        [Fact(DisplayName = "Should_IgnoreAck_When_SeqIsBeyondNextSeqToAssign")]
+        public async Task Should_IgnoreAck_When_SeqIsBeyondNextSeqToAssign()
+        {
+            var materializer = ActorMaterializer.Create(Sys);
+            var h = BuildHarness(materializer, resendInterval: TimeSpan.FromSeconds(30));
+            var peer = h.CompleteHandshake(remoteUid: 666L);
+
+            await h.Sub.RequestAsync(3);
+            await h.Pub.SendNextAsync(SystemMessageElement("m1"));
+            await h.Sub.ExpectNextAsync(TimeSpan.FromSeconds(3)); // seq 1, next seq to assign is 2
+
+            // Acknowledges seq 5, which was never sent: the buffer must be kept.
+            h.DeliverControlMessage(peer.Uid, new SysAck(5L, peer));
+
+            // The Nack's immediate resend proves seq 1 is still buffered.
+            h.DeliverControlMessage(peer.Uid, new SysNack(0L, peer));
+            ((SystemMessageEnvelope)(await h.Sub.ExpectNextAsync(TimeSpan.FromSeconds(2))).Message).SeqNo.Should().Be(1L);
+        }
+
         [Fact(DisplayName = "the resend timer periodically resends the whole unacknowledged window while any entry remains unacked")]
         public async Task Should_Resend_Unacked_Window_Periodically()
         {

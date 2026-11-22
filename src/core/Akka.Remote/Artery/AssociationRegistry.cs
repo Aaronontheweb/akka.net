@@ -1329,21 +1329,26 @@ namespace Akka.Remote.Artery
         /// Atomically compares <paramref name="seqNo"/> with the next system-message seq expected from
         /// <paramref name="originUid"/> and, when they are equal, advances the expectation. Returns the
         /// expectation as it was BEFORE the call, so the caller delivers on <c>seqNo == result</c>.
-        /// Returns <c>0</c> (never a valid expectation) when the uid is not the current, non-quarantined
-        /// uid of a handshaken association; the caller must drop the frame.
+        /// Returns <c>0</c> (never a valid expectation) when the uid is not in the uid index (no completed
+        /// handshake, or superseded by a new incarnation) or is quarantined; the caller must drop the frame.
         ///
         /// <para>
         /// The state lives here, not in the per-connection <see cref="SystemMessageAckerStage"/>, because the
         /// sender's <see cref="SystemMessageDeliveryState"/> survives a reconnect. The lock makes
         /// compare-and-advance atomic, so overlapping old/new inbound connections of one origin deliver each
         /// seq exactly once; the loser observes an already-advanced expectation (a duplicate or a gap).
+        /// Limit: only the check-and-advance is atomic. Each connection pushes the delivered message
+        /// downstream on its own stream, outside the lock, so strict order is guaranteed per connection but
+        /// not across two simultaneously open connections of one origin: seq N from the old connection can be
+        /// dispatched after seq N+1 from the new one.
         /// </para>
         ///
         /// <para>
-        /// Lifecycle: an entry is created lazily at seq 1, removed in <see cref="Complete"/> (under the same
-        /// lock) when a new incarnation replaces its uid, and removed here when its uid is quarantined.
-        /// Entries exist only for uids present in the reverse index, so the map holds at most one entry
-        /// per association.
+        /// Lifecycle: an entry is created lazily at seq 1 and lives until <see cref="Complete"/> (under the
+        /// same lock) replaces its uid with a new incarnation. Entries exist only for uids present in the
+        /// reverse index, so the map holds at most one entry per association. Frames of a quarantined uid are
+        /// dropped upstream by <see cref="InboundQuarantineCheckStage"/>; the quarantine check here only
+        /// matters for a frame that races the quarantine, and then also removes the entry.
         /// </para>
         /// </summary>
         public long AdvanceInboundSystemMessageSeq(long originUid, long seqNo)

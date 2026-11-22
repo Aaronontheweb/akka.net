@@ -37,7 +37,8 @@ namespace Akka.Remote.Artery
     /// sees this).</description></item>
     /// <item><description><c>seq &gt; expected</c>: gap -- drop, reply <see cref="Nack"/> for
     /// <c>expected - 1</c>. NO buffering of the out-of-order frame: the SENDER restores order by
-    /// resending its whole unacknowledged window (immediately, on receiving the Nack).</description></item>
+    /// resending its whole unacknowledged window (immediately on the first Nack that acknowledges nothing and
+    /// on any Nack that makes progress; repeated no-progress Nacks wait for the sender's resend timer).</description></item>
     /// </list>
     /// </para>
     ///
@@ -45,8 +46,12 @@ namespace Akka.Remote.Artery
     /// <b>State lifetime.</b> The expected-seq map is NOT per connection: the sender's
     /// <see cref="SystemMessageDeliveryState"/> survives reconnects, so a fresh stage per accepted
     /// connection must resume at the same expectation. It lives in the <see cref="AssociationRegistry"/>
-    /// (via <see cref="IInboundContext.AdvanceInboundSystemMessageSeq"/>), is dropped when the origin uid
-    /// is quarantined or superseded by a new incarnation, and so holds at most one entry per association.
+    /// (via <see cref="IInboundContext.AdvanceInboundSystemMessageSeq"/>) and is dropped when a new incarnation
+    /// supersedes the origin uid, so it holds at most one entry per association. Frames from an origin uid that
+    /// is not in the registry are dropped without Ack or Nack; the sender retains and resends them.
+    /// Overlapping connections: exactly-once delivery is guaranteed, and so is strict order per connection,
+    /// but not across two simultaneously open connections of one origin (see
+    /// <see cref="AssociationRegistry.AdvanceInboundSystemMessageSeq"/>).
     /// <see cref="ClearSystemMessageDelivery"/> deliberately never crosses the wire.
     /// </para>
     /// </summary>

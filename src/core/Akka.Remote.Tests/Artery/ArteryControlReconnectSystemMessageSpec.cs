@@ -109,7 +109,11 @@ namespace Akka.Remote.Tests.Artery
         private async Task<(IActorRef Target, TestProbe Probe)> WatchAsync(Node watcher, Node host, string name)
         {
             var target = host.System.ActorOf(Props.Create(() => new Echo()), name);
-            var remote = await watcher.System.ActorSelection($"{host.Address}/user/{name}").ResolveOne(10.Seconds());
+            // The Identify can be lost on an ordinary stream that is reconnecting right after a drop; retry it.
+            IActorRef remote = null!;
+            await AwaitAssertAsync(async () =>
+                remote = await watcher.System.ActorSelection($"{host.Address}/user/{name}").ResolveOne(2.Seconds()),
+                20.Seconds(), 250.Milliseconds());
             var probe = CreateTestProbe(watcher.System);
             await probe.WatchAsync(remote);
             return (target, probe);
@@ -157,8 +161,8 @@ namespace Akka.Remote.Tests.Artery
             }
         }
 
-        [Fact(DisplayName = "Should_DeliverOnceAndDrainWindow_When_SystemMessageIsUnackedAtControlDrop")]
-        public async Task Should_DeliverOnceAndDrainWindow_When_SystemMessageIsUnackedAtControlDrop()
+        [Fact(DisplayName = "Should_DrainWindowWithoutNacks_When_SystemMessageIsUnackedAtControlDrop")]
+        public async Task Should_DrainWindowWithoutNacks_When_SystemMessageIsUnackedAtControlDrop()
         {
             var (a, b) = (Node.Create("ReconnectUnackedA"), Node.Create("ReconnectUnackedB"));
             try
