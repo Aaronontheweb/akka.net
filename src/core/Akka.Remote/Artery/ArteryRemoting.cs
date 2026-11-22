@@ -1009,7 +1009,7 @@ namespace Akka.Remote.Artery
                 ? new ArteryInboundProcessingStage(
                     _settings.MaximumFrameSize, _settings.MaximumLargeFrameSize, System.Serialization, System.Scheduler,
                     _settings.InboundLanes, _settings.InboundLaneBufferSize, _inboundContext!, DispatchOrdinaryMessage,
-                    _onInboundLanesInitialized, _testState)
+                    _onInboundLanesInitialized, _testState, _settings.InboundLaneDeferredDecode)
                 : new ArteryInboundProcessingStage(
                     _settings.MaximumFrameSize, _settings.MaximumLargeFrameSize, System.Serialization, System.Scheduler);
 

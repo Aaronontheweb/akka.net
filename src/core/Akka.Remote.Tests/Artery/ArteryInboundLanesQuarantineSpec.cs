@@ -52,7 +52,7 @@ namespace Akka.Remote.Tests.Artery
         {
         }
 
-        private static Config ArteryConfig(int inboundLanes = 1) => ConfigurationFactory.ParseString($$"""
+        protected virtual Config ArteryConfig(int inboundLanes = 1) => ConfigurationFactory.ParseString($$"""
             akka.actor.provider = "Akka.Remote.RemoteActorRefProvider, Akka.Remote"
             akka.remote.artery.enabled = on
             akka.remote.artery.canonical.hostname = "127.0.0.1"

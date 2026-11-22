@@ -56,7 +56,7 @@ namespace Akka.Remote.Tests.Artery
         // association's SINGLE shared outbound queue purely to prove per-recipient ORDER on the
         // receiving (lanes) side -- an incidental overflow drop on the SENDING side would fail
         // those tests for a reason that has nothing to do with inbound lanes.
-        private static Config ArteryConfig(int inboundLanes = 1) => ConfigurationFactory.ParseString($$"""
+        protected virtual Config ArteryConfig(int inboundLanes = 1) => ConfigurationFactory.ParseString($$"""
             akka.actor.provider = "Akka.Remote.RemoteActorRefProvider, Akka.Remote"
             akka.remote.artery.enabled = on
             akka.remote.artery.canonical.hostname = "127.0.0.1"
@@ -81,7 +81,7 @@ namespace Akka.Remote.Tests.Artery
         /// RECEIVING side's <see cref="GateBlockingSerializer.FromBinary"/> call ever actually
         /// blocks.
         /// </summary>
-        private static Config GatedConfig(int inboundLanes, int inboundLaneBufferSize) => ConfigurationFactory.ParseString($$"""
+        private Config GatedConfig(int inboundLanes, int inboundLaneBufferSize) => ConfigurationFactory.ParseString($$"""
             akka.remote.artery.advanced.inbound-lane-buffer-size = {{inboundLaneBufferSize}}
             akka.actor.serializers.gate-blocking = "Akka.Remote.Tests.Artery.ArteryInboundLanesSpec+GateBlockingSerializer, Akka.Remote.Tests"
             akka.actor.serialization-bindings {

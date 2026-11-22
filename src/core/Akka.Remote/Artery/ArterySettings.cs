@@ -86,6 +86,14 @@ namespace Akka.Remote.Artery
         public int InboundLaneBufferSize { get; }
 
         /// <summary>
+        /// Experimental. When <see langword="true"/> and <see cref="InboundLanes"/> &gt; 1, the
+        /// connection reader does not decode the manifest/recipient/sender literals to strings;
+        /// it hashes the recipient's raw UTF-8 bytes to pick the lane and the lane consumer
+        /// decodes the literals itself. Defaults to <see langword="false"/>.
+        /// </summary>
+        public bool InboundLaneDeferredDecode { get; }
+
+        /// <summary>
         /// Number of independent, bounded ordinary-outbound channels ("lanes") each association
         /// fans ordinary-stream sends across, Pekko-faithful (<c>Association.scala</c>'s
         /// <c>outboundLanes</c>/<c>OrdinaryQueueIndex</c> array): a message's recipient uid is
@@ -328,6 +336,8 @@ namespace Akka.Remote.Artery
             if (InboundLanes < 1)
                 throw new ConfigurationException(
                     $"akka.remote.artery.advanced.inbound-lanes must be >= 1, but was [{InboundLanes}].");
+
+            InboundLaneDeferredDecode = arteryConfig.GetBoolean("advanced.inbound-lane-deferred-decode", false);
 
             InboundLaneBufferSize = arteryConfig.GetInt("advanced.inbound-lane-buffer-size", 4096);
             if (InboundLaneBufferSize <= 0)

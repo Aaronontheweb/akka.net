@@ -528,6 +528,36 @@ namespace Akka.Remote.Artery
             }
         }
 
+        /// <summary>
+        /// Returns the raw UTF-8 bytes of the recipient literal as a slice of the frame body,
+        /// without decoding or copying them. Only valid when <see cref="RecipientKind"/> is
+        /// <see cref="ArteryTagKind.Literal"/>. Applies the same bounds validation as
+        /// <see cref="TryGetRecipientPath"/> and throws <see cref="ArteryEnvelopeException"/> for a
+        /// bad offset or length.
+        /// </summary>
+        public ReadOnlySequence<byte> GetRecipientLiteralBytes()
+        {
+            var offset = (long)Header.RecipientTag;
+
+            if (offset < ArteryEnvelopeHeader.HeaderLength)
+                throw new ArteryEnvelopeException(
+                    $"Literal tag offset {offset} is inside the fixed header (must be >= {ArteryEnvelopeHeader.HeaderLength}).");
+            if (offset + ArteryEnvelopeHeader.LiteralLengthPrefixSize > Header.PayloadOffset)
+                throw new ArteryEnvelopeException(
+                    $"Literal tag offset {offset} leaves no room for its length prefix before the payload offset ({Header.PayloadOffset}).");
+
+            Span<byte> lenBuf = stackalloc byte[ArteryEnvelopeHeader.LiteralLengthPrefixSize];
+            _frameBody.Slice(offset, ArteryEnvelopeHeader.LiteralLengthPrefixSize).CopyTo(lenBuf);
+            var length = BinaryPrimitives.ReadUInt16LittleEndian(lenBuf);
+
+            var dataStart = offset + ArteryEnvelopeHeader.LiteralLengthPrefixSize;
+            if (dataStart + length > Header.PayloadOffset)
+                throw new ArteryEnvelopeException(
+                    $"Literal at offset {offset} (length {length}) extends past the payload offset ({Header.PayloadOffset}).");
+
+            return _frameBody.Slice(dataStart, length);
+        }
+
         private string ResolveLiteral(uint tagOffsetRaw)
         {
             var offset = (long)tagOffsetRaw;
