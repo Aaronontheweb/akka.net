@@ -87,6 +87,18 @@ add `Wire` when the bytes on the wire change.
 
 ### Not breaking, for the record
 
+* **Proposed, Artery numeric temporary refs (wire, behavior):** the Artery envelope version byte is now `2`
+  and the decoder rejects any other version, so a node on this build cannot talk to an earlier v1.6 beta over
+  Artery. A peer on another version now gets one error log naming both versions and its connection is failed,
+  instead of a per-frame warning. The sender and recipient fields gain a numeric shape; with
+  `akka.remote.artery.advanced.numeric-refs = on` (default `off`) a node writes its own temporary Ask refs
+  that way, and every node decodes every shape. Two receive-side behaviors follow: a numeric reply to a plain
+  Ask future (exactly `FutureActorRef<T>` created from a temp id) does not resolve its sender, so an
+  unparseable sender path on such a frame no longer drops it; and a reply that names a system UID other than the
+  receiver's is dead-lettered, which a path-only reply was not. Artery is new in v1.6, so none of this is a
+  change against v1.5. Inside `Akka`, Ask futures are now registered in the temp container by number instead
+  of by path; the container's names, `ActorPath` values and the public `IActorRefProvider` members are unchanged.
+
 * **Proposed, Artery inbound EOF validation:** natural EOF after a partial connection
   preamble, frame length or frame body now fails that connection with a framing error
   instead of silently completing it. Empty connections and complete frame boundaries
