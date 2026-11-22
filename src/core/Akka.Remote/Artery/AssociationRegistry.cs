@@ -1268,8 +1268,12 @@ namespace Akka.Remote.Artery
         private readonly ConcurrentDictionary<long, Association> _byUid = new();
 
         /// <summary>
-        /// Shared part of the system-message acker's expectation: next expected seq per origin uid, for uids
-        /// that are the current uid of a registered association. Guarded by <see cref="_handshakeLock"/>.
+        /// Shared part of the system-message acker's expectation: next expected seq per origin uid. An entry is
+        /// created when the first system message of an indexed uid is accepted and is never removed, like the
+        /// reference implementation's acker map: it grows by one long per distinct peer incarnation that ever
+        /// delivered a system message to this transport, for the lifetime of the ActorSystem. Removing or
+        /// evicting entries would re-open the replay hole for a uid that is seen again. Guarded by
+        /// <see cref="_handshakeLock"/>.
         /// </summary>
         private readonly Dictionary<long, long> _sharedExpectedSeq = new();
 
@@ -1348,19 +1352,20 @@ namespace Akka.Remote.Artery
         /// <summary>
         /// Shared half of the acker's expectation (see <see cref="IInboundContext.AdvanceInboundSystemMessageSeq"/>).
         /// The effective expectation is <c>max(localExpected, shared)</c>; when <paramref name="seqNo"/> equals it
-        /// and <paramref name="originUid"/> is indexed, the shared value becomes <c>seqNo + 1</c>. Compare and
-        /// advance happen under one lock, so two connections of one origin accept each seq once, and the shared
-        /// value never moves backwards. The entry is created by the first accepted message and removed in
-        /// <see cref="Complete"/> when the uid stops being the association's current uid; afterwards only the
-        /// caller's per-connection memory applies, as before this state existed. Not indexed: no shared entry.
+        /// and an entry exists or <paramref name="originUid"/> is indexed, the shared value becomes
+        /// <c>seqNo + 1</c>. Compare and advance happen under one lock, so two connections of one origin accept
+        /// each seq once, and the shared value never moves backwards. The entry is created by the first accepted
+        /// message of an indexed uid and is never removed, so a uid that is superseded and seen again finds it.
+        /// An unindexed uid without an entry gets none (an unknown origin cannot grow the map): only the caller's
+        /// per-connection memory applies, as before this state existed.
         /// </summary>
         public long AdvanceInboundSystemMessageSeq(long originUid, long seqNo, long localExpected)
         {
             lock (_handshakeLock)
             {
-                var shared = _sharedExpectedSeq.TryGetValue(originUid, out var s) ? s : 1L;
-                var expected = Math.Max(localExpected, shared);
-                if (seqNo == expected && _byUid.ContainsKey(originUid))
+                var hasEntry = _sharedExpectedSeq.TryGetValue(originUid, out var s);
+                var expected = Math.Max(localExpected, hasEntry ? s : 1L);
+                if (seqNo == expected && (hasEntry || _byUid.ContainsKey(originUid)))
                     _sharedExpectedSeq[originUid] = expected + 1;
                 return expected;
             }
@@ -1404,9 +1409,8 @@ namespace Akka.Remote.Artery
             Complete(remoteAddress, peer, outbound: true);
 
         /// <summary>
-        /// One critical section for the association transition, the uid-index update and the removal of the
-        /// superseded uid's shared expectation, so completions are totally ordered and none can publish a
-        /// stale index. Listeners are notified after the lock is released. Which uid is current is decided
+        /// One critical section for the association transition and the uid-index update, so completions are
+        /// totally ordered and none can publish a stale index. Listeners are notified after the lock is released. Which uid is current is decided
         /// exactly as before: the last handshake wins.
         /// </summary>
         private AssociationState Complete(Address remoteAddress, UniqueAddress peer, bool outbound)
@@ -1429,7 +1433,6 @@ namespace Akka.Remote.Artery
                     // association (a concurrent, newer mapping is never clobbered).
                     ((ICollection<KeyValuePair<long, Association>>)_byUid).Remove(
                         new KeyValuePair<long, Association>(previousPeer.Uid, association));
-                    _sharedExpectedSeq.Remove(previousPeer.Uid);
                 }
 
                 _byUid[peer.Uid] = association;

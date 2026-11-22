@@ -116,9 +116,9 @@ namespace Akka.Remote.Artery
         /// Shared, connection-independent part of the system-message acker's expectation for
         /// <paramref name="originUid"/>. Compares <paramref name="seqNo"/> with
         /// <c>max(<paramref name="localExpected"/>, shared expectation)</c>, advances the shared expectation
-        /// when equal (atomically, never backwards), and returns that effective expectation. A uid that is not
-        /// the current uid of a registered association has no shared entry, so the result is just
-        /// <paramref name="localExpected"/>. See <see cref="AssociationRegistry.AdvanceInboundSystemMessageSeq"/>.
+        /// when equal (atomically, never backwards), and returns that effective expectation. The shared entry is
+        /// created for a uid that has completed a handshake and is never removed; a uid without a completed
+        /// handshake and without an entry uses just <paramref name="localExpected"/>. See <see cref="AssociationRegistry.AdvanceInboundSystemMessageSeq"/>.
         /// </summary>
         long AdvanceInboundSystemMessageSeq(long originUid, long seqNo, long localExpected);
 

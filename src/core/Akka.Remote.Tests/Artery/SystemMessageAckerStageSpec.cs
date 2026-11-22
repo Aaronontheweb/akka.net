@@ -245,7 +245,7 @@ namespace Akka.Remote.Tests.Artery
             sentControl.Select(x => x.Message).OfType<SysAck>().Select(a => a.SeqNo).Should().Equal(1L, 1L);
         }
 
-        [Fact(DisplayName = "Should_StartNewUidAtSeqOneAndDropItsSharedEntryWithTheOldOne_When_PeerRestarts")]
+        [Fact(DisplayName = "Should_StartNewUidAtSeqOneAndKeepTheOldUidsEntry_When_PeerRestarts")]
         public async Task Should_StartNewUidAtSeqOne_When_PeerRestartsWithNewUid()
         {
             var oldPeer = NewRemotePeer(222L);
@@ -262,7 +262,7 @@ namespace Akka.Remote.Tests.Artery
             registry.CompleteHandshake(newPeer.Address, newPeer); // the peer restarted under the same address
             await pub.SendNextAsync(Envelope(Sme(1L, newPeer, "new1"), newPeer.Uid));
             ((TestSystemMessage)(await sub.ExpectNextAsync(TimeSpan.FromSeconds(3))).Message).Name.Should().Be("new1");
-            registry.SharedExpectationCount.Should().Be(1, "the superseded uid's shared entry is gone, the new uid has its own");
+            registry.SharedExpectationCount.Should().Be(2, "the superseded uid keeps its entry, the new uid has its own");
         }
 
         [Fact(DisplayName = "Should_DeliverEachSeqOnce_When_TwoStagesRunConcurrentlyForSameOrigin")]
@@ -408,8 +408,8 @@ namespace Akka.Remote.Tests.Artery
             registry.UidIndexCount.Should().Be(1);
         }
 
-        [Fact(DisplayName = "Should_KeepOneIndexAndSharedEntry_When_DelayedNoOpCompletionsInterleaveWithRestarts")]
-        public async Task Should_KeepOneIndexAndSharedEntry_When_DelayedNoOpCompletionsInterleaveWithRestarts()
+        [Fact(DisplayName = "Should_KeepOneIndexAndOneEntryPerIncarnation_When_DelayedNoOpCompletionsInterleaveWithRestarts")]
+        public async Task Should_KeepOneIndexAndOneEntryPerIncarnation_When_DelayedNoOpCompletionsInterleaveWithRestarts()
         {
             var registry = new AssociationRegistry();
             var first = NewRemotePeer(500L);
@@ -438,7 +438,7 @@ namespace Akka.Remote.Tests.Artery
 
             registry.AdvanceInboundSystemMessageSeq(current.Uid, 1L, localExpected: 1L).Should().Be(1L);
             registry.UidIndexCount.Should().Be(1);
-            registry.SharedExpectationCount.Should().Be(1);
+            registry.SharedExpectationCount.Should().Be(6, "one entry per incarnation that delivered a message (500..505), never more");
         }
 
         [Fact(DisplayName = "Should_ApplyOnlyConnectionMemory_When_UidIsNotRegistered")]
@@ -537,6 +537,89 @@ namespace Akka.Remote.Tests.Artery
 
             registry.RollbackInboundSystemMessageSeq(peer.Uid, 2L); // still n + 1: rolled back
             registry.AdvanceInboundSystemMessageSeq(peer.Uid, 0L, localExpected: 1L).Should().Be(2L);
+        }
+
+        [Fact(DisplayName = "Should_ResumeSharedEntry_When_SupersededUidHandshakesAgain")]
+        public void Should_ResumeSharedEntry_When_SupersededUidHandshakesAgain()
+        {
+            var a = NewRemotePeer(222L);
+            var b = NewRemotePeer(223L);
+            var registry = new AssociationRegistry();
+            registry.CompleteHandshake(a.Address, a);
+            registry.AdvanceInboundSystemMessageSeq(a.Uid, 1L, localExpected: 1L).Should().Be(1L);
+            registry.AdvanceInboundSystemMessageSeq(a.Uid, 2L, localExpected: 1L).Should().Be(2L);
+
+            registry.CompleteHandshake(b.Address, b); // a is superseded: its entry stays
+            registry.SharedExpectationCount.Should().Be(1);
+            registry.CompleteHandshake(a.Address, a);
+
+            registry.AdvanceInboundSystemMessageSeq(a.Uid, 0L, localExpected: 1L).Should().Be(3L);
+        }
+
+        [Fact(DisplayName = "Should_KeepSharedEntryInStep_When_SupersededUidKeepsDelivering")]
+        public void Should_KeepSharedEntryInStep_When_SupersededUidKeepsDelivering()
+        {
+            var a = NewRemotePeer(222L);
+            var b = NewRemotePeer(223L);
+            var registry = new AssociationRegistry();
+            registry.CompleteHandshake(a.Address, a);
+            registry.AdvanceInboundSystemMessageSeq(a.Uid, 1L, localExpected: 1L).Should().Be(1L);
+            registry.CompleteHandshake(b.Address, b); // a is no longer indexed
+
+            // Its original connection keeps delivering seq 2 and 3; the entry advances with it.
+            registry.AdvanceInboundSystemMessageSeq(a.Uid, 2L, localExpected: 2L).Should().Be(2L);
+            registry.AdvanceInboundSystemMessageSeq(a.Uid, 3L, localExpected: 3L).Should().Be(3L);
+            registry.CompleteHandshake(a.Address, a);
+
+            registry.AdvanceInboundSystemMessageSeq(a.Uid, 3L, localExpected: 1L).Should().Be(4L, "seq 3 is a replay for a new connection");
+        }
+
+        [Fact(DisplayName = "Should_ResumeOnNewConnection_When_HandshakesOscillateBetweenIncarnations")]
+        public async Task Should_ResumeOnNewConnection_When_HandshakesOscillateBetweenIncarnations()
+        {
+            var a0 = NewRemotePeer(222L);
+            var a1 = NewRemotePeer(223L);
+            var (registry, context, sentControl) = NewContext(a0);
+            registry.CompleteHandshake(a1.Address, a1);
+            var (pub1, sub1) = Materialize(context);
+
+            await sub1.RequestAsync(2);
+            await pub1.SendNextAsync(Envelope(Sme(1L, a1, "k1"), a1.Uid));
+            await pub1.SendNextAsync(Envelope(Sme(2L, a1, "k2"), a1.Uid));
+            await sub1.ExpectNextAsync(TimeSpan.FromSeconds(3));
+            await sub1.ExpectNextAsync(TimeSpan.FromSeconds(3));
+            pub1.SendComplete();
+
+            registry.CompleteHandshake(a0.Address, a0);
+            registry.CompleteHandshake(a1.Address, a1);
+
+            // A NEW connection of the live uid resumes at 3: no restart at 1, no Nack.
+            var (pub2, sub2) = Materialize(context);
+            await sub2.RequestAsync(1);
+            await pub2.SendNextAsync(Envelope(Sme(3L, a1, "k3"), a1.Uid));
+            ((TestSystemMessage)(await sub2.ExpectNextAsync(TimeSpan.FromSeconds(3))).Message).Name.Should().Be("k3");
+            sentControl.Select(x => x.Message).OfType<SysNack>().Should().BeEmpty();
+        }
+
+        [Fact(DisplayName = "Should_NotRedeliver_When_SupersededUidReplaysOnNewConnection")]
+        public async Task Should_NotRedeliver_When_SupersededUidReplaysOnNewConnection()
+        {
+            var a0 = NewRemotePeer(222L);
+            var a1 = NewRemotePeer(223L);
+            var (registry, context, _) = NewContext(a0);
+            var (pub1, sub1) = Materialize(context);
+
+            await sub1.RequestAsync(1);
+            await pub1.SendNextAsync(Envelope(Sme(1L, a0, "m1"), a0.Uid));
+            await sub1.ExpectNextAsync(TimeSpan.FromSeconds(3));
+            pub1.SendComplete();
+
+            registry.CompleteHandshake(a1.Address, a1); // a0 is superseded
+
+            var (pub2, sub2) = Materialize(context);
+            await sub2.RequestAsync(1);
+            await pub2.SendNextAsync(Envelope(Sme(1L, a0, "m1-replay"), a0.Uid));
+            await sub2.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(300));
         }
     }
 }

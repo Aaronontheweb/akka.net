@@ -49,9 +49,11 @@ namespace Akka.Remote.Artery
     /// <see cref="IInboundContext.AdvanceInboundSystemMessageSeq"/>), because the sender's
     /// <see cref="SystemMessageDeliveryState"/> survives reconnects while a new stage starts empty. The
     /// effective expectation is the larger of the two and both advance on delivery, so a NEW connection from
-    /// the SAME uid resumes where the previous one stopped instead of at 1. The shared entry exists from the
-    /// uid's first accepted message until the uid stops being its association's current uid; after that only
-    /// the per-connection memory applies, as before. Two connections of one origin accept each seq once (the
+    /// the SAME uid resumes where the previous one stopped instead of at 1. The shared entry is created by the
+    /// first accepted message of a uid that has completed a handshake and is never removed (as in the reference
+    /// implementation: one long per distinct peer incarnation that delivered a system message, for the lifetime of
+    /// the ActorSystem), so a uid that is superseded and seen again still resumes. A uid without a completed
+    /// handshake and without an entry uses the per-connection memory only. Two connections of one origin accept each seq once (the
     /// shared compare-and-advance is atomic); strict order is guaranteed per connection, not across two
     /// simultaneously open connections of one origin.
     /// Known limit: a sender that resets its numbering while the receiver's shared entry for it survives
