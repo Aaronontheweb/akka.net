@@ -29,6 +29,18 @@ namespace Akka.Remote.Artery
     /// transport-specific sub-config rather than the whole system config).
     /// </para>
     /// </summary>
+    /// <summary>
+    /// Value of <c>akka.remote.artery.advanced.lane-selection</c>.
+    /// </summary>
+    internal enum ArteryLaneSelection
+    {
+        /// <summary>Lane is chosen from the recipient only.</summary>
+        Recipient,
+
+        /// <summary>Lane is chosen from the (sender, recipient) pair.</summary>
+        SenderRecipient
+    }
+
     internal sealed class ArterySettings
     {
         /// <summary>
@@ -100,6 +112,16 @@ namespace Akka.Remote.Artery
         /// for the inbound-side analog.
         /// </summary>
         public int OutboundLanes { get; }
+
+        /// <summary>
+        /// <c>akka.remote.artery.advanced.lane-selection</c>: what the outbound and inbound lane
+        /// choice is keyed on when <see cref="OutboundLanes"/> / <see cref="InboundLanes"/> are
+        /// greater than 1. <see cref="ArteryLaneSelection.Recipient"/> (the default) keys on the
+        /// recipient alone; <see cref="ArteryLaneSelection.SenderRecipient"/> keys on the
+        /// (sender, recipient) pair, which keeps per-pair ordering while spreading many senders
+        /// addressing one recipient across lanes. Irrelevant when both lane counts are 1.
+        /// </summary>
+        public ArteryLaneSelection LaneSelection { get; }
 
         /// <summary>
         /// <c>akka.remote.artery.advanced.test-mode</c> (Pekko key parity): enables the
@@ -340,6 +362,15 @@ namespace Akka.Remote.Artery
             if (OutboundLanes < 1)
                 throw new ConfigurationException(
                     $"akka.remote.artery.advanced.outbound-lanes must be >= 1, but was [{OutboundLanes}].");
+
+            var laneSelection = arteryConfig.GetString("advanced.lane-selection", "recipient");
+            LaneSelection = laneSelection switch
+            {
+                "recipient" => ArteryLaneSelection.Recipient,
+                "sender-recipient" => ArteryLaneSelection.SenderRecipient,
+                _ => throw new ConfigurationException(
+                    $"akka.remote.artery.advanced.lane-selection must be one of [recipient, sender-recipient], but was [{laneSelection}].")
+            };
 
             HandshakeTimeout = GetPositiveTimeSpan(arteryConfig, "advanced.handshake-timeout", TimeSpan.FromSeconds(20));
             HandshakeRetryInterval = GetPositiveTimeSpan(arteryConfig, "advanced.handshake-retry-interval", TimeSpan.FromSeconds(1));

@@ -890,6 +890,63 @@ namespace Akka.Remote.Artery
             lanes <= 1 ? 0 : (int)(unchecked((ulong)recipientUid) % (ulong)lanes);
 
         /// <summary>
+        /// Lane selection for <see cref="ArteryLaneSelection.SenderRecipient"/>: a deterministic,
+        /// allocation-free function of (recipient, sender). One (sender, recipient) pair always
+        /// maps to the same lane, so per-pair ordering holds. <paramref name="sender"/> is
+        /// <see langword="null"/> for NoSender, in which case the key is the recipient alone.
+        /// </summary>
+        internal static int SelectPairLane(ActorPath recipient, ActorPath? sender, int lanes)
+        {
+            if (lanes <= 1)
+                return 0;
+
+            unchecked
+            {
+                var h = PathLaneKey(recipient) * 0x9E3779B97F4A7C15UL;
+                if (sender is not null)
+                {
+                    h ^= h >> 32;
+                    h += PathLaneKey(sender) * 0xC2B2AE3D27D4EB4FUL;
+                }
+
+                // finalizer: scramble before the modulus
+                h ^= h >> 33;
+                h *= 0xFF51AFD7ED558CCDUL;
+                h ^= h >> 33;
+                return (int)(h % (ulong)lanes);
+            }
+        }
+
+        /// <summary>
+        /// The path's actor uid when set; otherwise (temporary / uid-less refs) a stable FNV-1a hash
+        /// of the leaf name and its parent's name. Stable for the life of the ref and never allocates.
+        /// </summary>
+        private static ulong PathLaneKey(ActorPath path)
+        {
+            if (path.Uid != 0)
+                return unchecked((ulong)path.Uid);
+
+            unchecked
+            {
+                var h = 14695981039346656037UL;
+                ActorPath? p = path;
+                for (var i = 0; i < 2 && p is not null; i++, p = p.Parent)
+                {
+                    foreach (var c in p.Name)
+                    {
+                        h ^= c;
+                        h *= 1099511628211UL;
+                    }
+
+                    h ^= '/';
+                    h *= 1099511628211UL;
+                }
+
+                return h;
+            }
+        }
+
+        /// <summary>
         /// Attempts to enqueue <paramref name="element"/> for the CONTROL outbound stream to send.
         /// Non-blocking, same discipline as <see cref="TryEnqueueOutbound(IOutboundEnvelope)"/>. See the type-level
         /// remarks on <see cref="DefaultControlQueueCapacity"/> for the GROUP7 overflow-policy note.
