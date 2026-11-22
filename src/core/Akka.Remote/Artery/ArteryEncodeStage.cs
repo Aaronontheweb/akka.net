@@ -107,8 +107,14 @@ namespace Akka.Remote.Artery
                 // try/catch already disposes its writer on failure before rethrowing, and an
                 // exception escaping OnPush fails this stage (matching the old .Select(...)
                 // behavior of failing the whole outbound stream on an encode error).
+                // Only the numeric envelope type carries numeric refs; reading them through the interface for every
+                // envelope would add two interface calls to every ordinary message.
+                var numeric = elem as NumericOutboundEnvelope;
                 var writer = ArteryEnvelopeCodec.Encode(
-                    _stage.Serialization, _stage.OriginUid, elem.SenderPath, elem.RecipientPath, elem.Message, _stage.Pool);
+                    _stage.Serialization, _stage.OriginUid,
+                    elem.SenderPath, numeric?.SenderRef,
+                    elem.RecipientPath, numeric?.RecipientRef,
+                    elem.Message, _stage.Pool);
 
                 // Detach moves ownership of the encoded, pooled buffer to `owner` -- no
                 // WrittenSpan.ToArray() copy, and deliberately NO writer.Dispose() here (Detach
