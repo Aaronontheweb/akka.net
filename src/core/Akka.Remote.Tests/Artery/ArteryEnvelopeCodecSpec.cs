@@ -569,7 +569,7 @@ namespace Akka.Remote.Tests.Artery
             }
 
             // Non-canonical or foreign names never decode: leading-zero digit, bad alphabet, empty, too long, overflow.
-            foreach (var name in new[] { "ba" + "a", "a#", "", "aaaaaaaaaaaaa", "aaaaaaaaaah", "x y", "ab" + "a" })
+            foreach (var name in new[] { "ba" + "a", "a#", "", "aaaaaaaaaaaaa", "aaaaaaaaaai", "x y", "ab" + "a" })
                 Assert.False(Akka.Util.Base64Encoding.TryBase64DecodeLong(name.AsSpan(), out _), name);
         }
 

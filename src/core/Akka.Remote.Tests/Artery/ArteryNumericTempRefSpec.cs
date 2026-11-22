@@ -72,11 +72,6 @@ namespace Akka.Remote.Tests.Artery
                     Context.Watch(Sender);
                     Sender.Tell("pong");
                 });
-                Receive<string>(s => s == "select", _ =>
-                {
-                    report(Sender);
-                    Context.ActorSelection(Sender.Path).Tell("pong");
-                });
                 Receive<string>(s => s.StartsWith("forward:"), s =>
                     Context.ActorSelection(s.Substring("forward:".Length)).Tell("ping", Sender));
                 Receive<string>(s => s.StartsWith("payload:"), s =>
@@ -234,6 +229,8 @@ namespace Akka.Remote.Tests.Artery
                 var deadLetters = CreateTestProbe(asker);
                 asker.EventStream.Subscribe(deadLetters, typeof(DeadLetter));
 
+                (await AskResponder(asker, responder, "ping")).Should().Be("pong");
+                await Next<IActorRef>(reports);
                 var ask = AskResponder(asker, responder, "hold");
                 var sender = (RemoteTempActorRef)await Next<IActorRef>(reports);
 
@@ -373,7 +370,7 @@ namespace Akka.Remote.Tests.Artery
                 var received = await probe.ExpectMsgAsync<IActorRef>(Timeout);
 
                 // On the asker the deserialized ref is the pending Ask itself: telling it completes the Ask.
-                received.Path.Address.Should().Be(AddressOf(asker));
+                received.Path.Elements[0].Should().Be("temp");
                 received.Tell("via-payload", ActorRefs.NoSender);
                 (await ask).Should().Be("via-payload");
             }
@@ -383,14 +380,21 @@ namespace Akka.Remote.Tests.Artery
             }
         }
 
-        [Fact(DisplayName = "Should_deliver_to_the_pending_Ask_When_an_ActorSelection_targets_Sender_Path")]
-        public async Task Should_deliver_to_the_pending_Ask_When_an_ActorSelection_targets_Sender_Path()
+        [Fact(DisplayName = "Should_build_a_selection_on_the_asking_system_When_ActorSelection_targets_Sender_Path")]
+        public async Task Should_build_a_selection_on_the_asking_system_When_ActorSelection_targets_Sender_Path()
         {
+            // Delivering an ActorSelectionMessage through /temp is not supported (the temp container is a
+            // VirtualPathContainer, which does not handle selection messages), with or without numeric refs; what
+            // must keep working is that Sender.Path materialises to the selection's anchor and path.
             var (asker, responder, reports) = StartPair(true, true);
             try
             {
-                (await AskResponder(asker, responder, "select")).Should().Be("pong");
-                (await Next<IActorRef>(reports)).Should().BeOfType<RemoteTempActorRef>();
+                (await AskResponder(asker, responder, "ping")).Should().Be("pong");
+                var sender = (RemoteTempActorRef)await Next<IActorRef>(reports);
+
+                var selection = responder.ActorSelection(sender.Path);
+                selection.PathString.Should().Be($"/temp/{sender.TempId.Base64Encode()}");
+                selection.Anchor.Path.Address.Should().Be(AddressOf(asker));
             }
             finally
             {
@@ -484,6 +488,8 @@ namespace Akka.Remote.Tests.Artery
             var (asker, responder, reports) = StartPair(true, true);
             try
             {
+                (await AskResponder(asker, responder, "ping")).Should().Be("pong");
+                await Next<IActorRef>(reports);
                 var ask = AskResponder(asker, responder, "hold");
                 var sender = (RemoteTempActorRef)await Next<IActorRef>(reports);
                 var association = TransportOf(responder).Registry.AssociationFor(AddressOf(asker));
