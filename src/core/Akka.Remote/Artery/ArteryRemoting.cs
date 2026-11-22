@@ -95,6 +95,10 @@ namespace Akka.Remote.Artery
         private readonly ILoggingAdapter _log;
         private readonly AssociationRegistry _registry;
 
+        /// <summary>Flow counters (<c>advanced.flow-diagnostics</c>), or <see langword="null"/> when off.</summary>
+        private readonly ArteryFlowDiagnostics? _flowDiagnostics;
+        private ICancelable? _flowDiagnosticsTimer;
+
         /// <summary>
         /// Failure-injection blackhole state (<c>akka.remote.artery.advanced.test-mode</c>), or
         /// <see langword="null"/> when test-mode is off -- see <see cref="TestState"/>.
@@ -323,9 +327,12 @@ namespace Akka.Remote.Artery
             // caused spurious quarantines under a mass-termination Unwatch burst) rather than the
             // registry's own hardcoded defaults -- see ArterySettings.OutboundMessageQueueSize /
             // OutboundControlQueueSize / OutboundLargeMessageQueueSize (task 10.2).
+            _flowDiagnostics = _settings.FlowDiagnostics
+                ? new ArteryFlowDiagnostics(_log, _settings.OutboundLanes, _settings.InboundLanes)
+                : null;
             _registry = new AssociationRegistry(
                 _settings.OutboundMessageQueueSize, _settings.OutboundControlQueueSize, _settings.OutboundLargeMessageQueueSize,
-                _settings.OutboundLanes, _settings.HandshakeTimeout);
+                _settings.OutboundLanes, _settings.HandshakeTimeout, _flowDiagnostics);
 
             // advanced.test-mode (Pekko ArteryTransport parity): the shared blackhole state the
             // failure-injection test stages consult. Deliberately NULL (not merely empty) when
@@ -464,6 +471,10 @@ namespace Akka.Remote.Artery
                 _certificateSourcePoll = System.Scheduler.Advanced.ScheduleRepeatedlyCancelable(
                     TlsCertificateRotation.PollInterval, TlsCertificateRotation.PollInterval, PollCertificateSource);
 
+            if (_flowDiagnostics is { } flowDiagnostics)
+                _flowDiagnosticsTimer = System.Scheduler.Advanced.ScheduleRepeatedlyCancelable(
+                    _settings.FlowDiagnosticsInterval, _settings.FlowDiagnosticsInterval, flowDiagnostics.EmitSnapshot);
+
             var boundPort = ((IPEndPoint)_binding.Value.LocalAddress).Port;
             var address = new Address("akka", System.Name, _settings.CanonicalHostname, boundPort);
 
@@ -554,6 +565,7 @@ namespace Akka.Remote.Artery
             // late system message racing termination can no longer trigger a materialization.
             _isShutdown = true;
             _certificateSourcePoll?.Cancel();
+            _flowDiagnosticsTimer?.Cancel();
             _log.Info("Shutting down Artery TCP remoting on [{0}]", _defaultAddress);
 
             // Snapshot the associations ONCE: the flush below awaits between the complete pass and
@@ -1009,9 +1021,10 @@ namespace Akka.Remote.Artery
                 ? new ArteryInboundProcessingStage(
                     _settings.MaximumFrameSize, _settings.MaximumLargeFrameSize, System.Serialization, System.Scheduler,
                     _settings.InboundLanes, _settings.InboundLaneBufferSize, _inboundContext!, DispatchOrdinaryMessage,
-                    _onInboundLanesInitialized, _testState)
+                    _onInboundLanesInitialized, _testState, _flowDiagnostics)
                 : new ArteryInboundProcessingStage(
-                    _settings.MaximumFrameSize, _settings.MaximumLargeFrameSize, System.Serialization, System.Scheduler);
+                    _settings.MaximumFrameSize, _settings.MaximumLargeFrameSize, System.Serialization, System.Scheduler,
+                    flowDiagnostics: _flowDiagnostics);
 
             var decoded = Flow.Create<ReadOnlySequence<byte>>()
                 .Via(_killSwitch.Flow<ReadOnlySequence<byte>>())
@@ -1962,7 +1975,8 @@ namespace Akka.Remote.Artery
                                 "bytes of already-encoded frame data across one or more lanes when its stream stopped",
                                 ActorRefs.NoSender,
                                 System.DeadLetters));
-                        })))
+                        },
+                        flow: association.FlowCounters?.Write)))
                     .Via(connectionWithRestart)
                     .ToMaterialized(Sink.Ignore<ReadOnlySequence<byte>>(), Keep.Both)
                     .Run(_materializer!);
@@ -2306,7 +2320,18 @@ namespace Akka.Remote.Artery
             if (isControlStream)
                 beforeEncode = beforeEncode.Where(association.ShouldSendControl);
 
-            var frames = beforeEncode.Via(Flow.FromGraph(encodeStage));
+            var encoded = beforeEncode.Via(Flow.FromGraph(encodeStage));
+
+            // flow-diagnostics, single-lane ordinary stream only: every encoded frame is its own write
+            // to the connection stage here (no batching stage exists at outbound-lanes = 1). The tap is
+            // only composed when diagnostics are on, so the disabled graph is unchanged.
+            var frames = !isControlStream && !isLargeStream && association.FlowCounters is { } singleLaneFlow
+                ? encoded.Select(frame =>
+                {
+                    ArteryFlowDiagnostics.RecordWrite(singleLaneFlow.Write, 1, frame.Length);
+                    return frame;
+                })
+                : encoded;
 
             // TERMINATION SIGNAL (design.md group 9 -- empirically corrected from the design's
             // first-draft "RunWith result / Sink.Ignore task" wording; see the type-level

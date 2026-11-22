@@ -86,6 +86,19 @@ namespace Akka.Remote.Artery
         public int InboundLaneBufferSize { get; }
 
         /// <summary>
+        /// <c>akka.remote.artery.advanced.flow-diagnostics</c>: when <see langword="true"/> the
+        /// transport counts ordinary-stream flow (see <see cref="Akka.Remote.Artery.ArteryFlowDiagnostics"/>)
+        /// and logs an <c>ARTERY-FLOW</c> line per direction every <see cref="FlowDiagnosticsInterval"/>.
+        /// </summary>
+        public bool FlowDiagnostics { get; }
+
+        /// <summary>
+        /// <c>akka.remote.artery.advanced.flow-diagnostics-interval</c>: window between
+        /// <c>ARTERY-FLOW</c> lines. Must be positive.
+        /// </summary>
+        public TimeSpan FlowDiagnosticsInterval { get; }
+
+        /// <summary>
         /// Number of independent, bounded ordinary-outbound channels ("lanes") each association
         /// fans ordinary-stream sends across, Pekko-faithful (<c>Association.scala</c>'s
         /// <c>outboundLanes</c>/<c>OrdinaryQueueIndex</c> array): a message's recipient uid is
@@ -333,6 +346,9 @@ namespace Akka.Remote.Artery
             if (InboundLaneBufferSize <= 0)
                 throw new ConfigurationException(
                     $"akka.remote.artery.advanced.inbound-lane-buffer-size must be greater than 0, but was [{InboundLaneBufferSize}].");
+
+            FlowDiagnostics = arteryConfig.GetBoolean("advanced.flow-diagnostics", false);
+            FlowDiagnosticsInterval = GetPositiveTimeSpan(arteryConfig, "advanced.flow-diagnostics-interval", TimeSpan.FromSeconds(5));
 
             TestMode = arteryConfig.GetBoolean("advanced.test-mode", false);
 

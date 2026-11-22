@@ -32,6 +32,7 @@ namespace Akka.Remote.Artery
     {
         private readonly long _maxBytes;
         private readonly Action<long>? _onDropped;
+        private readonly FlowCounterBlock? _flow;
 
         /// <param name="maxBytes">The batching weight cap -- see <see cref="ArteryRemoting.LaneWriteBatchMaxBytes"/>.</param>
         /// <param name="onDropped">
@@ -50,13 +51,15 @@ namespace Akka.Remote.Artery
         /// a no-op so existing callers (and the lane-batching unit specs, which never drive a mid-batch
         /// stop) are unaffected.
         /// </param>
-        public LaneWriteBatchStage(long maxBytes, Action<long>? onDropped = null)
+        /// <param name="flow">Flow-diagnostics write counters, or <see langword="null"/> (the default) when disabled.</param>
+        public LaneWriteBatchStage(long maxBytes, Action<long>? onDropped = null, FlowCounterBlock? flow = null)
         {
             if (maxBytes <= 0)
                 throw new ArgumentOutOfRangeException(nameof(maxBytes));
 
             _maxBytes = maxBytes;
             _onDropped = onDropped;
+            _flow = flow;
             Shape = new FlowShape<ReadOnlySequence<byte>, ReadOnlySequence<byte>>(In, Out);
         }
 
@@ -76,6 +79,7 @@ namespace Akka.Remote.Artery
             private bool _hasBatch;
             private bool _hasPending;
             private bool _upstreamFinished;
+            private int _batchFrames; // frames in _batch; only maintained when flow diagnostics are on
 
             /// <summary>
             /// Bytes discarded by <see cref="OnPush"/>'s catch (an append failure) before
@@ -105,6 +109,7 @@ namespace Akka.Remote.Artery
                     {
                         _batch = ArteryRemoting.AppendFrameToBatch(_batch, frame);
                         _batchBytes += frame.Length;
+                        _batchFrames++;
                     }
                     else
                     {
@@ -132,6 +137,8 @@ namespace Akka.Remote.Artery
 
                 if (IsAvailable(_stage.Out))
                     PushBatch();
+                else if (_stage._flow is { } flow)
+                    flow.Inc(ArteryFlowDiagnostics.W_WaitDemand); // a frame arrived while downstream had no demand
 
                 PullIfNeeded();
             }
@@ -184,12 +191,21 @@ namespace Akka.Remote.Artery
             {
                 _batch = frame;
                 _batchBytes = frame.Length;
+                _batchFrames = 1;
                 _hasBatch = true;
             }
 
             private void PushBatch()
             {
                 var output = _batch;
+
+                if (_stage._flow is { } flow)
+                {
+                    ArteryFlowDiagnostics.RecordWrite(flow, _batchFrames, _batchBytes);
+                    if (!_hasPending)
+                        flow.Inc(ArteryFlowDiagnostics.W_PartialPush); // flushed without a non-fitting frame waiting
+                }
+
                 _hasBatch = false;
                 _batch = default;
                 _batchBytes = 0;

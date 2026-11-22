@@ -83,6 +83,10 @@ namespace Akka.Remote.Tests.Artery
             settings.InboundLanes.Should().Be(1);
             settings.InboundLaneBufferSize.Should().Be(4096);
             settings.OutboundLanes.Should().Be(1);
+
+            // Diagnostic counters are off by default; the interval only matters once enabled.
+            settings.FlowDiagnostics.Should().BeFalse();
+            settings.FlowDiagnosticsInterval.Should().Be(5.Seconds());
             settings.HandshakeTimeout.Should().Be(20.Seconds());
             settings.HandshakeRetryInterval.Should().Be(1.Seconds());
             settings.InjectHandshakeInterval.Should().Be(1.Seconds());

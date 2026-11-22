@@ -428,8 +428,10 @@ namespace Akka.Remote.Artery
             int largeQueueCapacity = DefaultLargeQueueCapacity,
             int outboundLanes = 1,
             TimeSpan? quarantineNotificationTimeout = null,
-            Func<TimeSpan>? monotonicClock = null)
+            Func<TimeSpan>? monotonicClock = null,
+            ArteryOutboundFlow? flowCounters = null)
         {
+            _flowCounters = flowCounters;
             _quarantineNotificationTimeout = quarantineNotificationTimeout ?? TimeSpan.FromSeconds(20);
             _monotonicClock = monotonicClock ?? (() => Akka.Util.MonotonicClock.Elapsed);
             RemoteAddress = remoteAddress;
@@ -863,7 +865,25 @@ namespace Akka.Remote.Artery
         /// per <see cref="SelectLane"/>) which lane a given send belongs on. Same non-blocking/
         /// overflow discipline as <see cref="TryEnqueueOutbound(IOutboundEnvelope)"/>.
         /// </summary>
-        public bool TryEnqueueOutbound(IOutboundEnvelope element, int lane) => _laneChannels[lane].Writer.TryWrite(element);
+        public bool TryEnqueueOutbound(IOutboundEnvelope element, int lane)
+        {
+            var channel = _laneChannels[lane];
+            if (!channel.Writer.TryWrite(element))
+                return false;
+
+            if (_flowCounters is { } flow)
+                flow.OnEnqueued(lane, channel.Reader.Count);
+
+            return true;
+        }
+
+        /// <summary>
+        /// Flow-diagnostics counters for this association, or <see langword="null"/> when
+        /// <c>flow-diagnostics</c> is off.
+        /// </summary>
+        internal ArteryOutboundFlow? FlowCounters => _flowCounters;
+
+        private readonly ArteryOutboundFlow? _flowCounters;
 
         /// <summary>
         /// Deterministically selects which ordinary-outbound lane a message to
@@ -1290,8 +1310,10 @@ namespace Akka.Remote.Artery
             int controlQueueCapacity = Association.DefaultControlQueueCapacity,
             int largeQueueCapacity = Association.DefaultLargeQueueCapacity,
             int outboundLanes = 1,
-            TimeSpan? quarantineNotificationTimeout = null)
+            TimeSpan? quarantineNotificationTimeout = null,
+            ArteryFlowDiagnostics? flowDiagnostics = null)
         {
+            _flowDiagnostics = flowDiagnostics;
             _quarantineNotificationTimeout = quarantineNotificationTimeout;
             _outboundQueueCapacity = outboundQueueCapacity;
             _controlQueueCapacity = controlQueueCapacity;
@@ -1306,8 +1328,11 @@ namespace Akka.Remote.Artery
         /// </summary>
         public Association AssociationFor(Address remoteAddress) =>
             _byAddress.GetOrAdd(remoteAddress,
-                static (addr, caps) => new Association(addr, caps.Outbound, caps.Control, caps.Large, caps.Lanes, caps.NotificationTimeout),
-                (Outbound: _outboundQueueCapacity, Control: _controlQueueCapacity, Large: _largeQueueCapacity, Lanes: _outboundLanes, NotificationTimeout: _quarantineNotificationTimeout));
+                static (addr, caps) => new Association(addr, caps.Outbound, caps.Control, caps.Large, caps.Lanes, caps.NotificationTimeout,
+                    flowCounters: caps.Flow?.OutboundFor(addr)),
+                (Outbound: _outboundQueueCapacity, Control: _controlQueueCapacity, Large: _largeQueueCapacity, Lanes: _outboundLanes, NotificationTimeout: _quarantineNotificationTimeout, Flow: _flowDiagnostics));
+
+        private readonly ArteryFlowDiagnostics? _flowDiagnostics;
 
         /// <summary>
         /// Looks up the association currently known to own <paramref name="uid"/>. Returns

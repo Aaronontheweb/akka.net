@@ -189,8 +189,10 @@ namespace Akka.Remote.Artery
             IInboundContext? inboundContext = null,
             Action<object, string?, string>? dispatchOrdinary = null,
             Action<int>? onLanesInitialized = null,
-            SharedTestState? testState = null)
+            SharedTestState? testState = null,
+            ArteryFlowDiagnostics? flowDiagnostics = null)
         {
+            FlowDiagnostics = flowDiagnostics;
             if (inboundLanes < 1)
                 throw new ArgumentOutOfRangeException(nameof(inboundLanes), inboundLanes, "Must be >= 1.");
             if (inboundLanes > 1 && (inboundContext is null || dispatchOrdinary is null))
@@ -240,6 +242,9 @@ namespace Akka.Remote.Artery
 
             Shape = new FlowShape<ReadOnlySequence<byte>, IInboundEnvelope>(In, Out);
         }
+
+        /// <summary>Flow counters (<c>advanced.flow-diagnostics</c>), or <see langword="null"/> when off.</summary>
+        public ArteryFlowDiagnostics? FlowDiagnostics { get; }
 
         public int MaxFrameLength { get; }
 
@@ -363,6 +368,13 @@ namespace Akka.Remote.Artery
             /// <summary>Resolved once at <see cref="PreStart"/>; see <see cref="ArteryInboundProcessingStage.TimeProvider"/>.</summary>
             private ITimeProvider _timeProvider = null!;
 
+            // flow-diagnostics counters of THIS connection, created once its preamble identifies it as an
+            // ordinary-stream connection; null otherwise (and always null when diagnostics are off).
+            private FlowCounterBlock? _flow;
+
+            // Complete frames pulled off the parser since the start of the current OnPush.
+            private int _passFrames;
+
             private readonly byte[] _preambleBuffer = new byte[ArteryConnectionHeader.Length];
             private int _preambleFilled;
             private bool _preambleParsed;
@@ -445,12 +457,22 @@ namespace Akka.Remote.Artery
                         return; // either more input needed (already re-pulled), or the stage failed.
                 }
 
+                var chunkBytes = chunk.Length;
                 AppendToParser(chunk);
 
+                _passFrames = 0;
                 if (_laneModeActive)
                     DrainReadyFramesLaneMode();
                 else
                     DrainReadyFrames();
+
+                if (_flow is { } flow)
+                {
+                    flow.Inc(ArteryFlowDiagnostics.I_Chunks);
+                    flow.Add(ArteryFlowDiagnostics.I_ChunkBytes, chunkBytes);
+                    flow.Inc(ArteryFlowDiagnostics.I_ChunkBytesHist + ArteryFlowDiagnostics.BytesBucket(chunkBytes));
+                    flow.Inc(ArteryFlowDiagnostics.I_FramesHist + ArteryFlowDiagnostics.FramesPerChunkBucket(_passFrames));
+                }
 
                 DeliverOrPull();
             }
@@ -515,6 +537,8 @@ namespace Akka.Remote.Artery
             /// </summary>
             public override void PostStop()
             {
+                if (_flow is not null)
+                    _flow.Retired = true;
                 if (_lanes is not null)
                 {
                     foreach (var lane in _lanes)
@@ -566,6 +590,9 @@ namespace Akka.Remote.Artery
                     ? new ArteryFrameParser(_stage.MaxLargeFrameLength)
                     : new ArteryFrameParser(_stage.MaxFrameLength);
 
+                if (streamId == ArteryStreamId.Ordinary)
+                    _flow = _stage.FlowDiagnostics?.RegisterInbound();
+
                 // GATE A: only an Ordinary-stream connection, and only when lanes are actually
                 // configured, ever enters lane mode -- every Control/Large connection, and EVERY
                 // connection at the InboundLanes=1 default, is untouched from here on (see the
@@ -604,6 +631,12 @@ namespace Akka.Remote.Artery
             {
                 while (_frameParser!.TryReadFrame(out var frameBody))
                 {
+                    if (_flow is { } flow)
+                    {
+                        _passFrames++;
+                        flow.Inc(ArteryFlowDiagnostics.I_Frames);
+                    }
+
                     IInboundEnvelope? element;
                     try
                     {
@@ -616,7 +649,10 @@ namespace Akka.Remote.Artery
                     }
 
                     if (element is not null)
+                    {
                         _pending.Enqueue(element);
+                        _flow?.Inc(ArteryFlowDiagnostics.I_Msgs);
+                    }
                 }
             }
 
@@ -698,7 +734,8 @@ namespace Akka.Remote.Artery
                     var log = _laneLog;
                     var serialization = _stage.Serialization;
                     var dispatch = _stage.DispatchOrdinary!;
-                    _ = Task.Run(() => RunLaneConsumer(reader, serialization, dispatch, log));
+                    var consumerFlow = _stage.FlowDiagnostics?.RegisterConsumer(i);
+                    _ = Task.Run(() => RunLaneConsumer(reader, serialization, dispatch, log, consumerFlow));
                 }
 
                 _lanes = lanes;
@@ -725,14 +762,25 @@ namespace Akka.Remote.Artery
                 ChannelReader<LaneWorkItem> reader,
                 Akka.Serialization.Serialization serialization,
                 Action<object, string?, string> dispatch,
-                ILoggingAdapter log)
+                ILoggingAdapter log,
+                FlowCounterBlock? flow)
             {
                 try
                 {
-                    while (await reader.WaitToReadAsync().ConfigureAwait(false))
+                    while (true)
                     {
+                        var wait = reader.WaitToReadAsync();
+                        // flow-diagnostics: a task that is not yet complete means the consumer really suspends.
+                        if (flow is not null && !wait.IsCompleted)
+                            flow.Inc(ArteryFlowDiagnostics.C_Suspends);
+
+                        if (!await wait.ConfigureAwait(false))
+                            break;
+
+                        var wakeItems = 0;
                         while (reader.TryRead(out var item))
                         {
+                            wakeItems++;
                             try
                             {
                                 var message = serialization.Deserialize(item.Payload, item.SerializerId, item.Manifest);
@@ -747,11 +795,23 @@ namespace Akka.Remote.Artery
                                     item.SerializerId, item.Manifest);
                             }
                         }
+
+                        if (flow is not null && wakeItems > 0)
+                        {
+                            flow.Inc(ArteryFlowDiagnostics.C_Wakes);
+                            flow.Add(ArteryFlowDiagnostics.C_Items, wakeItems);
+                            flow.Inc(ArteryFlowDiagnostics.C_WakeHist + ArteryFlowDiagnostics.ItemsPerWakeBucket(wakeItems));
+                        }
                     }
                 }
                 catch (Exception ex)
                 {
                     log.Warning(ex, "Inbound Artery lane consumer loop terminated unexpectedly.");
+                }
+                finally
+                {
+                    if (flow is not null)
+                        flow.Retired = true;
                 }
             }
 
@@ -762,6 +822,12 @@ namespace Akka.Remote.Artery
 
                 while (_frameParser!.TryReadFrame(out var frameBody))
                 {
+                    if (_flow is { } flow)
+                    {
+                        _passFrames++;
+                        flow.Inc(ArteryFlowDiagnostics.I_Frames);
+                    }
+
                     bool handled;
                     try
                     {
@@ -805,6 +871,7 @@ namespace Akka.Remote.Artery
                     // InboundHandshakeStage/SystemMessageAckerStage/DispatchInbound still see it.
                     var controlPayload = _stage.Serialization.Deserialize(decoded.Payload, decoded.Header.SerializerId, manifest);
                     _pending.Enqueue(new InboundEnvelope(controlPayload, null, null, decoded.Header.OriginUid, decoded.Header.SerializerId, manifest));
+                    _flow?.Inc(ArteryFlowDiagnostics.I_Msgs);
                     return true;
                 }
 
@@ -989,14 +1056,20 @@ namespace Akka.Remote.Artery
             {
                 var writer = _lanes![laneIndex].Writer;
                 if (writer.TryWrite(item))
+                {
+                    RecordLaneRouted(laneIndex);
                     return true;
+                }
 
                 var continuation = writer.WaitToWriteAsync();
                 if (continuation.IsCompletedSuccessfully)
                 {
                     var available = continuation.GetAwaiter().GetResult();
                     if (available && writer.TryWrite(item))
+                    {
+                        RecordLaneRouted(laneIndex);
                         return true;
+                    }
 
                     // Either the channel was completed underneath us (available == false -- a
                     // teardown race) or another writer already took the freed slot -- SingleWriter
@@ -1014,6 +1087,18 @@ namespace Akka.Remote.Artery
                 return false;
             }
 
+            // flow-diagnostics: one message was written to lane `laneIndex`; the lane depth is sampled
+            // right after the write, which is when the depth can reach its maximum.
+            private void RecordLaneRouted(int laneIndex)
+            {
+                if (_flow is not { } flow)
+                    return;
+
+                var lanes = _stage.InboundLanes;
+                flow.Inc(ArteryFlowDiagnostics.I_LaneMsgs + laneIndex);
+                flow.Max(ArteryFlowDiagnostics.I_LaneMsgs + lanes + laneIndex, _lanes![laneIndex].Reader.Count);
+            }
+
             private void OnLaneWriteAvailable(bool available)
             {
                 _writeInFlight = false;
@@ -1021,6 +1106,7 @@ namespace Akka.Remote.Artery
 
                 if (available && writer.TryWrite(_parkedItem))
                 {
+                    RecordLaneRouted(_parkedLaneIndex);
                     _parkedItem = default;
                 }
                 else
