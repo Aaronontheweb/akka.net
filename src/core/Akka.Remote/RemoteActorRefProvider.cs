@@ -123,6 +123,9 @@ namespace Akka.Remote
             var remoteDeployer = new RemoteDeployer(settings);
             IInternalActorRef DeadLettersFactory(ActorPath path) => new RemoteDeadLetterActorRef(this, path, eventStream);
             _local = new LocalActorRefProvider(systemName, settings, eventStream, remoteDeployer, DeadLettersFactory);
+            var type = GetType();
+            _isStockProvider = type == typeof(RemoteActorRefProvider)
+                || (type.FullName == "Akka.Cluster.ClusterActorRefProvider" && type.Assembly.GetName().Name == "Akka.Cluster");
             RemoteSettings = new RemoteSettings(settings.Config);
             Deployer = remoteDeployer;
             _log = _local.Log;
@@ -272,6 +275,19 @@ namespace Akka.Remote
 
         /// <inheritdoc/>
         bool ITempIdRegistry.IsPlainOnlyTempId(long tempId) => ((ITempIdRegistry)_local).IsPlainOnlyTempId(tempId);
+
+        /// <summary>
+        /// Exactly the framework's own provider: this class or <c>Akka.Cluster.ClusterActorRefProvider</c>, which only
+        /// overrides initialisation and the remote watcher. Decided once from the runtime type, so a subclass that
+        /// re-implements the public registration members or overrides <c>CreateRemoteRef</c> is never treated as stock.
+        /// </summary>
+        private readonly bool _isStockProvider;
+
+        /// <inheritdoc/>
+        bool ITempIdRegistry.UsesStockRegistration => _isStockProvider;
+
+        /// <summary>INTERNAL API. See <see cref="ITempIdRegistry.UsesStockRegistration"/>.</summary>
+        internal bool IsStockProvider => _isStockProvider;
 
         /// <summary>
         /// INTERNAL API. The wrapped local provider, whose temp refs this system owns.

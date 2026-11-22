@@ -181,6 +181,14 @@ namespace Akka.Actor
         bool TryGetTempActor(long tempId, out IInternalActorRef actorRef);
 
         /// <summary>
+        /// <see langword="true"/> only for the framework's own providers, exactly (no derived type): only then are
+        /// the public <see cref="IActorRefProvider.RegisterTempActor"/>, <see cref="IActorRefProvider.UnregisterTempActor"/>
+        /// and remote-ref factory members known to do nothing but what the numeric registry does, so the numeric
+        /// shortcuts may replace them. For any other provider the public members are used, as they always were.
+        /// </summary>
+        bool UsesStockRegistration { get; }
+
+        /// <summary>
         /// <see langword="true"/> when nothing but the framework's own plain Ask future has ever been registered
         /// under the canonical temp name of <paramref name="tempId"/> (a losing registration counts). For such an
         /// id, resolving the path by name can only yield that future or nothing, never a ref the resolve cache
@@ -460,7 +468,11 @@ namespace Akka.Actor
         }
 
         /// <inheritdoc/>
-        bool ITempIdRegistry.IsPlainOnlyTempId(long tempId) => _tempContainer.IsPlainOnlyId(tempId);
+        bool ITempIdRegistry.IsPlainOnlyTempId(long tempId) =>
+            !_rootGuardian.TempContainerWasReplaced && _tempContainer.IsPlainOnlyId(tempId);
+
+        /// <inheritdoc/>
+        bool ITempIdRegistry.UsesStockRegistration => true;
 
         /// <summary>
         /// Initializes the ActorRefProvider

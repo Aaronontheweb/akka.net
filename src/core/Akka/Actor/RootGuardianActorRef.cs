@@ -7,6 +7,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using Akka.Actor.Internal;
 using Akka.Annotations;
 using Akka.Dispatch;
@@ -56,8 +57,17 @@ namespace Akka.Actor
         /// <param name="tempContainer">The temporary container exposed at the <c>temp</c> path.</param>
         public void SetTempContainer(IInternalActorRef tempContainer)
         {
+            Interlocked.Increment(ref _tempContainerSets);
             _tempContainer = tempContainer;
         }
+
+        // The provider installs its temp container once. Any further call replaces what a path under /temp resolves
+        // through, which a numeric shortcut that goes to the provider's own container directly cannot follow; it is
+        // remembered for good, even if the original is later put back (a resolve cache may have seen the other one).
+        private int _tempContainerSets;
+
+        /// <summary>INTERNAL API. <see langword="true"/> once the temp container has been set more than once.</summary>
+        internal bool TempContainerWasReplaced => Volatile.Read(ref _tempContainerSets) > 1;
 
         /// <summary>
         /// Resolves a direct child, including the guardian's built-in names.

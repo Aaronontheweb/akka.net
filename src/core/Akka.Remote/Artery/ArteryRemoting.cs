@@ -249,7 +249,7 @@ namespace Akka.Remote.Artery
         private sealed class PendingRemoteDeployedResolve
         {
             public readonly object Gate = new();
-            public readonly Queue<(object Message, IActorRef Sender)> Buffered = new();
+            public readonly Queue<(object Message, InboundWireRefs Refs)> Buffered = new();
             public bool Done;
             public int AttemptsLeft = RetryResolveRemoteDeployedRecipientAttempts;
         }
@@ -1248,7 +1248,7 @@ namespace Akka.Remote.Artery
             // best effort retry").
             if (IsUnresolvedRemoteDeployedRecipient(recipient))
             {
-                BufferUnresolvedRemoteDeployedRecipient(recipientPath, message, ResolveInboundSender(refs), recipient);
+                BufferUnresolvedRemoteDeployedRecipient(recipientPath, message, refs, recipient);
                 return;
             }
 
@@ -1263,13 +1263,13 @@ namespace Akka.Remote.Artery
                 {
                     if (!pending.Done)
                     {
-                        pending.Buffered.Enqueue((message, ResolveInboundSender(refs)));
+                        pending.Buffered.Enqueue((message, refs));
                         return;
                     }
                 }
             }
 
-            DeliverOrdinaryMessage(recipient, message, ResolveInboundSender(refs));
+            DeliverOrdinaryMessage(recipient, message, in refs);
         }
 
         /// <summary>
@@ -1333,7 +1333,11 @@ namespace Akka.Remote.Artery
             // GetChild of an empty tail and is not nobody, so the traversal ends on it; (4) the literal route
             // then Tells the resolved ref, as here. A completed or timed-out Ask is the "nothing" case: the
             // literal route dead-letters against an empty ref at that same path, which is built below.
-            if (registry.IsPlainOnlyTempId(counter))
+            // Only for the framework's own providers (exact type): a subclass may re-implement the public registration
+            // members or the remote-ref factory, which the shortcut would skip. The registry also reports false once
+            // the root guardian's temp container has ever been replaced, since the path route would follow the
+            // replacement and the shortcut does not.
+            if (Provider.IsStockProvider && registry.IsPlainOnlyTempId(counter))
             {
                 if (!registry.TryGetTempActor(counter, out var target))
                 {
@@ -1376,19 +1380,21 @@ namespace Akka.Remote.Artery
             if (refs.SenderRef is { } senderRef)
             {
                 // A numeric sender is owned by the frame's origin (the stage drops any other owner before it gets
-                // here); replies go back over that origin's association. Anything else is not a ref this
-                // system can address.
-                if (senderRef.IsTemporary &&
-                    _registry.TryGetByUid(refs.OriginUid) is { } association &&
-                    association.CurrentState.UniqueRemoteAddress is { } peer &&
-                    peer.Uid == refs.OriginUid)
-                {
-                    return new RemoteTempActorRef(this, DefaultAddress, association, peer.Address, peer.Uid, senderRef.TemporaryCounter);
-                }
+                // here); replies go back over that origin's association. Anything else is not a ref this system
+                // can address.
+                if (!senderRef.IsTemporary || !TryGetOriginAddress(refs.OriginUid, out var originAddress, out var association))
+                    return System.DeadLetters;
 
-                // Not a numeric sender this node can resolve, or the origin's association moved on (new
-                // incarnation) between decode and dispatch.
-                return System.DeadLetters;
+                // A lightweight ref only where the literal form of this sender would have resolved to a plain
+                // RemoteActorRef through the stock factory: a stock provider, and an origin that is not this system.
+                // Otherwise (a provider that may override CreateRemoteRef, or a frame from this very system's own
+                // address) resolve the literal path of the sender exactly as the literal form does.
+                if (Provider.IsStockProvider && association is not null && !Provider.HasAddress(originAddress))
+                    return new RemoteTempActorRef(this, DefaultAddress, association, originAddress, refs.OriginUid, senderRef.TemporaryCounter);
+
+                var path = (new RootActorPath(originAddress) / "temp" / senderRef.TemporaryCounter.Base64Encode())
+                    .ToSerializationFormatWithAddress(originAddress);
+                return Provider.ResolveActorRefWithLocalAddress(path, DefaultAddress);
             }
 
             return refs.ResolveSenderPath() is { } sp
@@ -1397,17 +1403,39 @@ namespace Akka.Remote.Artery
         }
 
         /// <summary>
-        /// The final Tell of the ordinary dispatch path -- factored out of
-        /// <see cref="DispatchOrdinaryMessage"/> so the remote-deploy retry-resolve flush
-        /// (<see cref="RetryResolveRemoteDeployedRecipient"/>) delivers with EXACTLY the same
-        /// semantics as a direct dispatch.
+        /// The address of the system that wrote a frame, and the association it arrived on (null for this system
+        /// itself). <see langword="false"/> when the origin's association has moved on to another incarnation.
         /// </summary>
-        private void DeliverOrdinaryMessage(IActorRef recipient, object message, IActorRef sender)
+        private bool TryGetOriginAddress(long originUid, out Address address, out Association? association)
+        {
+            if (originUid == _localUniqueAddress.Uid)
+            {
+                address = DefaultAddress;
+                association = null;
+                return true;
+            }
+
+            if (_registry.TryGetByUid(originUid) is { } found &&
+                found.CurrentState.UniqueRemoteAddress is { } peer &&
+                peer.Uid == originUid)
+            {
+                address = peer.Address;
+                association = found;
+                return true;
+            }
+
+            address = default!;
+            association = null;
+            return false;
+        }
+
+        private void DeliverOrdinaryMessage(IActorRef recipient, object message, in InboundWireRefs refs)
         {
             // Mirrors classic's DefaultMessageDispatcher semantics without depending on classic types:
             // an unresolvable recipient resolves to an EmptyLocalActorRef, whose Tell publishes a
             // DeadLetter automatically.
-            recipient.Tell(message, sender);
+            // The sender is resolved here, at delivery -- also when the message sat in a retry buffer -- never earlier.
+            recipient.Tell(message, ResolveInboundSender(refs));
         }
 
         /// <summary>
@@ -1432,7 +1460,7 @@ namespace Akka.Remote.Artery
         /// (prior give-up) skip the machinery and dead-letter immediately, mirroring Pekko's banned
         /// branch verbatim.
         /// </summary>
-        private void BufferUnresolvedRemoteDeployedRecipient(string recipientPath, object message, IActorRef sender, IActorRef emptyRecipient)
+        private void BufferUnresolvedRemoteDeployedRecipient(string recipientPath, object message, InboundWireRefs refs, IActorRef emptyRecipient)
         {
             // Shutdown guard: the transport is tearing down, so the DaemonMsgCreate this message is
             // waiting on will never be processed, Shutdown()'s drain of the pending buffers may
@@ -1440,7 +1468,7 @@ namespace Akka.Remote.Artery
             // scheduler. Account the message to dead letters immediately instead.
             if (_isShutdown)
             {
-                DeliverOrdinaryMessage(emptyRecipient, message, sender);
+                DeliverOrdinaryMessage(emptyRecipient, message, in refs);
                 return;
             }
 
@@ -1457,7 +1485,7 @@ namespace Akka.Remote.Artery
                     _log.Warning(
                         "Message for banned (terminated, unresolved) remote deployed recipient [{0}].",
                         recipientPath);
-                    DeliverOrdinaryMessage(emptyRecipient, message, sender);
+                    DeliverOrdinaryMessage(emptyRecipient, message, in refs);
                     return;
                 }
 
@@ -1476,7 +1504,7 @@ namespace Akka.Remote.Artery
                     {
                         // A racing creator won AND already completed/removed its entry -- re-check
                         // from the top (the path may now be banned, resolvable, or need a new entry).
-                        if (TryDeliverIfNowResolved(recipientPath, message, sender))
+                        if (TryDeliverIfNowResolved(recipientPath, message, refs))
                             return;
                         continue;
                     }
@@ -1486,7 +1514,7 @@ namespace Akka.Remote.Artery
                 {
                     if (!pending.Done)
                     {
-                        pending.Buffered.Enqueue((message, sender));
+                        pending.Buffered.Enqueue((message, refs));
                         return;
                     }
                 }
@@ -1494,7 +1522,7 @@ namespace Akka.Remote.Artery
                 // The entry completed between lookup and lock: its flush has fully finished (Done
                 // latches only after delivery, under the gate). Either the actor exists now, or the
                 // path just got banned -- re-resolve and loop.
-                if (TryDeliverIfNowResolved(recipientPath, message, sender))
+                if (TryDeliverIfNowResolved(recipientPath, message, refs))
                     return;
             }
         }
@@ -1505,13 +1533,13 @@ namespace Akka.Remote.Artery
         /// otherwise <see langword="false"/> so the caller loops back through the ban check /
         /// fresh-entry path.
         /// </summary>
-        private bool TryDeliverIfNowResolved(string recipientPath, object message, IActorRef sender)
+        private bool TryDeliverIfNowResolved(string recipientPath, object message, InboundWireRefs refs)
         {
             var recipient = Provider.ResolveActorRefWithLocalAddress(recipientPath, DefaultAddress);
             if (IsUnresolvedRemoteDeployedRecipient(recipient))
                 return false;
 
-            DeliverOrdinaryMessage(recipient, message, sender);
+            DeliverOrdinaryMessage(recipient, message, in refs);
             return true;
         }
 
@@ -1560,8 +1588,16 @@ namespace Akka.Remote.Artery
 
                 while (pending.Buffered.Count > 0)
                 {
-                    var (message, sender) = pending.Buffered.Dequeue();
-                    DeliverOrdinaryMessage(recipient, message, sender);
+                    var (message, refs) = pending.Buffered.Dequeue();
+                    try
+                    {
+                        DeliverOrdinaryMessage(recipient, message, in refs);
+                    }
+                    catch (Exception ex)
+                    {
+                        // One buffered item (say, one whose sender fails to resolve) must not strand the rest.
+                        _log.Warning(ex, "Failed to deliver a buffered message of type [{0}] to [{1}].", message.GetType(), recipientPath);
+                    }
                 }
 
                 pending.Done = true;
