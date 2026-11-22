@@ -179,6 +179,12 @@ namespace Akka.Remote.Artery
         /// <see langword="null"/> (the default, and the only value when test-mode is off) disables
         /// the lane-path blackhole check entirely.
         /// </param>
+        /// <param name="pairLaneSelection">
+        /// <see langword="true"/> for <c>lane-selection = sender-recipient</c>: the inbound lane key
+        /// also covers the sender path as it appears on the wire (see <see cref="PairLaneFor"/>).
+        /// <see langword="false"/> (the default) keys on the recipient alone. Only read when
+        /// <paramref name="inboundLanes"/> &gt; 1.
+        /// </param>
         /// <param name="flowDiagnostics">Flow-diagnostics counters, or <see langword="null"/> (the default) when disabled.</param>
         public ArteryInboundProcessingStage(
             int maxFrameLength,
@@ -191,6 +197,7 @@ namespace Akka.Remote.Artery
             Action<object, string?, string>? dispatchOrdinary = null,
             Action<int>? onLanesInitialized = null,
             SharedTestState? testState = null,
+            bool pairLaneSelection = false,
             ArteryFlowDiagnostics? flowDiagnostics = null)
         {
             FlowDiagnostics = flowDiagnostics;
@@ -210,6 +217,7 @@ namespace Akka.Remote.Artery
             DispatchOrdinary = dispatchOrdinary;
             OnLanesInitialized = onLanesInitialized;
             TestState = testState;
+            PairLaneSelection = pairLaneSelection;
 
             // Resolved ONCE per accepted connection (this stage is materialized per-connection),
             // never on the per-frame hot path -- and only when lanes are actually enabled, since
@@ -278,6 +286,13 @@ namespace Akka.Remote.Artery
         public Action<int>? OnLanesInitialized { get; }
 
         /// <summary>
+        /// When <see langword="true"/> (<c>lane-selection = sender-recipient</c>) the inbound lane
+        /// key also covers the sender path exactly as it appears on the wire; see
+        /// <see cref="PairLaneFor"/>.
+        /// </summary>
+        public bool PairLaneSelection { get; }
+
+        /// <summary>
         /// Failure-injection blackhole state (<c>akka.remote.artery.advanced.test-mode</c>) for
         /// the lanes&gt;1 lane path -- lane-routed ordinary traffic bypasses the connection sink's
         /// <see cref="InboundTestStage"/>, so the SAME blackhole check runs inside
@@ -309,6 +324,49 @@ namespace Akka.Remote.Artery
         /// <see cref="InboundLanes"/>=1 default.
         /// </summary>
         public int SelectionMessageSerializerId { get; }
+
+        /// <summary>
+        /// Inbound lane for <c>lane-selection = sender-recipient</c>: a deterministic function of the
+        /// recipient lane key (the recipient path, or the selection pattern for ActorSelection
+        /// messages) and the sender path exactly as it appears on the wire -- the sender is never
+        /// resolved to compute it. A null sender (no sender on the frame) keys on the recipient alone.
+        /// Allocation-free.
+        /// </summary>
+        internal static int PairLaneFor(string recipientKey, string? senderPath, int lanes)
+        {
+            if (lanes <= 1)
+                return 0;
+
+            unchecked
+            {
+                var h = Fnv1a(recipientKey) * 0x9E3779B1u;
+                if (senderPath is not null)
+                {
+                    h ^= h >> 15;
+                    h += Fnv1a(senderPath) * 0x85EBCA6Bu;
+                }
+
+                // finalizer: scramble before the modulus
+                h ^= h >> 16;
+                h *= 0x7FEB352Du;
+                h ^= h >> 15;
+                h *= 0x846CA68Bu;
+                h ^= h >> 16;
+                return (int)(h % (uint)lanes);
+            }
+        }
+
+        private static uint Fnv1a(string key)
+        {
+            var hash = 2166136261u;
+            foreach (var c in key)
+            {
+                hash ^= c;
+                hash *= 16777619u;
+            }
+
+            return hash;
+        }
 
         public Inlet<ReadOnlySequence<byte>> In { get; } = new("ArteryInboundProcessing.in");
         public Outlet<IInboundEnvelope> Out { get; } = new("ArteryInboundProcessing.out");
@@ -986,7 +1044,9 @@ namespace Akka.Remote.Artery
                     ? BuildSelectionLaneKey(decoded.Payload) ?? recipientPath
                     : recipientPath;
 
-                var laneIndex = LaneFor(laneKey, _stage.InboundLanes);
+                var laneIndex = _stage.PairLaneSelection
+                    ? PairLaneFor(laneKey, senderPath, _stage.InboundLanes)
+                    : LaneFor(laneKey, _stage.InboundLanes);
 
                 return TryRouteToLane(laneIndex, new LaneWorkItem(decoded.Payload, decoded.Header.SerializerId, manifest, senderPath, recipientPath));
             }

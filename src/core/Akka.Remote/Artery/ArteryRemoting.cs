@@ -895,7 +895,7 @@ namespace Akka.Remote.Artery
                 return;
             }
 
-            EnqueueOutbound(remoteAddress, message, senderPath, recipientPath, recipient);
+            EnqueueOutbound(remoteAddress, message, sender, senderPath, recipientPath, recipient);
         }
 
         /// <inheritdoc/>
@@ -1021,7 +1021,9 @@ namespace Akka.Remote.Artery
                 ? new ArteryInboundProcessingStage(
                     _settings.MaximumFrameSize, _settings.MaximumLargeFrameSize, System.Serialization, System.Scheduler,
                     _settings.InboundLanes, _settings.InboundLaneBufferSize, _inboundContext!, DispatchOrdinaryMessage,
-                    _onInboundLanesInitialized, _testState, _flowDiagnostics)
+                    _onInboundLanesInitialized, _testState,
+                    _settings.LaneSelection == ArteryLaneSelection.SenderRecipient,
+                    _flowDiagnostics)
                 : new ArteryInboundProcessingStage(
                     _settings.MaximumFrameSize, _settings.MaximumLargeFrameSize, System.Serialization, System.Scheduler,
                     flowDiagnostics: _flowDiagnostics);
@@ -1418,6 +1420,14 @@ namespace Akka.Remote.Artery
         private const int LargeMessageRoute = -2;
 
         /// <summary>
+        /// <see cref="RemoteActorRef.CachedSendQueueIndex"/> encoding used ONLY with
+        /// <see cref="ArteryLaneSelection.SenderRecipient"/>: "ordinary stream, not large". The lane
+        /// itself depends on the sender, so it is computed per send and never cached on the
+        /// recipient ref (which is shared by every sender).
+        /// </summary>
+        private const int OrdinaryPairRoute = -3;
+
+        /// <summary>
         /// Resolves (and caches, per <see cref="RemoteActorRef.CachedSendQueueIndex"/>) which
         /// outbound queue <paramref name="recipient"/>'s ordinary sends belong on -- Pekko's
         /// <c>Association.selectQueue</c>, computed ONCE per ref rather than on every single send
@@ -1435,13 +1445,15 @@ namespace Akka.Remote.Artery
             var computed = _settings.LargeMessageChannelEnabled &&
                             _settings.LargeMessageDestinations.Find(recipient.Path.Elements) is not null
                 ? LargeMessageRoute
-                : Association.SelectLane(recipient.Path.Uid, association.OutboundLanes);
+                : _settings.LaneSelection == ArteryLaneSelection.SenderRecipient && association.OutboundLanes > 1
+                    ? OrdinaryPairRoute
+                    : Association.SelectLane(recipient.Path.Uid, association.OutboundLanes);
 
             recipient.CachedSendQueueIndex = computed;
             return computed;
         }
 
-        private void EnqueueOutbound(Address remoteAddress, object message, string? senderPath, string? recipientPath, RemoteActorRef recipient)
+        private void EnqueueOutbound(Address remoteAddress, object message, IActorRef sender, string? senderPath, string? recipientPath, RemoteActorRef recipient)
         {
             var association = _registry.AssociationFor(remoteAddress);
             var route = ResolveSendRoute(recipient, association);
@@ -1480,7 +1492,13 @@ namespace Akka.Remote.Artery
             // Either an ordinary lane index already, or an ActorSelectionMessage whose recipient's
             // cached route says "large" -- forced onto lane 0 for THIS send only (see the remarks
             // above; the ref's cache is left untouched for its own future non-selection sends).
-            var laneIndex = route == LargeMessageRoute ? 0 : route;
+            var laneIndex = route switch
+            {
+                LargeMessageRoute => 0,
+                OrdinaryPairRoute => Association.SelectPairLane(
+                    recipient.Path, senderPath is null ? null : sender.Path, association.OutboundLanes),
+                _ => route
+            };
 
             if (!association.TryEnqueueOutbound(new OutboundEnvelope(message, senderPath, recipientPath), laneIndex))
             {
