@@ -181,11 +181,12 @@ namespace Akka.Remote.Tests.Artery
                 var path = ActorPath.Parse(target.Path.ToSerializationFormatWithAddress(provider.DefaultAddress));
                 var remote = new RemoteActorRef(provider.Transport, provider.DefaultAddress, path, ActorRefs.Nobody, Props.None, Deploy.None);
 
-                var pending = remote.Ask<string>(replyTo =>
+                Func<IActorRef, object> factory = replyTo =>
                 {
                     captured = replyTo;
                     return "hold";
-                }, TimeSpan.FromSeconds(5));
+                };
+                var pending = remote.Ask<string>(factory, TimeSpan.FromSeconds(5), System.Threading.CancellationToken.None);
 
                 var observed = await reports.ExpectMsgAsync<IActorRef>(TimeSpan.FromSeconds(5));
                 observed.Should().BeSameAs(captured);
