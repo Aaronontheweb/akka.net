@@ -89,22 +89,14 @@ namespace Akka.Remote.Artery
         /// <see langword="null"/> (the default) resolves to the materializing
         /// <see cref="Akka.Actor.ActorSystem"/>'s scheduler when the stream starts.
         /// </param>
-        /// <param name="connectionOrder">
-        /// Order of the accepted connection this stage runs on (<see cref="AssociationRegistry.NextConnectionOrder"/>),
-        /// handed to every handshake it completes. <see langword="null"/> means "just now" for each handshake.
-        /// </param>
-        public InboundHandshakeStage(IInboundContext context, ITimeProvider? timeProvider = null, long? connectionOrder = null)
+        public InboundHandshakeStage(IInboundContext context, ITimeProvider? timeProvider = null)
         {
             Context = context;
-            ConnectionOrder = connectionOrder;
             TimeProvider = timeProvider;
             Shape = new FlowShape<IInboundEnvelope, IInboundEnvelope>(In, Out);
         }
 
         public IInboundContext Context { get; }
-
-        /// <summary>See the constructor's <c>connectionOrder</c> parameter.</summary>
-        public long? ConnectionOrder { get; }
 
         /// <summary>
         /// Explicit clock for the drop-warning throttle, or <see langword="null"/> to use the
@@ -228,7 +220,7 @@ namespace Akka.Remote.Artery
                     return;
                 }
 
-                _stage.Context.CompleteHandshake(req.From, _stage.ConnectionOrder);
+                _stage.Context.CompleteHandshake(req.From);
                 _stage.Context.SendControl(req.From.Address, new HandshakeRsp(_stage.Context.LocalAddress));
             }
 
@@ -236,7 +228,7 @@ namespace Akka.Remote.Artery
             // peer has registered OUR uid, which is what gates our ordinary outbound streams
             // (issue #8496). Re-completing with the same uid stays an idempotent no-op, so the
             // duplicate Rsps our own idempotent Req retries produce cost nothing.
-            private void HandleRsp(HandshakeRsp rsp) => _stage.Context.CompleteOutboundHandshake(rsp.From, _stage.ConnectionOrder);
+            private void HandleRsp(HandshakeRsp rsp) => _stage.Context.CompleteOutboundHandshake(rsp.From);
         }
     }
 }

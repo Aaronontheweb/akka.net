@@ -77,10 +77,10 @@ namespace Akka.Remote.Tests.Artery
                     subscriber.ControlMessageReceived(originUid, message);
             }
 
-            public UniqueAddress CompleteHandshake(long remoteUid, long? connectionOrder = null)
+            public UniqueAddress CompleteHandshake(long remoteUid)
             {
                 var peer = new UniqueAddress(RemoteAddress, remoteUid);
-                Registry.CompleteHandshake(RemoteAddress, peer, connectionOrder);
+                Registry.CompleteHandshake(RemoteAddress, peer);
                 return peer;
             }
         }
@@ -334,53 +334,6 @@ namespace Akka.Remote.Tests.Artery
 
             h.DeliverControlMessage(peer.Uid, new SysNack(1L, peer)); // == NextSeq - 1: pops seq 1
             await AwaitAssertAsync(() => h.State.Buffer.Count.Should().Be(0), TimeSpan.FromSeconds(3));
-        }
-
-        [Fact(DisplayName = "Should_PreserveNumbering_When_StaleHandshakeOfUnseenUidArrivesOnOlderConnection")]
-        public async Task Should_PreserveNumbering_When_StaleHandshakeOfUnseenUidArrivesOnOlderConnection()
-        {
-            var materializer = ActorMaterializer.Create(Sys);
-            var h = BuildHarness(materializer, resendInterval: TimeSpan.FromSeconds(30));
-            var livePeer = h.CompleteHandshake(remoteUid: 777L, connectionOrder: 20);
-
-            await h.Sub.RequestAsync(2);
-            await h.Pub.SendNextAsync(SystemMessageElement("m1"));
-            ((SystemMessageEnvelope)(await h.Sub.ExpectNextAsync(TimeSpan.FromSeconds(3))).Message).SeqNo.Should().Be(1L);
-            h.DeliverControlMessage(livePeer.Uid, new SysAck(1L, livePeer));
-            await AwaitAssertAsync(() => h.State.Buffer.Count.Should().Be(0), TimeSpan.FromSeconds(3));
-
-            // A delayed handshake of an incarnation this side never saw, on an older connection, then the live peer again.
-            h.CompleteHandshake(remoteUid: 776L, connectionOrder: 10);
-            h.CompleteHandshake(remoteUid: 777L, connectionOrder: 25);
-
-            await h.Pub.SendNextAsync(SystemMessageElement("m2"));
-            ((SystemMessageEnvelope)(await h.Sub.ExpectNextAsync(TimeSpan.FromSeconds(3))).Message).SeqNo.Should().Be(2L);
-            h.Registry.AssociationFor(h.RemoteAddress).CurrentState.UniqueRemoteAddress!.Value.Uid.Should().Be(777L);
-        }
-
-        [Fact(DisplayName = "Should_RestartNumberingAndKeepIt_When_NewerConnectionInstallsNewUidAndStaleOneArrives")]
-        public async Task Should_RestartNumberingAndKeepIt_When_NewerConnectionInstallsNewUidAndStaleOneArrives()
-        {
-            var materializer = ActorMaterializer.Create(Sys);
-            var h = BuildHarness(materializer, resendInterval: TimeSpan.FromSeconds(30));
-            var oldPeer = h.CompleteHandshake(remoteUid: 776L, connectionOrder: 10);
-
-            await h.Sub.RequestAsync(4);
-            await h.Pub.SendNextAsync(SystemMessageElement("m1"));
-            await h.Sub.ExpectNextAsync(TimeSpan.FromSeconds(3));
-            h.DeliverControlMessage(oldPeer.Uid, new SysAck(1L, oldPeer));
-
-            // The peer restarts: a new incarnation on a newer connection, numbering starts again at 1.
-            var livePeer = h.CompleteHandshake(remoteUid: 777L, connectionOrder: 20);
-            await h.Pub.SendNextAsync(SystemMessageElement("m2"));
-            ((SystemMessageEnvelope)(await h.Sub.ExpectNextAsync(TimeSpan.FromSeconds(3))).Message).SeqNo.Should().Be(1L);
-            h.DeliverControlMessage(livePeer.Uid, new SysAck(1L, livePeer));
-            await AwaitAssertAsync(() => h.State.Buffer.Count.Should().Be(0), TimeSpan.FromSeconds(3));
-
-            // A delayed handshake of the old incarnation (its older connection) is not another restart.
-            h.CompleteHandshake(remoteUid: 776L, connectionOrder: 10);
-            await h.Pub.SendNextAsync(SystemMessageElement("m3"));
-            ((SystemMessageEnvelope)(await h.Sub.ExpectNextAsync(TimeSpan.FromSeconds(3))).Message).SeqNo.Should().Be(2L);
         }
 
         [Fact(DisplayName = "Should_AllowImmediateNackResend_When_DeliveryStateWasReset")]

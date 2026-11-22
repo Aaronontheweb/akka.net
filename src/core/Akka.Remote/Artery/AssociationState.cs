@@ -101,33 +101,15 @@ namespace Akka.Remote.Artery
         public bool IsQuarantined(long uid) => QuarantinedUids.Contains(uid);
 
         /// <summary>
-        /// Local order (see <see cref="AssociationRegistry.NextConnectionOrder"/>) of the accepted connection
-        /// whose handshake installed the current <see cref="UniqueRemoteAddress"/>. Only the current uid
-        /// counts. A handshake naming a different uid replaces it only if it arrived on a connection
-        /// accepted at or after this one: a dead incarnation cannot open new connections, so a different
-        /// uid seen on an older connection is a stale handshake and is ignored.
-        /// </summary>
-        public long ConnectionOrder { get; init; }
-
-        /// <summary>
-        /// Whether a handshake naming <paramref name="peer"/> on the connection with
-        /// <paramref name="connectionOrder"/> is stale: a different uid than the current one, on an older
-        /// connection than the one that installed it.
-        /// </summary>
-        public bool IsStaleHandshake(UniqueAddress peer, long connectionOrder) =>
-            UniqueRemoteAddress is { } current && current.Uid != peer.Uid && connectionOrder < ConnectionOrder;
-
-        /// <summary>
         /// Computes the state that results from completing (or re-completing) the handshake
         /// with <paramref name="peer"/>:
         /// <list type="bullet">
         /// <item><description><c>Associating</c> → <c>Associated</c>: adopts <paramref name="peer"/>, incarnation unchanged.</description></item>
         /// <item><description>Same uid as the current <see cref="UniqueRemoteAddress"/>: no-op — returns <c>this</c> (reference-equal, so the CAS loop in <see cref="Association"/> can skip the compare-exchange), except for the one-way <see cref="OutboundHandshakeCompleted"/> flip in <see cref="CompleteOutboundHandshake"/>.</description></item>
         /// <item><description>Different uid (remote restart): a new incarnation — <see cref="Incarnation"/> + 1, <see cref="UniqueRemoteAddress"/> replaced, <see cref="QuarantinedUids"/> carried over UNCHANGED (the old uid is deliberately not auto-quarantined).</description></item>
-        /// <item><description>A different uid on a connection older than <see cref="ConnectionOrder"/>: stale, ignored, returns <c>this</c>.</description></item>
         /// </list>
         /// </summary>
-        public AssociationState CompleteHandshake(UniqueAddress peer, long connectionOrder = 0) => Apply(peer, answeredOurReq: false, connectionOrder);
+        public AssociationState CompleteHandshake(UniqueAddress peer) => Apply(peer, answeredOurReq: false);
 
         /// <summary>
         /// As <see cref="CompleteHandshake"/>, but for the ONE event that proves the peer has
@@ -136,14 +118,10 @@ namespace Akka.Remote.Artery
         /// nothing else does. A same-uid call that only flips that flag still returns a NEW
         /// snapshot (it is a real transition, not the documented no-op).
         /// </summary>
-        public AssociationState CompleteOutboundHandshake(UniqueAddress peer, long connectionOrder = 0) => Apply(peer, answeredOurReq: true, connectionOrder);
+        public AssociationState CompleteOutboundHandshake(UniqueAddress peer) => Apply(peer, answeredOurReq: true);
 
-        private AssociationState Apply(UniqueAddress peer, bool answeredOurReq, long connectionOrder)
+        private AssociationState Apply(UniqueAddress peer, bool answeredOurReq)
         {
-            // A different uid on an older connection than the one that installed the current uid is stale.
-            if (IsStaleHandshake(peer, connectionOrder))
-                return this;
-
             if (UniqueRemoteAddress is { } current)
             {
                 if (current.Uid == peer.Uid)
@@ -162,16 +140,14 @@ namespace Akka.Remote.Artery
                 {
                     Incarnation = Incarnation + 1,
                     UniqueRemoteAddress = peer,
-                    OutboundHandshakeCompleted = answeredOurReq,
-                    ConnectionOrder = connectionOrder
+                    OutboundHandshakeCompleted = answeredOurReq
                 };
             }
 
             return this with
             {
                 UniqueRemoteAddress = peer,
-                OutboundHandshakeCompleted = answeredOurReq,
-                ConnectionOrder = connectionOrder
+                OutboundHandshakeCompleted = answeredOurReq
             };
         }
 

@@ -157,10 +157,12 @@ namespace Akka.Remote.Artery
     /// <see cref="SystemMessageDeliveryStage"/> intercepts and CONSUMES this message (never forwards
     /// it to <c>Out</c>/the encoder); it never actually reaches the wire in this implementation. Pekko
     /// may send the equivalent across the wire to evict the peer's inbound acker state early; this
-    /// port does not need that, because the inbound expected-seq state is held per origin uid in the
-    /// <see cref="AssociationRegistry"/> and is dropped when a genuinely new incarnation (a new uid)
-    /// supersedes the old one. This satisfies design.md's "do at least incarnation-based cleanup" open
-    /// decision without a wire round-trip.
+    /// port does not need that, because <see cref="SystemMessageAckerStage"/>'s inbound expected-seq
+    /// state is held per ACCEPTED CONNECTION and, for the association's current uid, also in the
+    /// <see cref="AssociationRegistry"/> (dropped when that uid stops being current) -- a genuinely new
+    /// incarnation requires a new inbound connection, which starts with empty per-connection state, and a
+    /// new connection of the SAME uid resumes from the shared value. This satisfies
+    /// design.md's "do at least incarnation-based cleanup" open decision without a wire round-trip.
     /// It still gets a real entry in <see cref="ArteryControlMessageSerializer"/> (per the task) so
     /// the serializer is complete/robust even though, in normal operation, this type is never
     /// actually serialized onto a socket.

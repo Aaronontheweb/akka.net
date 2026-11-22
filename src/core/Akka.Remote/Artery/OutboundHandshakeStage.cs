@@ -367,9 +367,8 @@ namespace Akka.Remote.Artery
             /// same control queue we would be gating, so two systems that dial each other at the
             /// same instant would each hold the Rsp the other waits for. So we skip it. Skipping is
             /// also safe. The receiver drops unknown-origin ORDINARY envelopes only. It always
-            /// dispatches handshake, heartbeat, quarantine notice and Ack/Nack control envelopes. A
-            /// system message from an origin not yet registered is dropped by the acker without an
-            /// Ack or Nack; the sender keeps it buffered and resends it.
+            /// dispatches control envelopes: handshake, heartbeat, quarantine notice, and system
+            /// messages with their Ack/Nack.
             /// </para>
             /// </summary>
             private bool CanSkipOwnHandshake(AssociationState state) =>

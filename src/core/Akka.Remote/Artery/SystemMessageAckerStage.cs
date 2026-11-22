@@ -7,7 +7,7 @@
 
 #nullable enable
 
-using Akka.Event;
+using System.Collections.Generic;
 using Akka.Streams;
 using Akka.Streams.Stage;
 
@@ -38,23 +38,24 @@ namespace Akka.Remote.Artery
     /// sees this).</description></item>
     /// <item><description><c>seq &gt; expected</c>: gap -- drop, reply <see cref="Nack"/> for
     /// <c>expected - 1</c>. NO buffering of the out-of-order frame: the SENDER restores order by
-    /// resending its whole unacknowledged window (immediately on the first Nack that acknowledges nothing and
-    /// on any Nack that makes progress; repeated no-progress Nacks wait for the sender's resend timer).</description></item>
+    /// resending its whole unacknowledged window (immediately, on receiving the Nack).</description></item>
     /// </list>
     /// </para>
     ///
     /// <para>
-    /// <b>State lifetime.</b> The expected-seq state is NOT per connection: the sender's
-    /// <see cref="SystemMessageDeliveryState"/> survives reconnects, so a fresh stage per accepted
-    /// connection must resume at the same expectation. It lives in the <see cref="AssociationRegistry"/>
-    /// (via <see cref="IInboundContext.AdvanceInboundSystemMessageSeq"/>), one entry per association for its
-    /// CURRENT origin uid only. Any other incarnation is dead: its frames are dropped without Ack or Nack,
-    /// and its entry is removed when a newer connection installs a different uid (a handshake of a different
-    /// uid on an older connection is stale and ignored, see <see cref="AssociationState.ConnectionOrder"/>).
-    ///     /// Overlapping connections: exactly-once delivery is guaranteed, and so is strict order per connection,
-    /// but not across two simultaneously open connections of one origin (see
-    /// <see cref="AssociationRegistry.AdvanceInboundSystemMessageSeq"/>).
-    /// <see cref="ClearSystemMessageDelivery"/> deliberately never crosses the wire.
+    /// <b>Expectation = per-connection memory + shared state.</b> This stage keeps its per-connection
+    /// expected-seq map exactly as before, so within one connection it never forgets, whatever handshakes do.
+    /// In addition the <see cref="AssociationRegistry"/> keeps a shared expectation per origin uid (via
+    /// <see cref="IInboundContext.AdvanceInboundSystemMessageSeq"/>), because the sender's
+    /// <see cref="SystemMessageDeliveryState"/> survives reconnects while a new stage starts empty. The
+    /// effective expectation is the larger of the two and both advance on delivery, so a NEW connection from
+    /// the SAME uid resumes where the previous one stopped instead of at 1. The shared entry exists from the
+    /// uid's first accepted message until the uid stops being its association's current uid; after that only
+    /// the per-connection memory applies, as before. Two connections of one origin accept each seq once (the
+    /// shared compare-and-advance is atomic); strict order is guaranteed per connection, not across two
+    /// simultaneously open connections of one origin.
+    /// <see cref="ClearSystemMessageDelivery"/> deliberately never crosses the wire in this
+    /// implementation (see its own type docs).
     /// </para>
     /// </summary>
     internal sealed class SystemMessageAckerStage : GraphStage<FlowShape<IInboundEnvelope, IInboundEnvelope>>
@@ -77,6 +78,9 @@ namespace Akka.Remote.Artery
         private sealed class Logic : GraphStageLogic, IInHandler, IOutHandler
         {
             private readonly SystemMessageAckerStage _stage;
+
+            /// <summary>Next expected seq number, per sender uid. Absent == 1 (nothing seen yet).</summary>
+            private readonly Dictionary<long, long> _expectedByOriginUid = new();
 
             public Logic(SystemMessageAckerStage stage) : base(stage.Shape)
             {
@@ -111,23 +115,12 @@ namespace Akka.Remote.Artery
 
             private void HandleSystemMessageEnvelope(long originUid, SystemMessageEnvelope sme)
             {
-                // Shared, connection-independent state; advanced atomically when seq == expected.
-                var expected = _stage.Context.AdvanceInboundSystemMessageSeq(originUid, sme.SeqNo);
-
-                if (expected == 0L)
-                {
-                    // Not the current, non-quarantined incarnation of that origin: dead traffic, nothing to
-                    // acknowledge. The sender keeps its message buffered.
-                    if (Log.IsDebugEnabled)
-                        Log.Debug(
-                            "Dropping system message seq [{0}] from origin uid [{1}]: not the current incarnation of [{2}] (current uid [{3}]).",
-                            sme.SeqNo, originUid, sme.AckReplyTo.Address, _stage.Context.TryGetCurrentUid(sme.AckReplyTo.Address));
-                    Pull(_stage.In);
-                    return;
-                }
+                var local = _expectedByOriginUid.TryGetValue(originUid, out var e) ? e : 1L;
+                var expected = _stage.Context.AdvanceInboundSystemMessageSeq(originUid, sme.SeqNo, local);
 
                 if (sme.SeqNo == expected)
                 {
+                    _expectedByOriginUid[originUid] = expected + 1;
                     SendAck(sme.AckReplyTo, expected);
 
                     // Re-emitted as an ORDINARY-shaped envelope -- IsControl computes to false since

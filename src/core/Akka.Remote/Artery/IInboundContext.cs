@@ -45,13 +45,7 @@ namespace Akka.Remote.Artery
         /// when a <see cref="HandshakeRsp"/> arrives (registering the responder, completing the
         /// return direction the local <see cref="OutboundHandshakeStage"/> is waiting on).
         /// </summary>
-        /// <param name="peer">The uid and address the handshake names.</param>
-        /// <param name="connectionOrder">
-        /// Order of the accepted connection the handshake arrived on (<see cref="AssociationRegistry.NextConnectionOrder"/>);
-        /// <see langword="null"/> means "just now". A different uid on an older connection than the one that
-        /// installed the current uid is stale and ignored.
-        /// </param>
-        AssociationState CompleteHandshake(UniqueAddress peer, long? connectionOrder = null);
+        AssociationState CompleteHandshake(UniqueAddress peer);
 
         /// <summary>
         /// As <see cref="CompleteHandshake"/>, but for a <see cref="HandshakeRsp"/> -- which the
@@ -60,15 +54,7 @@ namespace Akka.Remote.Artery
         /// the signal an ordinary/large outbound stream needs before releasing user traffic
         /// (issue #8496).
         /// </summary>
-        /// <param name="peer">The uid and address the handshake names.</param>
-        /// <param name="connectionOrder">See <see cref="CompleteHandshake"/>.</param>
-        AssociationState CompleteOutboundHandshake(UniqueAddress peer, long? connectionOrder = null);
-
-        /// <summary>
-        /// The current remote uid of the association for <paramref name="address"/>, or <see langword="null"/>
-        /// if there is none. Diagnostics only; never creates an association.
-        /// </summary>
-        long? TryGetCurrentUid(Address address);
+        AssociationState CompleteOutboundHandshake(UniqueAddress peer);
 
         /// <summary>
         /// Sends <paramref name="message"/> over the control channel to <paramref name="to"/>.
@@ -127,12 +113,14 @@ namespace Akka.Remote.Artery
         bool TryClaimHeartbeatQuarantineNotice(long originUid);
 
         /// <summary>
-        /// Atomically compares <paramref name="seqNo"/> with the next system-message seq expected from
-        /// <paramref name="originUid"/>, advancing it when equal, and returns the expectation as it was
-        /// before the call (<c>0</c> when the uid is unknown or quarantined: drop the frame). The state
-        /// outlives any single connection; see <see cref="AssociationRegistry.AdvanceInboundSystemMessageSeq"/>.
+        /// Shared, connection-independent part of the system-message acker's expectation for
+        /// <paramref name="originUid"/>. Compares <paramref name="seqNo"/> with
+        /// <c>max(<paramref name="localExpected"/>, shared expectation)</c>, advances the shared expectation
+        /// when equal (atomically, never backwards), and returns that effective expectation. A uid that is not
+        /// the current uid of a registered association has no shared entry, so the result is just
+        /// <paramref name="localExpected"/>. See <see cref="AssociationRegistry.AdvanceInboundSystemMessageSeq"/>.
         /// </summary>
-        long AdvanceInboundSystemMessageSeq(long originUid, long seqNo);
+        long AdvanceInboundSystemMessageSeq(long originUid, long seqNo, long localExpected);
     }
 
     /// <summary>
@@ -166,13 +154,10 @@ namespace Akka.Remote.Artery
         public UniqueAddress LocalAddress { get; }
 
         /// <inheritdoc/>
-        public AssociationState CompleteHandshake(UniqueAddress peer, long? connectionOrder = null) => _registry.CompleteHandshake(peer.Address, peer, connectionOrder);
+        public AssociationState CompleteHandshake(UniqueAddress peer) => _registry.CompleteHandshake(peer.Address, peer);
 
         /// <inheritdoc/>
-        public AssociationState CompleteOutboundHandshake(UniqueAddress peer, long? connectionOrder = null) => _registry.CompleteOutboundHandshake(peer.Address, peer, connectionOrder);
-
-        /// <inheritdoc/>
-        public long? TryGetCurrentUid(Address address) => _registry.TryGetCurrentUid(address);
+        public AssociationState CompleteOutboundHandshake(UniqueAddress peer) => _registry.CompleteOutboundHandshake(peer.Address, peer);
 
         /// <inheritdoc/>
         public void SendControl(Address to, object message) => _sendControl(to, message);
@@ -191,7 +176,7 @@ namespace Akka.Remote.Artery
             _registry.TryGetByUid(originUid)?.TryClaimHeartbeatQuarantineNotice(InboundQuarantineCheckStage.HeartbeatNoticeInterval) ?? false;
 
         /// <inheritdoc/>
-        public long AdvanceInboundSystemMessageSeq(long originUid, long seqNo) =>
-            _registry.AdvanceInboundSystemMessageSeq(originUid, seqNo);
+        public long AdvanceInboundSystemMessageSeq(long originUid, long seqNo, long localExpected) =>
+            _registry.AdvanceInboundSystemMessageSeq(originUid, seqNo, localExpected);
     }
 }

@@ -1151,39 +1151,33 @@ namespace Akka.Remote.Artery
         /// snapshot, so <see cref="AssociationRegistry"/> can tell — without a separate,
         /// racy read — whether (and from what uid) an incarnation change just happened.
         /// </summary>
-        public (AssociationState Previous, AssociationState Updated) CompleteHandshake(UniqueAddress peer, long connectionOrder = 0, bool notify = true) =>
-            Transition(peer, connectionOrder, static (state, p, order) => state.CompleteHandshake(p, order), notify);
+        public (AssociationState Previous, AssociationState Updated) CompleteHandshake(UniqueAddress peer, bool notify = true) =>
+            Transition(peer, static (state, p) => state.CompleteHandshake(p), notify);
 
         /// <summary>
         /// As <see cref="CompleteHandshake"/>, but applying
         /// <see cref="AssociationState.CompleteOutboundHandshake"/> -- the only path that sets
         /// <see cref="AssociationState.OutboundHandshakeCompleted"/> (issue #8496).
         /// </summary>
-        public (AssociationState Previous, AssociationState Updated) CompleteOutboundHandshake(UniqueAddress peer, long connectionOrder = 0, bool notify = true) =>
-            Transition(peer, connectionOrder, static (state, p, order) => state.CompleteOutboundHandshake(p, order), notify);
+        public (AssociationState Previous, AssociationState Updated) CompleteOutboundHandshake(UniqueAddress peer, bool notify = true) =>
+            Transition(peer, static (state, p) => state.CompleteOutboundHandshake(p), notify);
 
         /// <summary>
-        /// <paramref name="notify"/> false defers listener notification to the caller
-        /// (<see cref="NotifyHandshakeStateChanged"/>), which <see cref="AssociationRegistry"/> uses to
-        /// notify after releasing its lock. A stale handshake (a different uid on an older connection than
-        /// the one that installed the current uid, see <see cref="AssociationState.IsStaleHandshake"/>) is
-        /// ignored entirely: no generation increment, no state change, no notification.
+        /// <paramref name="notify"/> false leaves listener notification to the caller
+        /// (<see cref="NotifyHandshakeStateChanged"/>), which <see cref="AssociationRegistry"/> uses to notify
+        /// after releasing its lock.
         /// </summary>
         private (AssociationState Previous, AssociationState Updated) Transition(
             UniqueAddress peer,
-            long connectionOrder,
-            Func<AssociationState, UniqueAddress, long, AssociationState> transition,
+            Func<AssociationState, UniqueAddress, AssociationState> transition,
             bool notify)
         {
-            if (_state.IsStaleHandshake(peer, connectionOrder))
-                return (_state, _state);
-
             Interlocked.Increment(ref _handshakeGeneration);
 
             while (true)
             {
                 var current = _state;
-                var updated = transition(current, peer, connectionOrder);
+                var updated = transition(current, peer);
 
                 if (ReferenceEquals(updated, current))
                 {
@@ -1274,39 +1268,23 @@ namespace Akka.Remote.Artery
         private readonly ConcurrentDictionary<long, Association> _byUid = new();
 
         /// <summary>
-        /// Next expected system-message seq of each association's CURRENT uid, shared by every inbound
-        /// control connection of this system. Guarded by <see cref="_inboundSeqLock"/>; at most one entry
-        /// per association (see <see cref="AdvanceInboundSystemMessageSeq"/>).
+        /// Shared part of the system-message acker's expectation: next expected seq per origin uid, for uids
+        /// that are the current uid of a registered association. Guarded by <see cref="_handshakeLock"/>.
         /// </summary>
-        private readonly Dictionary<long, long> _inboundExpectedSeq = new();
+        private readonly Dictionary<long, long> _sharedExpectedSeq = new();
 
-        private readonly object _inboundSeqLock = new();
-        private long _connectionOrder;
-
-        /// <summary>
-        /// Next value of the local, monotonic order in which this system accepted inbound connections. The
-        /// transport takes one per accepted connection; a handshake carries the order of its connection, which
-        /// is what tells a stale handshake of a dead incarnation (older connection) from a newer one.
-        /// </summary>
-        public long NextConnectionOrder() => Interlocked.Increment(ref _connectionOrder);
-
-        /// <summary>
-        /// The current remote uid of the association for <paramref name="address"/>, or <see langword="null"/>
-        /// if there is none. Does not create an association (diagnostics).
-        /// </summary>
-        public long? TryGetCurrentUid(Address address) =>
-            _byAddress.TryGetValue(address, out var association) ? association.CurrentState.UniqueRemoteAddress?.Uid : null;
+        private readonly object _handshakeLock = new();
 
         /// <summary>Number of uids in the reverse index (test observability).</summary>
         internal int UidIndexCount => _byUid.Count;
 
-        /// <summary>Number of stored inbound system-message expectations (test observability).</summary>
-        internal int InboundSequenceEntryCount
+        /// <summary>Number of shared expectation entries (test observability).</summary>
+        internal int SharedExpectationCount
         {
             get
             {
-                lock (_inboundSeqLock)
-                    return _inboundExpectedSeq.Count;
+                lock (_handshakeLock)
+                    return _sharedExpectedSeq.Count;
             }
         }
         private readonly int _outboundQueueCapacity;
@@ -1368,48 +1346,22 @@ namespace Akka.Remote.Artery
         public Association? TryGetByUid(long uid) => _byUid.TryGetValue(uid, out var association) ? association : null;
 
         /// <summary>
-        /// Atomically compares <paramref name="seqNo"/> with the next system-message seq expected from
-        /// <paramref name="originUid"/> and, when they are equal, advances the expectation. Returns the
-        /// expectation as it was BEFORE the call, so the caller delivers on <c>seqNo == result</c>.
-        /// Returns <c>0</c> (never a valid expectation) when the uid is not in the uid index (no completed
-        /// handshake, or superseded by a new incarnation), is not its association's current uid, or is
-        /// quarantined; the caller must drop the frame.
-        ///
-        /// <para>
-        /// The state lives here, not in the per-connection <see cref="SystemMessageAckerStage"/>, because the
-        /// sender's <see cref="SystemMessageDeliveryState"/> survives a reconnect. The lock makes
-        /// compare-and-advance atomic, so overlapping old/new inbound connections of one origin deliver each
-        /// seq exactly once; the loser observes an already-advanced expectation (a duplicate or a gap).
-        /// Limit: only the check-and-advance is atomic. Each connection pushes the delivered message
-        /// downstream on its own stream, outside the lock, so strict order is guaranteed per connection but
-        /// not across two simultaneously open connections of one origin: seq N from the old connection can be
-        /// dispatched after seq N+1 from the new one.
-        /// </para>
-        ///
-        /// <para>
-        /// Lifecycle: an entry is created lazily at seq 1, only for an association's current uid, and
-        /// is removed in <see cref="Complete"/> when a different uid replaces it. Only the current uid counts, so
-        /// no history is kept for a superseded uid and the map holds at most one entry per association. Frames of a
-        /// quarantined uid are dropped upstream by <see cref="InboundQuarantineCheckStage"/> and its entry
-        /// normally remains until the uid is superseded.
-        /// </para>
+        /// Shared half of the acker's expectation (see <see cref="IInboundContext.AdvanceInboundSystemMessageSeq"/>).
+        /// The effective expectation is <c>max(localExpected, shared)</c>; when <paramref name="seqNo"/> equals it
+        /// and <paramref name="originUid"/> is indexed, the shared value becomes <c>seqNo + 1</c>. Compare and
+        /// advance happen under one lock, so two connections of one origin accept each seq once, and the shared
+        /// value never moves backwards. The entry is created by the first accepted message and removed in
+        /// <see cref="Complete"/> when the uid stops being the association's current uid; afterwards only the
+        /// caller's per-connection memory applies, as before this state existed. Not indexed: no shared entry.
         /// </summary>
-        public long AdvanceInboundSystemMessageSeq(long originUid, long seqNo)
+        public long AdvanceInboundSystemMessageSeq(long originUid, long seqNo, long localExpected)
         {
-            lock (_inboundSeqLock)
+            lock (_handshakeLock)
             {
-                if (!_byUid.TryGetValue(originUid, out var association))
-                    return 0L;
-
-                // The index can briefly hold a uid whose association has already moved on (concurrent
-                // completions publish their index changes in either order): only the current uid counts.
-                if (association.CurrentState.UniqueRemoteAddress is not { } current || current.Uid != originUid ||
-                    association.IsQuarantined(originUid))
-                    return 0L;
-
-                var expected = _inboundExpectedSeq.TryGetValue(originUid, out var e) ? e : 1L;
-                if (seqNo == expected)
-                    _inboundExpectedSeq[originUid] = expected + 1;
+                var shared = _sharedExpectedSeq.TryGetValue(originUid, out var s) ? s : 1L;
+                var expected = Math.Max(localExpected, shared);
+                if (seqNo == expected && _byUid.ContainsKey(originUid))
+                    _sharedExpectedSeq[originUid] = expected + 1;
                 return expected;
             }
         }
@@ -1424,12 +1376,10 @@ namespace Akka.Remote.Artery
         /// Completes the handshake for <paramref name="remoteAddress"/> with peer
         /// <paramref name="peer"/>: materializes the address-keyed association if needed, applies
         /// the CAS transition, and maintains the uid reverse index per the policy documented on
-        /// this type. <paramref name="connectionOrder"/> is the order of the accepted connection the handshake
-        /// arrived on; <see langword="null"/> means "just now" (a new, highest order). A different uid on an older
-        /// connection than the one that installed the current uid is stale and ignored.
+        /// this type.
         /// </summary>
-        public AssociationState CompleteHandshake(Address remoteAddress, UniqueAddress peer, long? connectionOrder = null) =>
-            Complete(remoteAddress, peer, outbound: false, connectionOrder);
+        public AssociationState CompleteHandshake(Address remoteAddress, UniqueAddress peer) =>
+            Complete(remoteAddress, peer, outbound: false);
 
         /// <summary>
         /// As <see cref="CompleteHandshake"/>, but records that the peer answered a
@@ -1437,37 +1387,36 @@ namespace Akka.Remote.Artery
         /// <see cref="AssociationState.OutboundHandshakeCompleted"/>. Called only from
         /// <see cref="InboundHandshakeStage"/>'s <c>HandleRsp</c>.
         /// </summary>
-        public AssociationState CompleteOutboundHandshake(Address remoteAddress, UniqueAddress peer, long? connectionOrder = null) =>
-            Complete(remoteAddress, peer, outbound: true, connectionOrder);
+        public AssociationState CompleteOutboundHandshake(Address remoteAddress, UniqueAddress peer) =>
+            Complete(remoteAddress, peer, outbound: true);
 
         /// <summary>
-        /// One critical section for the association state transition, the uid-index update and the retirement
-        /// of the superseded uid's sequence entry, so completions are totally ordered and a stale one cannot
-        /// overwrite a newer one. Listeners are notified after the lock is released. The lock is a leaf
-        /// lock: inside it only the association's lock-free CAS and immutable-state reads run.
+        /// One critical section for the association transition, the uid-index update and the removal of the
+        /// superseded uid's shared expectation, so completions are totally ordered and none can publish a
+        /// stale index. Listeners are notified after the lock is released. Which uid is current is decided
+        /// exactly as before: the last handshake wins.
         /// </summary>
-        private AssociationState Complete(Address remoteAddress, UniqueAddress peer, bool outbound, long? connectionOrder)
+        private AssociationState Complete(Address remoteAddress, UniqueAddress peer, bool outbound)
         {
             var association = AssociationFor(remoteAddress);
-            var order = connectionOrder ?? NextConnectionOrder();
-            AssociationState previous, updated;
+            AssociationState updated;
 
-            lock (_inboundSeqLock)
+            lock (_handshakeLock)
             {
-                (previous, updated) = outbound
-                    ? association.CompleteOutboundHandshake(peer, order, notify: false)
-                    : association.CompleteHandshake(peer, order, notify: false);
-
-                if (previous.IsStaleHandshake(peer, order))
-                    return updated; // stale: no state change, no index change, no notification
+                var (previous, next) = outbound
+                    ? association.CompleteOutboundHandshake(peer, notify: false)
+                    : association.CompleteHandshake(peer, notify: false);
+                updated = next;
 
                 if (!ReferenceEquals(previous, updated) &&
                     previous.UniqueRemoteAddress is { } previousPeer &&
                     previousPeer.Uid != peer.Uid)
                 {
+                    // Conditional remove: only removes if the old uid still points at THIS
+                    // association (a concurrent, newer mapping is never clobbered).
                     ((ICollection<KeyValuePair<long, Association>>)_byUid).Remove(
                         new KeyValuePair<long, Association>(previousPeer.Uid, association));
-                    _inboundExpectedSeq.Remove(previousPeer.Uid);
+                    _sharedExpectedSeq.Remove(previousPeer.Uid);
                 }
 
                 _byUid[peer.Uid] = association;
