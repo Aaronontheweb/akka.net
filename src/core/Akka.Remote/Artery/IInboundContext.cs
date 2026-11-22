@@ -111,6 +111,14 @@ namespace Akka.Remote.Artery
         /// association, and <see langword="false"/> for an unknown uid. See #9010.
         /// </summary>
         bool TryClaimHeartbeatQuarantineNotice(long originUid);
+
+        /// <summary>
+        /// Atomically compares <paramref name="seqNo"/> with the next system-message seq expected from
+        /// <paramref name="originUid"/>, advancing it when equal, and returns the expectation as it was
+        /// before the call (<c>0</c> when the uid is unknown or quarantined: drop the frame). The state
+        /// outlives any single connection; see <see cref="AssociationRegistry.AdvanceInboundSystemMessageSeq"/>.
+        /// </summary>
+        long AdvanceInboundSystemMessageSeq(long originUid, long seqNo);
     }
 
     /// <summary>
@@ -164,5 +172,9 @@ namespace Akka.Remote.Artery
         /// <inheritdoc/>
         public bool TryClaimHeartbeatQuarantineNotice(long originUid) =>
             _registry.TryGetByUid(originUid)?.TryClaimHeartbeatQuarantineNotice(InboundQuarantineCheckStage.HeartbeatNoticeInterval) ?? false;
+
+        /// <inheritdoc/>
+        public long AdvanceInboundSystemMessageSeq(long originUid, long seqNo) =>
+            _registry.AdvanceInboundSystemMessageSeq(originUid, seqNo);
     }
 }

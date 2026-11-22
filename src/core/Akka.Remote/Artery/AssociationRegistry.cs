@@ -1258,6 +1258,15 @@ namespace Akka.Remote.Artery
     {
         private readonly ConcurrentDictionary<Address, Association> _byAddress = new();
         private readonly ConcurrentDictionary<long, Association> _byUid = new();
+
+        /// <summary>
+        /// Next expected system-message seq per origin uid, shared by every inbound control connection
+        /// of this system. Guarded by <see cref="_inboundSeqLock"/>; holds at most one entry per
+        /// association (see <see cref="AdvanceInboundSystemMessageSeq"/>).
+        /// </summary>
+        private readonly Dictionary<long, long> _inboundExpectedSeq = new();
+
+        private readonly object _inboundSeqLock = new();
         private readonly int _outboundQueueCapacity;
         private readonly int _controlQueueCapacity;
         private readonly int _largeQueueCapacity;
@@ -1317,6 +1326,52 @@ namespace Akka.Remote.Artery
         public Association? TryGetByUid(long uid) => _byUid.TryGetValue(uid, out var association) ? association : null;
 
         /// <summary>
+        /// Atomically compares <paramref name="seqNo"/> with the next system-message seq expected from
+        /// <paramref name="originUid"/> and, when they are equal, advances the expectation. Returns the
+        /// expectation as it was BEFORE the call, so the caller delivers on <c>seqNo == result</c>.
+        /// Returns <c>0</c> (never a valid expectation) when the uid is not in the uid index (no completed
+        /// handshake, or superseded by a new incarnation) or is quarantined; the caller must drop the frame.
+        ///
+        /// <para>
+        /// The state lives here, not in the per-connection <see cref="SystemMessageAckerStage"/>, because the
+        /// sender's <see cref="SystemMessageDeliveryState"/> survives a reconnect. The lock makes
+        /// compare-and-advance atomic, so overlapping old/new inbound connections of one origin deliver each
+        /// seq exactly once; the loser observes an already-advanced expectation (a duplicate or a gap).
+        /// Limit: only the check-and-advance is atomic. Each connection pushes the delivered message
+        /// downstream on its own stream, outside the lock, so strict order is guaranteed per connection but
+        /// not across two simultaneously open connections of one origin: seq N from the old connection can be
+        /// dispatched after seq N+1 from the new one.
+        /// </para>
+        ///
+        /// <para>
+        /// Lifecycle: an entry is created lazily at seq 1 and lives until <see cref="Complete"/> (under the
+        /// same lock) replaces its uid with a new incarnation. Entries exist only for uids present in the
+        /// reverse index, so the map holds at most one entry per association. Frames of a quarantined uid are
+        /// dropped upstream by <see cref="InboundQuarantineCheckStage"/>; the quarantine check here only
+        /// matters for a frame that races the quarantine, and then also removes the entry.
+        /// </para>
+        /// </summary>
+        public long AdvanceInboundSystemMessageSeq(long originUid, long seqNo)
+        {
+            lock (_inboundSeqLock)
+            {
+                if (!_byUid.TryGetValue(originUid, out var association))
+                    return 0L;
+
+                if (association.IsQuarantined(originUid))
+                {
+                    _inboundExpectedSeq.Remove(originUid);
+                    return 0L;
+                }
+
+                var expected = _inboundExpectedSeq.TryGetValue(originUid, out var e) ? e : 1L;
+                if (seqNo == expected)
+                    _inboundExpectedSeq[originUid] = expected + 1;
+                return expected;
+            }
+        }
+
+        /// <summary>
         /// A point-in-time snapshot of every association currently known to this registry. Used by
         /// <c>ArteryRemoting.Shutdown</c> to complete every association's outbound channel.
         /// </summary>
@@ -1353,17 +1408,24 @@ namespace Akka.Remote.Artery
         {
             var (previous, updated) = transition;
 
-            if (!ReferenceEquals(previous, updated) &&
-                previous.UniqueRemoteAddress is { } previousPeer &&
-                previousPeer.Uid != peer.Uid)
+            // Same lock as AdvanceInboundSystemMessageSeq: a superseded uid's sequence state is dropped
+            // atomically with its reverse-index entry, so a late frame of the old uid cannot recreate it.
+            lock (_inboundSeqLock)
             {
-                // Conditional remove: only removes if the old uid still points at THIS
-                // association (a concurrent, newer mapping is never clobbered).
-                ((ICollection<KeyValuePair<long, Association>>)_byUid).Remove(
-                    new KeyValuePair<long, Association>(previousPeer.Uid, association));
+                if (!ReferenceEquals(previous, updated) &&
+                    previous.UniqueRemoteAddress is { } previousPeer &&
+                    previousPeer.Uid != peer.Uid)
+                {
+                    // Conditional remove: only removes if the old uid still points at THIS
+                    // association (a concurrent, newer mapping is never clobbered).
+                    ((ICollection<KeyValuePair<long, Association>>)_byUid).Remove(
+                        new KeyValuePair<long, Association>(previousPeer.Uid, association));
+                    _inboundExpectedSeq.Remove(previousPeer.Uid);
+                }
+
+                _byUid[peer.Uid] = association;
             }
 
-            _byUid[peer.Uid] = association;
             return updated;
         }
     }

@@ -9,6 +9,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Dispatch.SysMsg;
@@ -51,19 +52,26 @@ namespace Akka.Remote.Tests.Artery
         private static SystemMessageEnvelope Sme(long seqNo, UniqueAddress ackReplyTo, string name = "m", string recipientPath = "akka://local-sys@local-host:2551/user/target") =>
             new(new TestSystemMessage(name), seqNo, ackReplyTo, recipientPath);
 
-        private (List<(Address To, object Message)> SentControl, TestPublisher.Probe<IInboundEnvelope> Pub, TestSubscriber.Probe<IInboundEnvelope> Sub) BuildHarness()
+        /// <summary>A context over a registry in which <paramref name="peer"/> has completed its handshake.</summary>
+        private static (AssociationRegistry Registry, AssociationRegistryInboundContext Context, List<(Address To, object Message)> SentControl) NewContext(UniqueAddress peer)
         {
             var sentControl = new List<(Address To, object Message)>();
             var registry = new AssociationRegistry();
-            var context = new AssociationRegistryInboundContext(registry, NewLocal(), (to, msg) => sentControl.Add((to, msg)));
-            var stage = new SystemMessageAckerStage(context);
+            registry.CompleteHandshake(peer.Address, peer);
+            return (registry, new AssociationRegistryInboundContext(registry, NewLocal(), (to, msg) => sentControl.Add((to, msg))), sentControl);
+        }
 
-            var materializer = ActorMaterializer.Create(Sys);
-            var (pub, sub) = this.SourceProbe<IInboundEnvelope>()
-                .ViaMaterialized(Flow.FromGraph(stage), Keep.Left)
+        /// <summary>Materializes one acker stage, i.e. what one accepted control connection gets.</summary>
+        private (TestPublisher.Probe<IInboundEnvelope> Pub, TestSubscriber.Probe<IInboundEnvelope> Sub) Materialize(IInboundContext context) =>
+            this.SourceProbe<IInboundEnvelope>()
+                .ViaMaterialized(Flow.FromGraph(new SystemMessageAckerStage(context)), Keep.Left)
                 .ToMaterialized(this.SinkProbe<IInboundEnvelope>(), Keep.Both)
-                .Run(materializer);
+                .Run(ActorMaterializer.Create(Sys));
 
+        private (List<(Address To, object Message)> SentControl, TestPublisher.Probe<IInboundEnvelope> Pub, TestSubscriber.Probe<IInboundEnvelope> Sub) BuildHarness()
+        {
+            var (_, context, sentControl) = NewContext(NewRemotePeer());
+            var (pub, sub) = Materialize(context);
             return (sentControl, pub, sub);
         }
 
@@ -192,6 +200,131 @@ namespace Akka.Remote.Tests.Artery
 
             (await sub.ExpectNextAsync(TimeSpan.FromSeconds(3))).Should().Be(ordinary);
             (await sub.ExpectNextAsync(TimeSpan.FromSeconds(3))).Should().Be(heartbeat);
+        }
+
+        [Fact(DisplayName = "Should_ResumeExpectedSeq_When_NewStageIsMaterializedForSameOrigin")]
+        public async Task Should_Resume_Expected_Seq_On_New_Stage_For_Same_Origin()
+        {
+            var (_, context, sentControl) = NewContext(NewRemotePeer());
+            var peer = NewRemotePeer();
+            var (pub1, sub1) = Materialize(context);
+
+            await sub1.RequestAsync(2);
+            await pub1.SendNextAsync(Envelope(Sme(1L, peer, "m1"), peer.Uid));
+            await pub1.SendNextAsync(Envelope(Sme(2L, peer, "m2"), peer.Uid));
+            await sub1.ExpectNextAsync(TimeSpan.FromSeconds(3));
+            await sub1.ExpectNextAsync(TimeSpan.FromSeconds(3));
+            pub1.SendComplete(); // the connection is gone; the sender's window survives it
+
+            var (pub2, sub2) = Materialize(context);
+            await sub2.RequestAsync(2);
+            await pub2.SendNextAsync(Envelope(Sme(2L, peer, "m2-replay"), peer.Uid)); // delivered, Ack lost
+            await sub2.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(300));
+            sentControl[^1].Message.Should().Be(new SysAck(2L, NewLocal()), "a replay below the shared expectation is re-Acked at expected-1");
+
+            await pub2.SendNextAsync(Envelope(Sme(3L, peer, "m3"), peer.Uid));
+            ((TestSystemMessage)(await sub2.ExpectNextAsync(TimeSpan.FromSeconds(3))).Message).Name.Should().Be("m3");
+            sentControl.Select(x => x.Message).OfType<SysNack>().Should().BeEmpty();
+        }
+
+        [Fact(DisplayName = "Should_DeliverReplayedSeqOneOnce_When_NewStageIsMaterialized")]
+        public async Task Should_Deliver_Replayed_Seq_One_Only_Once_Across_Stages()
+        {
+            var (_, context, sentControl) = NewContext(NewRemotePeer());
+            var peer = NewRemotePeer();
+            var (pub1, sub1) = Materialize(context);
+            await sub1.RequestAsync(1);
+            await pub1.SendNextAsync(Envelope(Sme(1L, peer, "m1"), peer.Uid));
+            await sub1.ExpectNextAsync(TimeSpan.FromSeconds(3));
+            pub1.SendComplete();
+
+            var (pub2, sub2) = Materialize(context);
+            await sub2.RequestAsync(1);
+            await pub2.SendNextAsync(Envelope(Sme(1L, peer, "m1"), peer.Uid)); // the sender's unacked window, replayed
+            await sub2.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(300));
+            sentControl.Select(x => x.Message).OfType<SysAck>().Select(a => a.SeqNo).Should().Equal(1L, 1L);
+        }
+
+        [Fact(DisplayName = "Should_StartAtSeqOneAndDropOldUid_When_PeerRestartsWithNewUid")]
+        public async Task Should_Start_New_Uid_At_Seq_One_And_Drop_Superseded_Uid()
+        {
+            var oldPeer = NewRemotePeer(222L);
+            var newPeer = NewRemotePeer(223L);
+            var (registry, context, sentControl) = NewContext(oldPeer);
+            var (pub, sub) = Materialize(context);
+            await sub.RequestAsync(3);
+            await pub.SendNextAsync(Envelope(Sme(1L, oldPeer, "old1"), oldPeer.Uid));
+            await pub.SendNextAsync(Envelope(Sme(2L, oldPeer, "old2"), oldPeer.Uid));
+            await sub.ExpectNextAsync(TimeSpan.FromSeconds(3));
+            await sub.ExpectNextAsync(TimeSpan.FromSeconds(3));
+
+            registry.CompleteHandshake(newPeer.Address, newPeer); // the peer restarted under the same address
+            await pub.SendNextAsync(Envelope(Sme(3L, oldPeer, "old3"), oldPeer.Uid));
+            await sub.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(300));
+            sentControl.Should().HaveCount(2, "a superseded uid is neither delivered nor acknowledged");
+
+            await pub.SendNextAsync(Envelope(Sme(1L, newPeer, "new1"), newPeer.Uid));
+            ((TestSystemMessage)(await sub.ExpectNextAsync(TimeSpan.FromSeconds(3))).Message).Name.Should().Be("new1");
+        }
+
+        [Fact(DisplayName = "Should_DropWithoutAckOrNack_When_OriginUidIsNotRegistered")]
+        public async Task Should_DropWithoutAckOrNack_When_OriginUidIsNotRegistered()
+        {
+            var (_, context, sentControl) = NewContext(NewRemotePeer(222L));
+            var stranger = NewRemotePeer(999L);
+            var (pub, sub) = Materialize(context);
+
+            await sub.RequestAsync(1);
+            await pub.SendNextAsync(Envelope(Sme(1L, stranger, "stranger"), stranger.Uid));
+            await sub.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(300));
+            sentControl.Should().BeEmpty();
+        }
+
+        [Fact(DisplayName = "Should_DropWithoutAckOrNack_When_OriginUidIsQuarantined")]
+        public async Task Should_DropWithoutAckOrNack_When_OriginUidIsQuarantined()
+        {
+            var peer = NewRemotePeer();
+            var (registry, context, sentControl) = NewContext(peer);
+            var (pub, sub) = Materialize(context);
+
+            await sub.RequestAsync(2);
+            await pub.SendNextAsync(Envelope(Sme(1L, peer, "m1"), peer.Uid));
+            await sub.ExpectNextAsync(TimeSpan.FromSeconds(3));
+
+            registry.AssociationFor(peer.Address).Quarantine(peer.Uid).Should().BeTrue();
+            await pub.SendNextAsync(Envelope(Sme(2L, peer, "m2"), peer.Uid));
+            await sub.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(300));
+            sentControl.Should().HaveCount(1, "only the Ack of seq 1; the quarantined uid's next frame is neither delivered nor answered");
+        }
+
+        [Fact(DisplayName = "Should_DeliverEachSeqOnce_When_TwoStagesRunConcurrentlyForSameOrigin")]
+        public async Task Should_DeliverEachSeqOnce_When_TwoStagesRunConcurrentlyForSameOrigin()
+        {
+            const int count = 200;
+            var peer = NewRemotePeer();
+            var (registry, _, _) = NewContext(peer);
+            // A no-op reply hook: the stages run on different threads, which a plain List would not tolerate.
+            var context = new AssociationRegistryInboundContext(registry, NewLocal(), (_, _) => { });
+            var delivered = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            var materializer = ActorMaterializer.Create(Sys);
+
+            TestPublisher.Probe<IInboundEnvelope> Start() =>
+                this.SourceProbe<IInboundEnvelope>()
+                    .Via(Flow.FromGraph(new SystemMessageAckerStage(context)))
+                    .To(Sink.ForEach<IInboundEnvelope>(e => delivered.Enqueue(((TestSystemMessage)e.Message).Name)))
+                    .Run(materializer);
+
+            // Each connection sends the same ascending window, like an old and a new connection overlapping.
+            var pubs = new[] { Start(), Start() };
+            await Task.WhenAll(pubs.Select(pub => Task.Run(async () =>
+            {
+                for (var seq = 1L; seq <= count; seq++)
+                    await pub.SendNextAsync(Envelope(Sme(seq, peer, seq.ToString()), peer.Uid));
+            })));
+
+            await AwaitAssertAsync(() => delivered.Count.Should().BeGreaterOrEqualTo(count), TimeSpan.FromSeconds(10));
+            await Task.Delay(300);
+            delivered.Select(long.Parse).OrderBy(x => x).Should().Equal(Enumerable.Range(1, count).Select(x => (long)x));
         }
     }
 }
