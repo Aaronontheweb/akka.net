@@ -271,7 +271,7 @@ namespace Akka.Remote
         }
 
         /// <inheritdoc/>
-        bool ITempIdRegistry.OnlyPlainFuturesEverRegistered => ((ITempIdRegistry)_local).OnlyPlainFuturesEverRegistered;
+        bool ITempIdRegistry.IsPlainOnlyTempId(long tempId) => ((ITempIdRegistry)_local).IsPlainOnlyTempId(tempId);
 
         /// <summary>
         /// INTERNAL API. The wrapped local provider, whose temp refs this system owns.

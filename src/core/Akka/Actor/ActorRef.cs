@@ -859,9 +859,20 @@ namespace Akka.Actor
         // incumbent and a single entry to remove. Every other name is keyed by string in _children.
         private readonly ConcurrentDictionary<long, IInternalActorRef> _numericChildren = new();
 
-        // False for good once any child other than the framework's own plain Ask future has been registered:
-        // such a child may resolve to a ref that the receive-side resolve cache would cache under its path.
-        private volatile bool _onlyPlainFutures = true;
+        // Ids (canonical temp names) under which anything other than exactly the framework's own plain Ask future
+        // has ever been registered -- including a registration that lost to an incumbent. Never shrinks: the
+        // receive-side resolve cache may hold a stale winner for such a path after it is unregistered. Names that
+        // are not canonical for a number are never addressed numerically and are not recorded.
+        private readonly ConcurrentDictionary<long, byte> _nonPlainIds = new();
+
+        // 0: no such id yet; 1: the set is non-empty; 2: the set overflowed, so every id counts as non-plain.
+        private int _nonPlainState;
+
+        /// <summary>INTERNAL API. Upper bound on <c>_nonPlainIds</c>; beyond it every id is treated as non-plain.</summary>
+        internal const int DefaultNonPlainIdCapacity = 65536;
+
+        /// <summary>INTERNAL API. The cap in force. Mutable only so a test can exercise the overflow fallback.</summary>
+        internal int NonPlainIdCapacity = DefaultNonPlainIdCapacity;
 
         /// <summary>
         /// Initializes a container with its provider, actor path, parent reference, and logger.
@@ -931,9 +942,9 @@ namespace Akka.Actor
         /// <param name="actor">The child reference to register.</param>
         public void AddChild(string name, IInternalActorRef actor)
         {
-            NoteRegistered(actor);
             if (Base64Encoding.TryBase64DecodeLong(name.AsSpan(), out var id))
             {
+                NoteRegistered(id, actor);
                 AddNumeric(id, actor, name);
                 return;
             }
@@ -951,7 +962,7 @@ namespace Akka.Actor
         /// </summary>
         internal void AddChild(long id, IInternalActorRef actor)
         {
-            NoteRegistered(actor);
+            NoteRegistered(id, actor);
             AddNumeric(id, actor, null);
         }
 
@@ -964,19 +975,36 @@ namespace Akka.Actor
             });
         }
 
-        private void NoteRegistered(IInternalActorRef actor)
+        private void NoteRegistered(long id, IInternalActorRef actor)
         {
-            if (_onlyPlainFutures && !(actor is ITempActorRef { IsPlainFuture: true }))
-                _onlyPlainFutures = false;
+            if (actor is ITempActorRef { IsPlainFuture: true } || Volatile.Read(ref _nonPlainState) == 2)
+                return;
+
+            if (_nonPlainIds.Count >= NonPlainIdCapacity && !_nonPlainIds.ContainsKey(id))
+            {
+                if (Interlocked.Exchange(ref _nonPlainState, 2) != 2)
+                    Log.Warning(
+                        "More than {0} temporary actor names at {1} were registered by something other than an Ask future; " +
+                        "from now on every numerically addressed reply takes the slower path-based delivery route.",
+                        NonPlainIdCapacity, Path);
+                return;
+            }
+
+            _nonPlainIds.TryAdd(id, 0);
+            Interlocked.CompareExchange(ref _nonPlainState, 1, 0);
         }
 
         /// <summary>
-        /// INTERNAL API. <see langword="true"/> until any child other than the framework's own plain Ask future
-        /// (exactly <see cref="FutureActorRef{T}"/>) has ever been registered here. While it holds, no path
-        /// under this container can resolve to a ref the resolve cache would hold, and every child's
-        /// <c>GetChild</c> of an empty tail is itself.
+        /// INTERNAL API. <see langword="true"/> when nothing but the framework's own plain Ask future (exactly
+        /// <see cref="FutureActorRef{T}"/>) has ever been registered under the canonical name of
+        /// <paramref name="id"/>. For such an id no resolve-cache entry can exist, and its registered child's
+        /// <c>GetChild</c> of an empty tail is itself. With no non-plain id recorded this is one volatile read.
         /// </summary>
-        internal bool OnlyPlainFuturesEverRegistered => _onlyPlainFutures;
+        internal bool IsPlainOnlyId(long id)
+        {
+            var state = Volatile.Read(ref _nonPlainState);
+            return state == 0 || (state == 1 && !_nonPlainIds.ContainsKey(id));
+        }
 
         /// <summary>
         /// INTERNAL API. Removes the child registered under a numeric id.

@@ -690,6 +690,79 @@ namespace Akka.Remote.Tests.Artery
             }
         }
 
+        // ===================== per-id direct delivery route =====================
+
+        [Fact(DisplayName = "Should_keep_the_direct_route_for_Ask_replies_after_a_PromiseActorRef_registered_a_temp_name_and_use_the_path_route_for_that_name")]
+        public async Task Should_keep_the_direct_route_for_Ask_replies_after_a_PromiseActorRef_registered_a_temp_name_and_use_the_path_route_for_that_name()
+        {
+            var (asker, responder, _) = StartPair(true, true);
+            try
+            {
+                var routes = new ConcurrentQueue<(long Counter, bool Direct)>();
+                TransportOf(asker).NumericRouteObserverForTests = (counter, direct) => routes.Enqueue((counter, direct));
+
+                // A promise (what GracefulStop and WatchAsync use) registers its temp name lazily, on first Path use.
+                var provider = RARP.For(asker).Provider;
+                var promise = PromiseActorRef.Apply(provider, TimeSpan.FromSeconds(30), "target", "Test");
+                Base64Encoding.TryBase64DecodeLong(promise.Path.Name.AsSpan(), out var promiseCounter).Should().BeTrue();
+
+                (await AskResponder(asker, responder, "ping")).Should().Be("pong");
+                routes.Should().NotBeEmpty().And.OnlyContain(r => r.Direct, "an unrelated registration must not move other Asks off the direct route");
+
+                // The promise's own name takes the path route and is delivered exactly as the literal form is.
+                var association = TransportOf(responder).Registry.AssociationFor(AddressOf(asker));
+                association.TryEnqueueOutbound(
+                    new OutboundEnvelope("to-promise", null, null, null, ArteryNumericRef.ForTemporary(UidOf(asker), promiseCounter)), 0)
+                    .Should().BeTrue();
+
+                (await promise.Result.WaitAsync(Timeout)).Should().Be("to-promise");
+                routes.Should().Contain(r => r.Counter == promiseCounter && !r.Direct);
+            }
+            finally
+            {
+                await ShutdownAll(asker, responder);
+            }
+        }
+
+        [Fact(DisplayName = "Should_treat_every_temp_id_as_non_plain_and_warn_once_When_the_non_plain_id_set_overflows")]
+        public async Task Should_treat_every_temp_id_as_non_plain_and_warn_once_When_the_non_plain_id_set_overflows()
+        {
+            var provider = (LocalActorRefProvider)((ExtendedActorSystem)Sys).Provider;
+            var registry = (ITempIdRegistry)provider;
+            var container = (VirtualPathContainer)provider.TempContainer;
+            container.NonPlainIdCapacity = 2;
+            var warnings = CreateTestProbe();
+            Sys.EventStream.Subscribe(warnings, typeof(Warning));
+
+            long Register()
+            {
+                var path = provider.TempPath();
+                provider.RegisterTempActor(new Recorder(provider, path, new ConcurrentQueue<object>()), path);
+                Base64Encoding.TryBase64DecodeLong(path.Name.AsSpan(), out var id).Should().BeTrue();
+                return id;
+            }
+
+            var fresh = provider.TempPath();
+            Base64Encoding.TryBase64DecodeLong(fresh.Name.AsSpan(), out var freshId).Should().BeTrue();
+            registry.IsPlainOnlyTempId(freshId).Should().BeTrue();
+
+            var first = Register();
+            var second = Register();
+            registry.IsPlainOnlyTempId(first).Should().BeFalse();
+            registry.IsPlainOnlyTempId(second).Should().BeFalse();
+            registry.IsPlainOnlyTempId(freshId).Should().BeTrue("a registration elsewhere does not taint other ids");
+
+            Register(); // over capacity
+            registry.IsPlainOnlyTempId(freshId).Should().BeFalse("after overflow every id takes the path route");
+            await warnings.FishForMessageAsync<Warning>(w => w.Message.ToString()!.Contains("temporary actor names"), Timeout);
+
+            Register();
+            await warnings.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(200));
+
+            provider.UnregisterTempActor(provider.TempContainer.Path / first.Base64Encode());
+            registry.IsPlainOnlyTempId(first).Should().BeFalse("ids are never removed from the set");
+        }
+
         // ===================== sender is not resolved for an Ask reply =====================
 
         [Theory(DisplayName = "Should_complete_the_Ask_When_the_reply_carries_an_unresolvable_sender_path")]

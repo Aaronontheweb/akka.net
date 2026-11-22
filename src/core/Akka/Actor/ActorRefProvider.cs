@@ -181,11 +181,12 @@ namespace Akka.Actor
         bool TryGetTempActor(long tempId, out IInternalActorRef actorRef);
 
         /// <summary>
-        /// <see langword="true"/> until anything other than the framework's own plain Ask future has ever been
-        /// registered in the temp container. While it holds, resolving a temp path by name can only yield the
-        /// registered future itself or nothing, never a ref the resolve cache would hold.
+        /// <see langword="true"/> when nothing but the framework's own plain Ask future has ever been registered
+        /// under the canonical temp name of <paramref name="tempId"/> (a losing registration counts). For such an
+        /// id, resolving the path by name can only yield that future or nothing, never a ref the resolve cache
+        /// would hold.
         /// </summary>
-        bool OnlyPlainFuturesEverRegistered { get; }
+        bool IsPlainOnlyTempId(long tempId);
     }
 
     /// <summary>
@@ -459,7 +460,7 @@ namespace Akka.Actor
         }
 
         /// <inheritdoc/>
-        bool ITempIdRegistry.OnlyPlainFuturesEverRegistered => _tempContainer.OnlyPlainFuturesEverRegistered;
+        bool ITempIdRegistry.IsPlainOnlyTempId(long tempId) => _tempContainer.IsPlainOnlyId(tempId);
 
         /// <summary>
         /// Initializes the ActorRefProvider

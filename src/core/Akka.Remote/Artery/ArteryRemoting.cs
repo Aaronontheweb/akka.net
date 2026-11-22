@@ -1282,8 +1282,15 @@ namespace Akka.Remote.Artery
             recipient is ITempActorRef { IsPlainFuture: true } ? System.DeadLetters : ResolveInboundSender(refs);
 
         /// <summary>
+        /// Test hook, <see langword="null"/> in production: called with a numeric temp recipient's counter and
+        /// whether it took the direct shortcut (<see langword="true"/>) or the path-based route.
+        /// </summary>
+        internal Action<long, bool>? NumericRouteObserverForTests;
+
+        /// <summary>
         /// Delivers a message whose recipient arrived as a numeric record. Temporary-ref ids are resolved
-        /// from this system's own temp container by integer lookup, with no string or path work. Anything that
+        /// from this system's own temp container by integer lookup, with no string or path work, when that is
+        /// provably what the literal form does, and otherwise through the literal route. Anything that
         /// cannot be delivered goes to dead letters -- a record owned by another system UID (a reply meant for a
         /// previous incarnation of this node, or a misaddressed frame), an id whose Ask already completed or
         /// timed out, an id in a namespace nothing here resolves, or a system message (those travel by path) --
@@ -1322,18 +1329,20 @@ namespace Akka.Remote.Artery
             var registry = (ITempIdRegistry)Provider;
 
             // Shortcut, taken only when it is provably what the literal form of the same path does. While nothing
-            // but the framework's own plain Ask future has ever been registered in the temp container, resolving
-            // /temp/<name> by path can only find that future or nothing: (1) the resolve cache never holds an
-            // entry for such a path (a plain future is not cacheable and a failed resolve is an uncacheable empty
-            // ref), so there is no stale winner to honour; (2) the container is one namespace keyed by name, so
-            // the number finds the same incumbent the path would; (3) a plain future is its own GetChild of an
-            // empty tail and is not nobody, so the traversal ends on it; (4) the literal route then Tells the
-            // resolved ref, as here. A completed or timed-out Ask is the "nothing" case: the literal route
-            // dead-letters against an empty ref at that same path, which is what is built below.
-            if (registry.OnlyPlainFuturesEverRegistered)
+            // but the framework's own plain Ask future has ever been registered under THIS name (a per-id record;
+            // an unrelated PromiseActorRef or custom ref elsewhere does not matter), resolving /temp/<name> by path
+            // can only find that future or nothing: (1) the resolve cache never holds an entry for such a path --
+            // whatever resolves there is a plain future (not cacheable) or an empty ref (not cacheable), and a
+            // different registration at that name would have recorded the id; (2) the container is one namespace
+            // keyed by name, so the number finds the same incumbent the path would; (3) a plain future is its own
+            // GetChild of an empty tail and is not nobody, so the traversal ends on it; (4) the literal route
+            // then Tells the resolved ref, as here. A completed or timed-out Ask is the "nothing" case: the
+            // literal route dead-letters against an empty ref at that same path, which is built below.
+            if (registry.IsPlainOnlyTempId(counter))
             {
                 if (!registry.TryGetTempActor(counter, out var target))
                 {
+                    NumericRouteObserverForTests?.Invoke(counter, true);
                     new EmptyLocalActorRef(Provider, Provider.RootPath / "temp" / counter.Base64Encode(), System.EventStream)
                         .Tell(message, ResolveInboundSender(refs));
                     return;
@@ -1341,10 +1350,13 @@ namespace Akka.Remote.Artery
 
                 if (target is ITempActorRef { IsPlainFuture: true })
                 {
+                    NumericRouteObserverForTests?.Invoke(counter, true);
                     target.Tell(message, SenderFor(target, refs));
                     return;
                 }
             }
+
+            NumericRouteObserverForTests?.Invoke(counter, false);
 
             // Anything else (a custom or function ref was or is registered, a cached winner may exist, a ref
             // may forward, throw or answer nobody for an empty tail): the literal route, from the path the
