@@ -27,7 +27,7 @@ namespace Akka.Remote.Tests.Artery
     /// </summary>
     public abstract class ArteryInboundResolveFailureSpecBase : AkkaSpec
     {
-        private static readonly TimeSpan Within = TimeSpan.FromSeconds(5);
+        private static readonly TimeSpan Prompt = TimeSpan.FromSeconds(5);
         private const int Around = 20;
 
         private readonly int _lanes;
@@ -128,12 +128,12 @@ namespace Akka.Remote.Tests.Artery
                         forward.Tell($"m-{i}");
 
                     for (var i = 0; i < 2 * Around; i++)
-                        await probe.ExpectMsgAsync($"m-{i}", Within);
+                        await probe.ExpectMsgAsync($"m-{i}", Prompt);
                 });
 
                 // The connection is still usable, and nothing was delivered for the bad message.
                 forward.Tell("after");
-                await probe.ExpectMsgAsync("after", Within);
+                await probe.ExpectMsgAsync("after", Prompt);
                 await probe.ExpectNoMsgAsync(100.Milliseconds());
             });
         }
@@ -174,12 +174,12 @@ namespace Akka.Remote.Tests.Artery
                     // The reply with the unparseable sender is dropped, so its Ask times out; the rest complete.
                     await Assert.ThrowsAsync<AskTimeoutException>(() => bad);
 
-                    var replies = await Task.WhenAll(before.Concat(after)).WaitAsync(Within);
+                    var replies = await Task.WhenAll(before.Concat(after)).WaitAsync(Prompt);
                     replies.Should().Equal(Enumerable.Range(0, 2 * Around).Select(i => $"m-{i}"));
                 });
 
                 // A later Ask on the same association completes without waiting for a reconnect.
-                (await replier.Ask<string>("after", Within)).Should().Be("after");
+                (await replier.Ask<string>("after", Prompt)).Should().Be("after");
             });
         }
     }
