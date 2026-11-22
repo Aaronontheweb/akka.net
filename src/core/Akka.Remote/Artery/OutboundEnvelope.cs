@@ -48,6 +48,17 @@ namespace Akka.Remote.Artery
         string? RecipientPath { get; }
 
         /// <summary>
+        /// When non-null, the sender is written as a numeric record and <see cref="SenderPath"/> is unused.
+        /// Only a ref owned by the sending system may be written this way; any other sender is a literal.
+        /// </summary>
+        ArteryNumericRef? SenderRef { get; }
+
+        /// <summary>
+        /// When non-null, the recipient is written as a numeric record and <see cref="RecipientPath"/> is unused (null).
+        /// </summary>
+        ArteryNumericRef? RecipientRef { get; }
+
+        /// <summary>
         /// Cheap, precomputed (at construction, not re-tested per stage) flag: <see langword="true"/>
         /// when <see cref="Message"/> is an <see cref="IArteryControlMessage"/>. Stages dispatch on
         /// this instead of re-running an <c>is</c> type-test on every element at every stage.
@@ -67,6 +78,34 @@ namespace Akka.Remote.Artery
     /// <param name="SenderPath">The sender's wire-format path, or <see langword="null"/> for no sender.</param>
     /// <param name="RecipientPath">The recipient's wire-format path, or <see langword="null"/> for control messages.</param>
     internal sealed record OutboundEnvelope(object Message, string? SenderPath, string? RecipientPath) : IOutboundEnvelope
+    {
+        /// <inheritdoc/>
+        ArteryNumericRef? IOutboundEnvelope.SenderRef => null;
+
+        /// <inheritdoc/>
+        ArteryNumericRef? IOutboundEnvelope.RecipientRef => null;
+
+        /// <inheritdoc/>
+        public bool IsControl { get; } = Message is IArteryControlMessage;
+    }
+
+    /// <summary>
+    /// INTERNAL API.
+    ///
+    /// An ordinary-stream envelope whose sender and/or recipient is written as a numeric record. A separate type
+    /// from <see cref="OutboundEnvelope"/> so that envelopes carrying only literals are exactly as large as before.
+    /// </summary>
+    /// <param name="Message">The message to serialize as the envelope's payload.</param>
+    /// <param name="SenderPath">The sender's wire-format path; ignored when <paramref name="SenderRef"/> is set.</param>
+    /// <param name="RecipientPath">The recipient's wire-format path; ignored when <paramref name="RecipientRef"/> is set.</param>
+    /// <param name="SenderRef">The numeric sender, or <see langword="null"/>.</param>
+    /// <param name="RecipientRef">The numeric recipient, or <see langword="null"/>.</param>
+    internal sealed record NumericOutboundEnvelope(
+        object Message,
+        string? SenderPath,
+        string? RecipientPath,
+        ArteryNumericRef? SenderRef,
+        ArteryNumericRef? RecipientRef) : IOutboundEnvelope
     {
         /// <inheritdoc/>
         public bool IsControl { get; } = Message is IArteryControlMessage;
