@@ -1247,8 +1247,16 @@ namespace Akka.Remote.Artery
                 }
             }
 
-            DeliverOrdinaryMessage(recipient, message, ResolveInboundSender(refs));
+            DeliverOrdinaryMessage(recipient, message, SenderFor(recipient, refs));
         }
+
+        /// <summary>
+        /// The sender to deliver with. A recipient that never reads its sender (the promise behind an Ask) gets
+        /// dead letters -- the value used for a frame with no sender -- so the sender is not parsed and no ref is
+        /// allocated for it. Every other recipient gets the resolved sender.
+        /// </summary>
+        private IActorRef SenderFor(IActorRef recipient, in InboundWireRefs refs) =>
+            recipient is ITempActorRef { IgnoresSender: true } ? System.DeadLetters : ResolveInboundSender(refs);
 
         /// <summary>
         /// Delivers a message whose recipient arrived as a numeric TEMP record: a pending Ask of THIS
@@ -1259,12 +1267,10 @@ namespace Akka.Remote.Artery
         /// </summary>
         private void DispatchToTempRecipient(object message, in InboundWireRefs refs)
         {
-            var sender = ResolveInboundSender(refs);
-
             if (message is ISystemMessage)
             {
                 // System messages are delivered reliably over the control stream and addressed by path.
-                System.DeadLetters.Tell(message, sender);
+                System.DeadLetters.Tell(message, ResolveInboundSender(refs));
                 return;
             }
 
@@ -1273,15 +1279,17 @@ namespace Akka.Remote.Artery
                 _log.Debug(
                     "Dead-lettering [{0}] addressed to temp ref [{1}] of system uid [{2}]; this system's uid is [{3}].",
                     message.GetType(), refs.RecipientTempId, refs.RecipientTempOwnerUid, _localUniqueAddress.Uid);
-                System.DeadLetters.Tell(message, sender);
+                System.DeadLetters.Tell(message, ResolveInboundSender(refs));
                 return;
             }
 
             if (((ITempIdRegistry)Provider).TryGetTempActor(refs.RecipientTempId, out var target))
             {
-                target.Tell(message, sender);
+                target.Tell(message, SenderFor(target, refs));
                 return;
             }
+
+            var sender = ResolveInboundSender(refs);
 
             // Not registered (the Ask completed or timed out): dead-letter against the same empty ref the
             // literal form resolves to (the local /temp/<name> path), without parsing a path or touching

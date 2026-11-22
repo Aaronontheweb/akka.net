@@ -78,7 +78,7 @@ namespace Akka.Remote.Tests.Artery
                     Context.ActorSelection(Sender.Path).Tell("pong");
                 });
                 Receive<string>(s => s.StartsWith("forward:"), s =>
-                    Context.ActorSelection(s.Substring("forward:".Length)).Forward("ping"));
+                    Context.ActorSelection(s.Substring("forward:".Length)).Tell("ping", Sender));
                 Receive<string>(s => s.StartsWith("payload:"), s =>
                     // The ask sender travels inside a message payload to an actor on the asking system.
                     Context.ActorSelection(s.Substring("payload:".Length)).Tell(Sender));
@@ -464,6 +464,64 @@ namespace Akka.Remote.Tests.Artery
             {
                 var replies = await Task.WhenAll(Enumerable.Range(0, 500).Select(_ => AskResponder(asker, responder, "ping")));
                 replies.Should().OnlyContain(r => (string)r == "pong");
+            }
+            finally
+            {
+                await ShutdownAll(asker, responder);
+            }
+        }
+
+        // ===================== sender is not resolved for an Ask reply =====================
+
+        [Theory(DisplayName = "Should_complete_the_Ask_When_the_reply_carries_an_unresolvable_sender_path")]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task Should_complete_the_Ask_When_the_reply_carries_an_unresolvable_sender_path(bool numericRecipient)
+        {
+            // Before the sender of a reply to an Ask was skipped, an unparseable sender literal made the
+            // inbound dispatch throw (ActorPath.TryParse fails, and a RemoteActorRef cannot be built from a
+            // null path), so the reply was lost. The Ask promise never reads its sender, so it now completes.
+            var (asker, responder, reports) = StartPair(true, true);
+            try
+            {
+                var ask = AskResponder(asker, responder, "hold");
+                var sender = (RemoteTempActorRef)await Next<IActorRef>(reports);
+                var association = TransportOf(responder).Registry.AssociationFor(AddressOf(asker));
+
+                var garbage = "this is :: not an actor path ###";
+                var envelope = numericRecipient
+                    ? new OutboundEnvelope("reply-with-garbage-sender", garbage, null, -1, sender.OwnerUid, sender.TempId)
+                    : new OutboundEnvelope("reply-with-garbage-sender", garbage, sender.Path.ToStringWithAddress());
+                association.TryEnqueueOutbound(envelope, 0).Should().BeTrue();
+
+                (await ask).Should().Be("reply-with-garbage-sender");
+            }
+            finally
+            {
+                await ShutdownAll(asker, responder);
+            }
+        }
+
+        private sealed class SenderReporter : ReceiveActor
+        {
+            public SenderReporter(Action<object> report) => ReceiveAny(m => report((m, Sender)));
+        }
+
+        [Fact(DisplayName = "Should_deliver_the_resolved_sender_When_the_recipient_is_an_ordinary_actor")]
+        public async Task Should_deliver_the_resolved_sender_When_the_recipient_is_an_ordinary_actor()
+        {
+            var (asker, responder, _) = StartPair(true, true);
+            try
+            {
+                var reports = new BlockingCollection<object>();
+                asker.ActorOf(Props.Create(() => new SenderReporter(o => reports.Add(o))), "reporter");
+                var from = responder.ActorOf(Props.Create(() => new SenderReporter(_ => { })), "from");
+
+                responder.ActorSelection($"{AddressOf(asker)}/user/reporter").Tell("hello", from);
+
+                var (message, sender) = await Next<(object, IActorRef)>(reports);
+                message.Should().Be("hello");
+                sender.Path.ToStringWithAddress().Should().Be(from.Path.ToStringWithAddress(AddressOf(responder)));
             }
             finally
             {

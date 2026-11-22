@@ -106,6 +106,12 @@ namespace Akka.Actor
         /// The temp id, or -1 when the reference was not created from a temp id.
         /// </summary>
         long TempId { get; }
+
+        /// <summary>
+        /// <see langword="true"/> when this ref's <c>Tell</c> never reads the sender it is given, so a
+        /// transport may skip resolving the sender of an incoming message addressed to it.
+        /// </summary>
+        bool IgnoresSender { get; }
     }
 
     /// <summary>
@@ -149,6 +155,10 @@ namespace Akka.Actor
 
         /// <inheritdoc/>
         long ITempActorRef.TempId => _tempId;
+
+        // TellInternal below never reads its sender (an undeliverable message is dead-lettered with this ref
+        // as the sender). Exact type only: a subclass may override TellInternal and use the sender.
+        bool ITempActorRef.IgnoresSender => GetType() == typeof(FutureActorRef<T>);
 
         /// <summary>
         /// The path associated with this one-off actor reference.

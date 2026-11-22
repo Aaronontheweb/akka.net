@@ -337,7 +337,7 @@ namespace Akka.Remote.Tests.Artery
         private static int LiteralWireSize(string? value) =>
             string.IsNullOrEmpty(value) ? 0 : 2 + Encoding.UTF8.GetByteCount(value);
 
-        private static byte[] BuildRawHeader(
+        internal static byte[] BuildRawHeader(
             byte version, byte flags, long originUid, int serializerId,
             uint senderTag, uint recipientTag, uint manifestTag, uint payloadOffset)
         {
@@ -508,7 +508,7 @@ namespace Akka.Remote.Tests.Artery
         public void Should_throw_ArteryEnvelopeException_When_a_temp_record_extends_past_the_payload_offset()
         {
             // The recipient TEMP record needs 16 bytes at the tag offset, but the payload starts after only 8.
-            var header = BuildRawHeader(version: ArteryEnvelopeHeader.CurrentVersion, flags: 0, originUid: 0, serializerId: 0,
+            var header = ArteryEnvelopeCodecSpec.BuildRawHeader(version: ArteryEnvelopeHeader.CurrentVersion, flags: 0, originUid: 0, serializerId: 0,
                 senderTag: 0, recipientTag: ArteryEnvelopeHeader.TempTagKind | HeaderLength, manifestTag: 0, payloadOffset: HeaderLength + 8);
             var frame = new byte[HeaderLength + 8];
             header.CopyTo(frame, 0);
@@ -522,7 +522,7 @@ namespace Akka.Remote.Tests.Artery
         [Fact(DisplayName = "Should_throw_ArteryEnvelopeException_When_a_temp_tag_points_into_the_fixed_header")]
         public void Should_throw_ArteryEnvelopeException_When_a_temp_tag_points_into_the_fixed_header()
         {
-            var header = BuildRawHeader(version: ArteryEnvelopeHeader.CurrentVersion, flags: 0, originUid: 0, serializerId: 0,
+            var header = ArteryEnvelopeCodecSpec.BuildRawHeader(version: ArteryEnvelopeHeader.CurrentVersion, flags: 0, originUid: 0, serializerId: 0,
                 senderTag: ArteryEnvelopeHeader.TempTagKind | 4u, recipientTag: 0, manifestTag: 0, payloadOffset: HeaderLength + 8);
             var frame = new byte[HeaderLength + 8];
             header.CopyTo(frame, 0);
@@ -535,7 +535,7 @@ namespace Akka.Remote.Tests.Artery
         [Fact(DisplayName = "Should_throw_ArteryEnvelopeException_When_a_temp_record_carries_a_negative_id")]
         public void Should_throw_ArteryEnvelopeException_When_a_temp_record_carries_a_negative_id()
         {
-            var header = BuildRawHeader(version: ArteryEnvelopeHeader.CurrentVersion, flags: 0, originUid: 0, serializerId: 0,
+            var header = ArteryEnvelopeCodecSpec.BuildRawHeader(version: ArteryEnvelopeHeader.CurrentVersion, flags: 0, originUid: 0, serializerId: 0,
                 senderTag: ArteryEnvelopeHeader.TempTagKind | HeaderLength, recipientTag: 0, manifestTag: 0, payloadOffset: HeaderLength + 8);
             var frame = new byte[HeaderLength + 8];
             header.CopyTo(frame, 0);
@@ -549,7 +549,7 @@ namespace Akka.Remote.Tests.Artery
         [Fact(DisplayName = "Should_classify_a_non_temp_non_zero_top_byte_as_compressed_When_the_kind_byte_is_not_0x01")]
         public void Should_classify_a_non_temp_non_zero_top_byte_as_compressed_When_the_kind_byte_is_not_0x01()
         {
-            var header = BuildRawHeader(version: ArteryEnvelopeHeader.CurrentVersion, flags: 0, originUid: 0, serializerId: 0,
+            var header = ArteryEnvelopeCodecSpec.BuildRawHeader(version: ArteryEnvelopeHeader.CurrentVersion, flags: 0, originUid: 0, serializerId: 0,
                 senderTag: 0x0200_0000u | 7u, recipientTag: 0x0100_0000u | HeaderLength, manifestTag: 0, payloadOffset: HeaderLength);
 
             var decoded = ArteryEnvelopeCodec.Decode(new ReadOnlySequence<byte>(header));
