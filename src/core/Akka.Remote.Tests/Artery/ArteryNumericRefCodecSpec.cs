@@ -10,10 +10,14 @@
 using System;
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Remote.Artery;
+using Akka.Streams;
+using Akka.Streams.Dsl;
 using Akka.TestKit;
 using Akka.Util;
 using Xunit;
@@ -319,6 +323,145 @@ namespace Akka.Remote.Tests.Artery
             var frame = new byte[payloadOffset];
             header.CopyTo(frame, 0);
             return new ReadOnlySequence<byte>(frame);
+        }
+
+        // ===================== lane key =====================
+
+        [Fact(DisplayName = "Should_pick_the_same_inbound_lane_for_the_numeric_and_literal_forms_of_a_temporary_ref")]
+        public void Should_pick_the_same_inbound_lane_for_the_numeric_and_literal_forms_of_a_temporary_ref()
+        {
+            foreach (var lanes in new[] { 2, 3, 4, 8 })
+            {
+                for (long counter = 1; counter < 500; counter++)
+                {
+                    var literal = $"akka://Sys@127.0.0.1:2552/temp/{Base64Encoding.Base64Encode(counter)}";
+
+                    // The inbound stage picks the lane of a numeric recipient with SelectLane(For(ref)) and of a
+                    // literal one with TrySelectTemporaryLiteral; both must agree.
+                    Assert.True(ArteryLaneKey.TrySelectTemporaryLiteral(literal, lanes, out var fromLiteral), literal);
+                    var numeric = Association.SelectLane(ArteryLaneKey.For(ArteryNumericRef.ForTemporary(99, counter)), lanes);
+                    Assert.Equal(numeric, fromLiteral);
+                }
+            }
+
+            // Not canonical temp literals: stable refs, deeper temp children, a uid fragment, other names.
+            foreach (var path in new[]
+            {
+                "akka://Sys@127.0.0.1:2552/user/temp/a", "akka://Sys@127.0.0.1:2552/temp/a/b", "akka://Sys@127.0.0.1:2552/temp/a#5",
+                "akka://Sys@127.0.0.1:2552/temp/zz-top", "akka://Sys@127.0.0.1:2552/temp/", "akka://Sys@127.0.0.1:2552/user/x",
+                "temp/a", "/temp/a"
+            })
+                Assert.False(ArteryLaneKey.TrySelectTemporaryLiteral(path, 4, out _), path);
+        }
+
+        // ===================== inbound stage =====================
+
+        private static byte[] Preamble() => new byte[] { (byte)'A', (byte)'K', (byte)'K', (byte)'A', (byte)ArteryStreamId.Ordinary };
+
+        private const long PeerUid = 42;
+
+        private (ArteryInboundProcessingStage Stage, ConcurrentQueue<(object Message, string? Recipient, string? Sender, long? RecipientId)> Delivered) CreateStage(int lanes)
+        {
+            var delivered = new ConcurrentQueue<(object, string?, string?, long?)>();
+            var context = new AssociationRegistryInboundContext(new AssociationRegistry(),
+                new UniqueAddress(new Address("akka", "local", "127.0.0.1", 1234), 1), (_, _) => { });
+            context.CompleteHandshake(new UniqueAddress(new Address("akka", "peer", "127.0.0.1", 4321), PeerUid));
+            var stage = new ArteryInboundProcessingStage(65536, 65536, Sys.Serialization, Sys.Scheduler,
+                inboundLanes: lanes, inboundLaneBufferSize: 4, inboundContext: context,
+                dispatchOrdinary: (object message, in InboundWireRefs refs) =>
+                    delivered.Enqueue((message, refs.RecipientPath, refs.ResolveSenderPath(), refs.RecipientRef?.Id)));
+            return (stage, delivered);
+        }
+
+        private async Task<Exception?> RunThroughStage(
+            ArteryInboundProcessingStage stage, ConcurrentQueue<(object Message, string? Recipient, string? Sender, long? RecipientId)> delivered, params byte[][] frames)
+        {
+            var bytes = Preamble().Concat(frames.SelectMany(f => f)).ToArray();
+            var materializer = ActorMaterializer.Create(Sys);
+            try
+            {
+                return await Record.ExceptionAsync(() => Source.Single(new ReadOnlySequence<byte>(bytes)).Via(stage)
+                    .RunWith(Sink.ForEach<IInboundEnvelope>(e => delivered.Enqueue((e.Message, e.RecipientPath, e.SenderPath, e.RecipientRef?.Id))), materializer)
+                    .WaitAsync(TimeSpan.FromSeconds(10)));
+            }
+            finally
+            {
+                materializer.Shutdown();
+            }
+        }
+
+        [Theory(DisplayName = "Should_drop_a_frame_with_a_malformed_numeric_ref_and_keep_delivering_When_lanes_are_off_or_on")]
+        [InlineData(1)]
+        [InlineData(4)]
+        public async Task Should_drop_a_frame_with_a_malformed_numeric_ref_and_keep_delivering(int lanes)
+        {
+            var numeric = ArteryNumericRef.ForTemporary(1, 7);
+            var intoHeader = BuildFrame(PeerUid, new AbsentPart(), new NumericPart(numeric), "bad-offset");
+            BinaryPrimitives.WriteUInt32LittleEndian(intoHeader.AsSpan(FrameLengthFieldLength + 20),
+                ArteryEnvelopeHeader.NumericTagFlag | 4u);
+            var badDefine = BuildFrame(PeerUid, new AbsentPart(), new DefinePart(new ArteryNumericRef(PeerUid, 7), "akka://local/user/x"), "bad-define");
+            BinaryPrimitives.WriteUInt16LittleEndian(badDefine.AsSpan(FrameLengthFieldLength + HeaderLength + 8), 60000);
+            var good = BuildFrame(PeerUid, new AbsentPart(), new NumericPart(numeric), "good-numeric");
+            var literal = BuildFrame(PeerUid, new AbsentPart(), new LiteralPart("akka://local/user/target"), "good-literal");
+
+            var (stage, delivered) = CreateStage(lanes);
+            var failure = await RunThroughStage(stage, delivered, intoHeader, badDefine, good, literal);
+
+            Assert.Null(failure);
+            await AwaitAssertAsync(() => Assert.Equal(2, delivered.Count));
+            var got = delivered.ToArray();
+            Assert.Contains(got, d => (string)d.Message == "good-numeric" && d.RecipientId == numeric.Id);
+            Assert.Contains(got, d => (string)d.Message == "good-literal" && d.RecipientId is null);
+        }
+
+        [Theory(DisplayName = "Should_deliver_through_the_attached_path_When_the_recipient_and_sender_carry_the_define_flag")]
+        [InlineData(1)]
+        [InlineData(4)]
+        public async Task Should_deliver_through_the_attached_path_When_the_recipient_and_sender_carry_the_define_flag(int lanes)
+        {
+            var defined = BuildFrame(PeerUid,
+                new DefinePart(new ArteryNumericRef(PeerUid, 11), "akka://peer@127.0.0.1:4321/user/asker"),
+                new DefinePart(new ArteryNumericRef(1, 12), "akka://local@127.0.0.1:1234/user/target"),
+                "defined");
+            // A plain literal sender: in lane mode it stays undecoded until asked for.
+            var plain = BuildFrame(PeerUid,
+                new LiteralPart("akka://peer@127.0.0.1:4321/user/plain"),
+                new LiteralPart("akka://local@127.0.0.1:1234/user/target"),
+                "plain");
+
+            var (stage, delivered) = CreateStage(lanes);
+            var failure = await RunThroughStage(stage, delivered, defined, plain);
+
+            Assert.Null(failure);
+            await AwaitAssertAsync(() => Assert.Equal(2, delivered.Count));
+            var got = delivered.ToArray();
+            Assert.Contains(got, d => (string)d.Message == "defined"
+                && d.Recipient == "akka://local@127.0.0.1:1234/user/target"
+                && d.Sender == "akka://peer@127.0.0.1:4321/user/asker"
+                && d.RecipientId is null);
+            Assert.Contains(got, d => (string)d.Message == "plain"
+                && d.Recipient == "akka://local@127.0.0.1:1234/user/target"
+                && d.Sender == "akka://peer@127.0.0.1:4321/user/plain");
+        }
+
+        [Theory(DisplayName = "Should_fail_the_connection_once_When_the_peer_speaks_another_envelope_version")]
+        [InlineData(1)]
+        [InlineData(4)]
+        public async Task Should_fail_the_connection_once_When_the_peer_speaks_another_envelope_version(int lanes)
+        {
+            var good = BuildFrame(PeerUid, new AbsentPart(), new LiteralPart("akka://local/user/target"), "before");
+            var oldVersion = BuildFrame(PeerUid, new AbsentPart(), new LiteralPart("akka://local/user/target"), "old-1");
+            oldVersion[FrameLengthFieldLength + ArteryEnvelopeHeader.VersionOffset] = 1;
+            var oldVersion2 = BuildFrame(PeerUid, new AbsentPart(), new LiteralPart("akka://local/user/target"), "old-2");
+            oldVersion2[FrameLengthFieldLength + ArteryEnvelopeHeader.VersionOffset] = 1;
+            var after = BuildFrame(PeerUid, new AbsentPart(), new LiteralPart("akka://local/user/target"), "after");
+
+            var (stage, delivered) = CreateStage(lanes);
+            var failure = await RunThroughStage(stage, delivered, good, oldVersion, oldVersion2, after);
+
+            var envelope = Assert.IsType<ArteryEnvelopeException>(failure);
+            Assert.Equal((byte)1, envelope.ReceivedVersion);
+            Assert.DoesNotContain(delivered.ToArray(), d => (string)d.Message == "after");
         }
 
         // ===================== decoder fuzz =====================
