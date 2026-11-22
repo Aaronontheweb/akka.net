@@ -179,6 +179,12 @@ namespace Akka.Remote.Artery
         /// <see langword="null"/> (the default, and the only value when test-mode is off) disables
         /// the lane-path blackhole check entirely.
         /// </param>
+        /// <param name="pairLaneSelection">
+        /// <see langword="true"/> for <c>lane-selection = sender-recipient</c>: the inbound lane key
+        /// also covers the sender path as it appears on the wire (see <see cref="PairLaneFor"/>).
+        /// <see langword="false"/> (the default) keys on the recipient alone. Only read when
+        /// <paramref name="inboundLanes"/> &gt; 1.
+        /// </param>
         public ArteryInboundProcessingStage(
             int maxFrameLength,
             int maxLargeFrameLength,
