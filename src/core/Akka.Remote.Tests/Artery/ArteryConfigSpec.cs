@@ -113,6 +113,24 @@ namespace Akka.Remote.Tests.Artery
             // TCP input-pipe pause/resume watermarks (mirrors the 1 MiB socket buffers
             // ArteryRemoting.BuildArterySocketOptions pins on every connection).
             settings.TcpPipeBufferSize.Should().Be(1024 * 1024);
+
+            // Outbound write coalescing is off by default.
+            settings.OutboundWriteCoalescing.Should().BeFalse();
+            settings.OutboundWriteCoalescingMaxBytes.Should().Be(64 * 1024);
+        }
+
+        [Fact(DisplayName = "Should_EnableOutboundWriteCoalescing_When_ConfigProvided")]
+        public void Should_EnableOutboundWriteCoalescing_When_ConfigProvided()
+        {
+            var arteryConfig = ConfigurationFactory.ParseString(@"
+                akka.remote.artery.advanced.outbound-write-coalescing = on
+                akka.remote.artery.advanced.outbound-write-coalescing-max-bytes = 128k")
+                .WithFallback(RemoteConfigFactory.Default())
+                .GetConfig("akka.remote.artery");
+
+            var settings = new ArterySettings(arteryConfig);
+            settings.OutboundWriteCoalescing.Should().BeTrue();
+            settings.OutboundWriteCoalescingMaxBytes.Should().Be(128 * 1024);
         }
 
         [Theory(DisplayName = "Should_ThrowConfigurationException_When_ArterySettingIsInvalid")]
@@ -129,6 +147,7 @@ namespace Akka.Remote.Tests.Artery
         [InlineData("akka.remote.artery.advanced.tcp.pipe-buffer-size = 0b")]
         [InlineData("akka.remote.artery.advanced.outbound-message-queue-size = 0")]
         [InlineData("akka.remote.artery.advanced.outbound-control-queue-size = 0")]
+        [InlineData("akka.remote.artery.advanced.outbound-write-coalescing-max-bytes = 0b")]
         public void Should_ThrowConfigurationException_When_ArterySettingIsInvalid(string overrideHocon)
         {
             var arteryConfig = ConfigurationFactory.ParseString(overrideHocon)
