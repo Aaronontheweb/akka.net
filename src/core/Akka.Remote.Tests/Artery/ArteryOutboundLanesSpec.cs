@@ -203,6 +203,51 @@ namespace Akka.Remote.Tests.Artery
             }
         }
 
+        [Theory(DisplayName = "Should_PreservePerRecipientOrder_When_OutboundWriteCoalescingIsOn")]
+        [InlineData(1)]
+        [InlineData(4)]
+        public async Task Should_PreservePerRecipientOrder_When_OutboundWriteCoalescingIsOn(int lanes)
+        {
+            const int recipientCount = 16;
+            const int perRecipientCount = 200;
+
+            var config = ConfigurationFactory.ParseString("""
+                akka.remote.artery.advanced.outbound-write-coalescing = on
+                akka.remote.artery.advanced.outbound-write-coalescing-max-bytes = 8k
+                """).WithFallback(ArteryConfig(lanes));
+            var systemA = ActorSystem.Create("ArteryCoalescingOrderingA", config);
+            var systemB = ActorSystem.Create("ArteryCoalescingOrderingB", config);
+            try
+            {
+                var refs = new IActorRef[recipientCount];
+                for (var i = 0; i < recipientCount; i++)
+                {
+                    systemB.ActorOf(Props.Create(() => new OrderRecorder()), $"recorder-{i}");
+                    refs[i] = await systemA.ActorSelection(SelectionPath(systemB, $"recorder-{i}")).ResolveOne(TimeSpan.FromSeconds(10));
+                }
+
+                var senderTasks = refs.Select(recipient => Task.Run(() =>
+                {
+                    for (var m = 0; m < perRecipientCount; m++)
+                        recipient.Tell(m.ToString(), ActorRefs.NoSender);
+                })).ToArray();
+                await Task.WhenAll(senderTasks);
+
+                foreach (var recipient in refs)
+                {
+                    var probe = CreateTestProbe(systemA);
+                    recipient.Tell(GetReceived.Instance, probe.Ref);
+                    var received = await probe.ExpectMsgAsync<string[]>(TimeSpan.FromSeconds(20));
+                    received.Should().Equal(Enumerable.Range(0, perRecipientCount).Select(m => m.ToString()));
+                }
+            }
+            finally
+            {
+                await systemA.Terminate().AwaitWithTimeout(15.Seconds());
+                await systemB.Terminate().AwaitWithTimeout(15.Seconds());
+            }
+        }
+
         // ----------------------------------------------------------------------------------
         // Test 2: lane selection is cached per RemoteActorRef; the SAME recipient always resolves
         // to the SAME lane; DISTINCT recipients spread across lanes.
