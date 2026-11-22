@@ -773,7 +773,7 @@ namespace Akka.Remote.Artery
             /// </summary>
             private static bool TrySpinRead(ChannelReader<LaneWorkItem> reader, int spinIterations, out LaneWorkItem item)
             {
-                var spinner = new SpinWait();
+                var spinner = new System.Threading.SpinWait();
                 for (var i = 0; i < spinIterations; i++)
                 {
                     if (reader.Completion.IsCompleted)
