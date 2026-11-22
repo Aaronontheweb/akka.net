@@ -161,19 +161,34 @@ namespace Akka.Actor
             }
 
             var future = provider.CreateFutureRef(result);
-            var path = future.Path;
+
+            // A ref created from a numeric temp id is registered by that id, so neither its path nor its
+            // name is ever formatted on the Ask path -- but only by one of the framework's own providers. Any
+            // other provider (including a subclass of a stock one, which may re-implement the public
+            // registration members), and any other ref, goes through the public path-based API as before.
+            var registry = future is ITempActorRef { TempId: >= 0 } && provider is ITempIdRegistry { UsesStockRegistration: true } stock
+                ? stock
+                : null;
+            var tempId = registry is null ? -1L : ((ITempActorRef)future).TempId;
+            var path = registry is null ? future.Path : null;
 
             try
             {
                 // Register before attaching cleanup: a pre-canceled task can run it immediately.
-                provider.RegisterTempActor(future, path);
+                if (registry is not null)
+                    registry.RegisterTempActor(future, tempId);
+                else
+                    provider.RegisterTempActor(future, path);
             }
             finally
             {
                 // Keep cleanup attached even if temporary registration throws.
                 _ = result.Task.ContinueWith(_ =>
                 {
-                    provider.UnregisterTempActor(path);
+                    if (registry is not null)
+                        registry.UnregisterTempActor(tempId);
+                    else
+                        provider.UnregisterTempActor(path);
 
                     ctr1?.Dispose();
                     ctr2?.Dispose();

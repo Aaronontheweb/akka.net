@@ -160,9 +160,47 @@ namespace Akka.Actor
     }
 
     /// <summary>
+    /// INTERNAL API.
+    ///
+    /// Numeric view of a provider's temp container: refs created by <see cref="IActorRefProvider.CreateFutureRef{T}"/>
+    /// carry the counter value that names them, and can be registered, removed and looked up by
+    /// that value without formatting or parsing their path.
+    /// </summary>
+    internal interface ITempIdRegistry
+    {
+        /// <summary>Registers <paramref name="actorRef"/> under temp id <paramref name="tempId"/>.</summary>
+        void RegisterTempActor(IInternalActorRef actorRef, long tempId);
+
+        /// <summary>Removes the temp actor registered under <paramref name="tempId"/>.</summary>
+        void UnregisterTempActor(long tempId);
+
+        /// <summary>
+        /// Looks up the temp actor registered under <paramref name="tempId"/>, whether it was registered
+        /// by id or by its canonical path name.
+        /// </summary>
+        bool TryGetTempActor(long tempId, out IInternalActorRef actorRef);
+
+        /// <summary>
+        /// <see langword="true"/> only for the framework's own providers, exactly (no derived type): only then are
+        /// the public <see cref="IActorRefProvider.RegisterTempActor"/>, <see cref="IActorRefProvider.UnregisterTempActor"/>
+        /// and remote-ref factory members known to do nothing but what the numeric registry does, so the numeric
+        /// shortcuts may replace them. For any other provider the public members are used, as they always were.
+        /// </summary>
+        bool UsesStockRegistration { get; }
+
+        /// <summary>
+        /// <see langword="true"/> when nothing but the framework's own plain Ask future has ever been registered
+        /// under the canonical temp name of <paramref name="tempId"/> (a losing registration counts). For such an
+        /// id, resolving the path by name can only yield that future or nothing, never a ref the resolve cache
+        /// would hold.
+        /// </summary>
+        bool IsPlainOnlyTempId(long tempId);
+    }
+
+    /// <summary>
     ///     Class LocalActorRefProvider. This class cannot be inherited.
     /// </summary>
-    public sealed class LocalActorRefProvider : IActorRefProvider
+    public sealed class LocalActorRefProvider : IActorRefProvider, ITempIdRegistry
     {
         private readonly Settings _settings;
         private readonly EventStream _eventStream;
@@ -405,12 +443,36 @@ namespace Akka.Actor
         /// <inheritdoc cref="IActorRefProvider.CreateFutureRef{T}"/>
         public FutureActorRef<T> CreateFutureRef<T>(TaskCompletionSource<T> tcs)
         {
-            //create a new tempcontainer path
-            var path = TempPath();
-
-            var future = new FutureActorRef<T>(tcs, path, this);
+            // The id is drawn from the same counter as TempPath(); the path is built lazily.
+            var future = new FutureActorRef<T>(tcs, _tempNumber.GetAndIncrement(), _tempNode, this);
             return future;
         }
+
+        /// <inheritdoc/>
+        void ITempIdRegistry.RegisterTempActor(IInternalActorRef actorRef, long tempId)
+        {
+            _tempContainer.AddChild(tempId, actorRef);
+        }
+
+        /// <inheritdoc/>
+        void ITempIdRegistry.UnregisterTempActor(long tempId)
+        {
+            _tempContainer.RemoveChild(tempId);
+        }
+
+        /// <inheritdoc/>
+        bool ITempIdRegistry.TryGetTempActor(long tempId, out IInternalActorRef actorRef)
+        {
+            // The container has one namespace: a number and its canonical name are the same key.
+            return _tempContainer.TryGetChild(tempId, out actorRef);
+        }
+
+        /// <inheritdoc/>
+        bool ITempIdRegistry.IsPlainOnlyTempId(long tempId) =>
+            !_rootGuardian.TempContainerWasReplaced && _tempContainer.IsPlainOnlyId(tempId);
+
+        /// <inheritdoc/>
+        bool ITempIdRegistry.UsesStockRegistration => true;
 
         /// <summary>
         /// Initializes the ActorRefProvider
