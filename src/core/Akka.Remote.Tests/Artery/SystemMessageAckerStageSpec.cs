@@ -224,7 +224,7 @@ namespace Akka.Remote.Tests.Artery
 
             await pub2.SendNextAsync(Envelope(Sme(3L, peer, "m3"), peer.Uid));
             ((TestSystemMessage)(await sub2.ExpectNextAsync(TimeSpan.FromSeconds(3))).Message).Name.Should().Be("m3");
-            sentControl.OfType<SysNack>().Should().BeEmpty();
+            sentControl.Select(x => x.Message).OfType<SysNack>().Should().BeEmpty();
         }
 
         [Fact(DisplayName = "Should_DeliverReplayedSeqOneOnce_When_NewStageIsMaterialized")]
@@ -242,7 +242,7 @@ namespace Akka.Remote.Tests.Artery
             await sub2.RequestAsync(1);
             await pub2.SendNextAsync(Envelope(Sme(1L, peer, "m1"), peer.Uid)); // the sender's unacked window, replayed
             await sub2.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(300));
-            sentControl.OfType<SysAck>().Select(a => a.SeqNo).Should().Equal(1L, 1L);
+            sentControl.Select(x => x.Message).OfType<SysAck>().Select(a => a.SeqNo).Should().Equal(1L, 1L);
         }
 
         [Fact(DisplayName = "Should_StartAtSeqOneAndDropOldUid_When_PeerRestartsWithNewUid")]
