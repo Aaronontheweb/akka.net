@@ -107,6 +107,18 @@ namespace RemotePingPong
         // OneWayReceiverActor.
         private static bool _onewayMode;
 
+        // Diagnostic modes (run command only; both default off, leaving every existing mode untouched).
+        // "--funnel": every client actor on system A sends to ONE shared echo actor on system B.
+        // "--ask": clients drive request/reply with Ask<T> (window Asks in flight) instead of Tell.
+        private static bool _funnelMode;
+        private static bool _askMode;
+        private static readonly TimeSpan AskTimeout = TimeSpan.FromSeconds(30);
+        // Total Ask failures/timeouts/shortfalls over the invocation; nonzero makes the process exit 1.
+        private static long _askErrorsTotal;
+
+        private static string DiagnosticModeName =>
+            _askMode ? (_funnelMode ? "ask+funnel" : "ask") : _funnelMode ? "funnel" : "pingpong";
+
         // Number of messages used to "prime the pump" for each client before awaiting completion -
         // i.e. the in-flight window size. Defaults to 50 (the historical hard-coded value) but can
         // be overridden via the "--window N" option.
@@ -632,6 +644,17 @@ namespace RemotePingPong
                               "one-way transport throughput (see OneWaySenderActor/OneWayReceiverActor)."
             };
 
+            var funnelOption = new Option<bool>("--funnel")
+            {
+                Description = "Diagnostic: all clients send to ONE shared echo actor on the remote system " +
+                              "(a single remote recipient) instead of one echo per client. Replies still go to each client."
+            };
+            var askOption = new Option<bool>("--ask")
+            {
+                Description = "Diagnostic: clients use Ask<T> (--window Asks in flight per client, 30 s timeout) " +
+                              "instead of Tell with an explicit reply-to. Failures are reported and exit non-zero."
+            };
+
             var validateSequenceOption = new Option<bool>("--validate-sequence")
             {
                 Description = "Loopback real V2 only: validate ordered unique payloads, cumulative credit and a final delivery fence. " +
@@ -803,6 +826,17 @@ namespace RemotePingPong
             runCommand.Options.Add(serializerOption);
             runCommand.Options.Add(validateSequenceOption);
             runCommand.Options.Add(rttIntervalOption);
+            runCommand.Options.Add(funnelOption);
+            runCommand.Options.Add(askOption);
+            runCommand.Validators.Add(result =>
+            {
+                if (!result.GetValue(funnelOption) && !result.GetValue(askOption))
+                    return;
+                if (result.GetValue(onewayOption) || result.GetValue(validateSequenceOption)
+                    || result.GetValue(rttIntervalOption).HasValue)
+                    result.AddError("--funnel/--ask apply to plain ping-pong only; they cannot be combined with " +
+                                    "--oneway, --validate-sequence or --rtt-interval-ms.");
+            });
             runCommand.Validators.Add(result =>
             {
                 var interval = result.GetValue(rttIntervalOption);
@@ -845,7 +879,9 @@ namespace RemotePingPong
                 parseResult.GetValue(timesOption),
                 parseResult.GetValue(payloadOption)!,
                 parseResult.GetValue(serializerOption), parseResult.GetValue(validateSequenceOption),
-                parseResult.GetValue(rttIntervalOption), cancellationToken));
+                parseResult.GetValue(rttIntervalOption),
+                funnel: parseResult.GetValue(funnelOption), ask: parseResult.GetValue(askOption),
+                cancellationToken: cancellationToken));
 
             var serverHostOption = new Option<string>("--host")
             {
@@ -973,8 +1009,10 @@ namespace RemotePingPong
         private static async Task<int> RunLoopbackAsync(BenchmarkTransport transport, bool oneway, int window, int? clients,
             string? iobuf, long? msgs, int? qsize, int? inboundLanes, int? outboundLanes, uint times,
             string payload, string? serializer, bool validateSequence = false, int? rttIntervalMs = null,
-            CancellationToken cancellationToken = default)
+            bool funnel = false, bool ask = false, CancellationToken cancellationToken = default)
         {
+            _funnelMode = funnel;
+            _askMode = ask;
             _validateSequence = validateSequence;
             _rttIntervalMs = rttIntervalMs;
             _transport = transport;
@@ -999,7 +1037,7 @@ namespace RemotePingPong
 
             ResolveQueueSize();
             await Start(times, cancellationToken);
-            return 0;
+            return Interlocked.Read(ref _askErrorsTotal) > 0 ? 1 : 0;
         }
 
         private static async Task<int> RunServerModeAsync(BenchmarkTransport transport, bool oneway, int window, int? clients,
@@ -1075,6 +1113,8 @@ namespace RemotePingPong
             Console.WriteLine("Transport:                         {0}", _transport.DisplayName);
             _transport.PrintSecurity();
             Console.WriteLine("Mode:                              {0}", _onewayMode ? "one-way" : "ping-pong");
+            if (_funnelMode || _askMode)
+                Console.WriteLine("Diagnostic mode:                   {0}", DiagnosticModeName);
             if (_rttIntervalMs.HasValue)
                 Console.WriteLine("Scheduled RTT interval:            {0} ms (release lateness included in scheduled-to-echo latency)", _rttIntervalMs.Value);
             Console.WriteLine("OSVersion:                         {0}", Environment.OSVersion);
@@ -1429,6 +1469,8 @@ namespace RemotePingPong
 
             var canStart = system1.ActorOf(Props.Create(() => new AllStartedActor()), "canStart");
             var validationPhase = Guid.NewGuid();
+            var askClients = new List<Func<Task<long>>>();
+            var askStats = new AskStats();
 
             if (_validateSequence)
             {
@@ -1497,13 +1539,32 @@ namespace RemotePingPong
                     canStart.Tell(sender);
                 }
             }
-            else
+            else if (_askMode)
             {
+                // Ask clients are plain async loops (see RunAskClient), not actors: no client mailbox hop
+                // and no PipeTo per reply, so the driver adds only the Ask's own temp actor + task.
                 var echoProps = Props.Create(() => new EchoActor()).WithDeploy(new Deploy(new RemoteScope(system2Address)));
+                var sharedEcho = _funnelMode ? system1.ActorOf(echoProps, "echo") : null;
 
                 for (var i = 0; i < numberOfClients; i++)
                 {
-                    var echo = system1.ActorOf(echoProps, "echo" + i);
+                    var echo = sharedEcho ?? system1.ActorOf(echoProps, "echo" + i);
+                    if (sharedEcho is null || i == 0)
+                    {
+                        serverSideActors.Add(echo);
+                        canStart.Tell(echo);
+                    }
+                    askClients.Add(() => RunAskClient(echo, numberOfRepeats, windowSize, _payloadInstance, askStats));
+                }
+            }
+            else
+            {
+                var echoProps = Props.Create(() => new EchoActor()).WithDeploy(new Deploy(new RemoteScope(system2Address)));
+                var sharedEcho = _funnelMode ? system1.ActorOf(echoProps, "echo") : null;
+
+                for (var i = 0; i < numberOfClients; i++)
+                {
+                    var echo = sharedEcho ?? system1.ActorOf(echoProps, "echo" + i);
                     var ts = new TaskCompletionSource<long>();
                     tasks.Add(ts.Task);
                     var receiver =
@@ -1512,9 +1573,11 @@ namespace RemotePingPong
                             "benchmark" + i);
 
                     primeTargets.Add(receiver);
-                    serverSideActors.Add(echo);
-
-                    canStart.Tell(echo);
+                    if (sharedEcho is null || i == 0)
+                    {
+                        serverSideActors.Add(echo);
+                        canStart.Tell(echo);
+                    }
                     canStart.Tell(receiver);
                 }
             }
@@ -1551,7 +1614,8 @@ namespace RemotePingPong
                 Console.WriteLine("Recipient lane occupancy (send):   {0}",
                     string.Join(",", Enumerable.Range(0, lanes).Select(lane => sendRecipients.GetValueOrDefault(lane))));
                 Console.WriteLine("Recipient lane occupancy (reply):  {0}",
-                    string.Join(",", Enumerable.Range(0, lanes).Select(lane => replyRecipients.GetValueOrDefault(lane))));
+                    _askMode ? "n/a (ask: per-request temp actors)"
+                        : string.Join(",", Enumerable.Range(0, lanes).Select(lane => replyRecipients.GetValueOrDefault(lane))));
             }
 
             var startThreads = Process.GetCurrentProcess().Threads.Count;
@@ -1573,6 +1637,14 @@ namespace RemotePingPong
                 primeTargets.ForEach(client => client.Tell(new PacedBenchmark.Run(validationPhase, origin)));
                 releases = await PacedBenchmark.ReleaseAsync(primeTargets, validationPhase, origin, actualReleases,
                     _rttIntervalMs.Value, pacedFinished!, firstPacedFailure!, cancellationToken);
+            }
+            else if (_askMode)
+            {
+                foreach (var start in askClients)
+                {
+                    var client = start;
+                    tasks.Add(Task.Run(client));
+                }
             }
             else if (_onewayMode || _validateSequence)
             {
@@ -1697,6 +1769,25 @@ namespace RemotePingPong
                 Console.ForegroundColor = prevColor;
             }
 
+            if (_askMode)
+            {
+                var expected = numberOfClients * numberOfRepeats;
+                var completed = completedCounts.Sum();
+                if (askStats.Errors > 0 || completed != expected)
+                {
+                    Interlocked.Add(ref _askErrorsTotal, Math.Max(1, askStats.Errors));
+                    var prevColor = Console.ForegroundColor;
+                    Console.ForegroundColor = ConsoleColor.Magenta;
+                    Console.WriteLine("  *** ERROR: {0} Ask failure(s)/timeout(s); completed {1} of {2} requests; first error: {3} ***",
+                        askStats.Errors, completed, expected, askStats.FirstError ?? "(none)");
+                    Console.ForegroundColor = prevColor;
+                }
+                else
+                {
+                    Console.WriteLine("  Ask errors: 0 (completed {0} of {1} requests)", completed, expected);
+                }
+            }
+
             if (resent > 0)
             {
                 // Same "own line, own color" treatment as the drop warning above, and for the same
@@ -1713,6 +1804,57 @@ namespace RemotePingPong
             }
 
             return (redCount <= 3, bestThroughput, redCount);
+        }
+
+        private sealed class AskStats
+        {
+            private long _errors;
+            private string? _first;
+
+            public long Errors => Interlocked.Read(ref _errors);
+            public string? FirstError => Volatile.Read(ref _first);
+
+            public void Record(Exception ex)
+            {
+                Interlocked.Increment(ref _errors);
+                Interlocked.CompareExchange(ref _first, ex.GetType().Name + ": " + ex.Message, null);
+            }
+        }
+
+        /// <summary>
+        /// One Ask client: <paramref name="window"/> concurrent async loops, each awaiting one Ask at a
+        /// time and issuing the next as soon as it completes, so exactly <paramref name="window"/>
+        /// requests are in flight until the shared issue counter passes <paramref name="total"/>.
+        /// A failed or timed-out Ask is recorded and ends that loop (never silently dropped).
+        /// Returns the number of completed round trips.
+        /// </summary>
+        private static async Task<long> RunAskClient(IActorRef destination, long total, int window, object payload, AskStats stats)
+        {
+            long issued = 0;
+            long completed = 0;
+
+            async Task Loop()
+            {
+                while (Interlocked.Increment(ref issued) <= total)
+                {
+                    try
+                    {
+                        await destination.Ask<object>(payload, AskTimeout);
+                        Interlocked.Increment(ref completed);
+                    }
+                    catch (Exception ex)
+                    {
+                        stats.Record(ex);
+                        return;
+                    }
+                }
+            }
+
+            var loops = new Task[window];
+            for (var i = 0; i < window; i++)
+                loops[i] = Task.Run(Loop);
+            await Task.WhenAll(loops);
+            return Interlocked.Read(ref completed);
         }
 
         /// <summary>

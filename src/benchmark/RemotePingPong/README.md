@@ -165,6 +165,32 @@ If a window goes missing, the sender blind-resends the last batch after a 5-seco
 60 attempts before failing the rep. Any resend makes that rep's numbers suspect, and it prints a
 magenta warning line saying so — on a healthy transport that line never appears.
 
+### `--funnel` and `--ask` (diagnostics, `run` only)
+
+Two switches that separate "one remote recipient" from "Ask cost". Without them every mode is unchanged.
+They apply to plain ping-pong and are rejected with `--oneway`, `--validate-sequence` and `--rtt-interval-ms`.
+A `Diagnostic mode:` header line (`funnel`, `ask`, `ask+funnel`) is printed only when one is given.
+
+- `--funnel`: all N client actors send to ONE shared echo actor on the remote system, instead of one echo
+  per client. The echo replies to `Sender`, so replies still fan out to N client actors.
+- `--ask`: each client keeps `--window` `Ask<object>` calls in flight (30 s timeout) to its echo actor
+  (the single shared one with `--funnel`) and issues a new Ask as each completes, until `--msgs` requests
+  per client are done. Clients are `--window` async loops per client rather than actors, so the driver adds
+  no mailbox hop or `PipeTo` per reply. Any failure or timeout is reported on a magenta `*** ERROR` line
+  under the row and the process exits non-zero.
+
+Counted unit: `Total [msg]` is `clients x msgs x 2` in default ping-pong, `--funnel`, `--ask` and
+`--ask --funnel` alike. One counted unit is one message crossing the wire in one direction. A default-mode
+request plus its echo is 2 units; an Ask request plus its reply is 2 units. The modes are therefore directly
+comparable, with the caveat that Ask additionally allocates a temporary actor and a task per request.
+
+```bash
+dotnet RemotePingPong.dll run --artery --clients 25 --msgs 100000            # pingpong
+dotnet RemotePingPong.dll run --artery --clients 25 --msgs 100000 --funnel   # funnel
+dotnet RemotePingPong.dll run --artery --clients 25 --msgs 100000 --ask      # ask
+dotnet RemotePingPong.dll run --artery --clients 25 --msgs 100000 --ask --funnel
+```
+
 ### `--window N`
 
 How many messages are in flight per client before the harness waits for completion — "priming the
