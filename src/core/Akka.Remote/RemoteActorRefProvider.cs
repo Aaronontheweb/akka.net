@@ -270,6 +270,9 @@ namespace Akka.Remote
             return ((ITempIdRegistry)_local).TryGetTempActor(tempId, out actorRef);
         }
 
+        /// <inheritdoc/>
+        bool ITempIdRegistry.OnlyPlainFuturesEverRegistered => ((ITempIdRegistry)_local).OnlyPlainFuturesEverRegistered;
+
         /// <summary>
         /// INTERNAL API. The wrapped local provider, whose temp refs this system owns.
         /// </summary>

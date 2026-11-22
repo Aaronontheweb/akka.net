@@ -108,10 +108,12 @@ namespace Akka.Actor
         long TempId { get; }
 
         /// <summary>
-        /// <see langword="true"/> when this ref's <c>Tell</c> never reads the sender it is given, so a
-        /// transport may skip resolving the sender of an incoming message addressed to it.
+        /// <see langword="true"/> only for exactly the framework's own <see cref="FutureActorRef{T}"/> (no
+        /// subclass). Such a ref is its own <c>GetChild</c> of an empty tail, is never cached by the receive-side
+        /// resolve cache, and its <c>Tell</c> never reads the sender it is given, so a transport may take
+        /// shortcuts for it that it may not take for any other ref.
         /// </summary>
-        bool IgnoresSender { get; }
+        bool IsPlainFuture { get; }
     }
 
     /// <summary>
@@ -156,9 +158,8 @@ namespace Akka.Actor
         /// <inheritdoc/>
         long ITempActorRef.TempId => _tempId;
 
-        // TellInternal below never reads its sender (an undeliverable message is dead-lettered with this ref
-        // as the sender). Exact type only: a subclass may override TellInternal and use the sender.
-        bool ITempActorRef.IgnoresSender => GetType() == typeof(FutureActorRef<T>);
+        // Exact type only: a subclass may override TellInternal (and use the sender), GetChild, or Path.
+        bool ITempActorRef.IsPlainFuture => GetType() == typeof(FutureActorRef<T>);
 
         /// <summary>
         /// The path associated with this one-off actor reference.
@@ -852,9 +853,15 @@ namespace Akka.Actor
 
         private readonly ConcurrentDictionary<string, IInternalActorRef> _children = new();
 
-        // Secondary index for children registered by temp id (see AddChild(long, ...)); such children
-        // are not in _children, but remain reachable by their canonical Base64 name.
+        // ONE namespace keyed by child name. A name that is the canonical Base64 encoding of a non-negative
+        // long (every temp name) is keyed by that number in _numericChildren, whichever form it was registered
+        // or is looked up by -- so a number and its canonical name are the same key, with one first-wins
+        // incumbent and a single entry to remove. Every other name is keyed by string in _children.
         private readonly ConcurrentDictionary<long, IInternalActorRef> _numericChildren = new();
+
+        // False for good once any child other than the framework's own plain Ask future has been registered:
+        // such a child may resolve to a ref that the receive-side resolve cache would cache under its path.
+        private volatile bool _onlyPlainFutures = true;
 
         /// <summary>
         /// Initializes a container with its provider, actor path, parent reference, and logger.
@@ -911,6 +918,9 @@ namespace Akka.Actor
         /// <returns><c>true</c> if a child with that name is registered; otherwise, <c>false</c>.</returns>
         protected bool TryGetChild(string name, out IInternalActorRef child)
         {
+            if (Base64Encoding.TryBase64DecodeLong(name.AsSpan(), out var id))
+                return _numericChildren.TryGetValue(id, out child);
+
             return _children.TryGetValue(name, out child);
         }
 
@@ -921,6 +931,13 @@ namespace Akka.Actor
         /// <param name="actor">The child reference to register.</param>
         public void AddChild(string name, IInternalActorRef actor)
         {
+            NoteRegistered(actor);
+            if (Base64Encoding.TryBase64DecodeLong(name.AsSpan(), out var id))
+            {
+                AddNumeric(id, actor, name);
+                return;
+            }
+
             _children.AddOrUpdate(name, actor, (_, v) =>
             {
                 Log.Warning("{0} replacing child {1} ({2} -> {3})", name, actor, v, actor);
@@ -929,16 +946,37 @@ namespace Akka.Actor
         }
 
         /// <summary>
-        /// INTERNAL API. Registers a child under the numeric id whose canonical Base64 encoding is its name.
+        /// INTERNAL API. Registers a child under the number whose canonical Base64 encoding is its name. Same
+        /// first-wins rule as <see cref="AddChild(string, IInternalActorRef)"/> for that name.
         /// </summary>
         internal void AddChild(long id, IInternalActorRef actor)
         {
+            NoteRegistered(actor);
+            AddNumeric(id, actor, null);
+        }
+
+        private void AddNumeric(long id, IInternalActorRef actor, string name)
+        {
             _numericChildren.AddOrUpdate(id, actor, (_, v) =>
             {
-                Log.Warning("{0} replacing child {1} ({2} -> {3})", id, actor, v, actor);
+                Log.Warning("{0} replacing child {1} ({2} -> {3})", name ?? id.Base64Encode(), actor, v, actor);
                 return v;
             });
         }
+
+        private void NoteRegistered(IInternalActorRef actor)
+        {
+            if (_onlyPlainFutures && !(actor is ITempActorRef { IsPlainFuture: true }))
+                _onlyPlainFutures = false;
+        }
+
+        /// <summary>
+        /// INTERNAL API. <see langword="true"/> until any child other than the framework's own plain Ask future
+        /// (exactly <see cref="FutureActorRef{T}"/>) has ever been registered here. While it holds, no path
+        /// under this container can resolve to a ref the resolve cache would hold, and every child's
+        /// <c>GetChild</c> of an empty tail is itself.
+        /// </summary>
+        internal bool OnlyPlainFuturesEverRegistered => _onlyPlainFutures;
 
         /// <summary>
         /// INTERNAL API. Removes the child registered under a numeric id.
@@ -952,24 +990,7 @@ namespace Akka.Actor
         }
 
         /// <summary>
-        /// INTERNAL API. Removes the child registered under <paramref name="name"/>, whether it was registered
-        /// by that name or by the number the canonical Base64 name encodes. Returns whether one was removed.
-        /// </summary>
-        internal bool TryRemoveChildByAnyKey(string name)
-        {
-            if (Base64Encoding.TryBase64DecodeLong(name.AsSpan(), out var id) && _numericChildren.TryRemove(id, out _))
-                return true;
-
-            return _children.TryRemove(name, out _);
-        }
-
-        /// <summary>
-        /// INTERNAL API. Looks up a child registered under a string name.
-        /// </summary>
-        internal bool TryGetChildByName(string name, out IInternalActorRef child) => _children.TryGetValue(name, out child);
-
-        /// <summary>
-        /// INTERNAL API. Looks up a child registered under a numeric id.
+        /// INTERNAL API. Looks up a child registered under a numeric id (equivalently, its canonical name).
         /// </summary>
         internal bool TryGetChild(long id, out IInternalActorRef child) => _numericChildren.TryGetValue(id, out child);
 
@@ -979,12 +1000,16 @@ namespace Akka.Actor
         /// <param name="name">The name of the child to remove.</param>
         public void RemoveChild(string name)
         {
-            IInternalActorRef tmp;
-            if (!_children.TryRemove(name, out tmp))
+            if (!TryRemoveByName(name))
             {
                 Log.Debug("{0} trying to remove non-child {1}", Path, name);
             }
         }
+
+        private bool TryRemoveByName(string name) =>
+            Base64Encoding.TryBase64DecodeLong(name.AsSpan(), out var id)
+                ? _numericChildren.TryRemove(id, out _)
+                : _children.TryRemove(name, out _);
 
         /// <summary>
         /// Removes a child by name. The child argument is retained for compatibility and is not used to verify identity.
@@ -993,8 +1018,7 @@ namespace Akka.Actor
         /// <param name="child">The child reference supplied by the caller; removal is performed by name.</param>
         public void RemoveChild(string name, IActorRef child)
         {
-            IInternalActorRef tmp;
-            if (!_children.TryRemove(name, out tmp))
+            if (!TryRemoveByName(name))
             {
                 Log.Debug("{0} trying to remove non-child {1}", Path, name);
             }
@@ -1030,14 +1054,9 @@ override def getChild(name: Iterator[String]): InternalActorRef = {
             var firstName = name[0];
             if (string.IsNullOrEmpty(firstName))
                 return this;
-            // Lookup order: the container's children are overwhelmingly Ask futures, registered by number, and
-            // their names are canonical base64 counters, so decode the name (no locks, no allocation) and try the
-            // numeric table first; only a name that is not such a counter, or is not registered by number, falls
-            // through to the name-keyed table. No emptiness guards: each is one dictionary lookup.
-            if (Base64Encoding.TryBase64DecodeLong(firstName.AsSpan(), out var id)
-                && _numericChildren.TryGetValue(id, out var numericChild))
-                return numericChild.GetChild(name.NoCopySlice(1));
-            if (_children.TryGetValue(firstName, out var child))
+            // One namespace: a canonical Base64 counter name is keyed by its number (the common case, an Ask
+            // future: one decode, no locks, no allocation, one lookup); any other name is keyed by string.
+            if (TryGetChild(firstName, out var child))
                 return child.GetChild(name.NoCopySlice(1));
             return ActorRefs.Nobody;
         }

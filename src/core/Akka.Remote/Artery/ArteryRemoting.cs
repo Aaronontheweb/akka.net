@@ -1206,7 +1206,17 @@ namespace Akka.Remote.Artery
                 return;
             }
 
-            var recipientPath = refs.RecipientPath!;
+            DispatchToPath(message, refs.RecipientPath!, in refs);
+        }
+
+        /// <summary>
+        /// Delivers to a recipient named by its path: resolves it through the provider (path cache, resolve
+        /// cache, the container's <c>GetChild</c> of an empty tail, the nobody check) and <c>Tell</c>s it. The
+        /// literal form of every recipient takes this route, and so does the numeric form whenever it cannot
+        /// be proven identical by a shortcut.
+        /// </summary>
+        private void DispatchToPath(object message, string recipientPath, in InboundWireRefs refs)
+        {
             var recipient = Provider.ResolveActorRefWithLocalAddress(recipientPath, DefaultAddress);
 
             // Defensive-only safety branch mirroring DispatchInbound's ISystemMessage handling
@@ -1258,12 +1268,18 @@ namespace Akka.Remote.Artery
         }
 
         /// <summary>
-        /// The sender to deliver with. A recipient that never reads its sender (the promise behind an Ask) gets
-        /// dead letters -- the value used for a frame with no sender -- so the sender is not parsed and no ref is
-        /// allocated for it. Every other recipient gets the resolved sender.
+        /// The sender to deliver with. A recipient that never reads its sender (exactly the framework's plain Ask
+        /// future) gets dead letters -- the value used for a frame with no sender -- so the sender is not parsed
+        /// and no ref is allocated for it. Every other recipient gets the resolved sender.
         /// </summary>
+        /// <remarks>
+        /// INTENTIONAL BEHAVIOUR DIFFERENCE from resolving the sender first: a malformed or unresolvable sender
+        /// path on a frame addressed to a plain Ask future no longer drops or throws; the reply is delivered and
+        /// completes the Ask. It applies only to refs proven to ignore the sender (exact type), never to a
+        /// custom ref, and equally to the literal and the numeric form.
+        /// </remarks>
         private IActorRef SenderFor(IActorRef recipient, in InboundWireRefs refs) =>
-            recipient is ITempActorRef { IgnoresSender: true } ? System.DeadLetters : ResolveInboundSender(refs);
+            recipient is ITempActorRef { IsPlainFuture: true } ? System.DeadLetters : ResolveInboundSender(refs);
 
         /// <summary>
         /// Delivers a message whose recipient arrived as a numeric record. Temporary-ref ids are resolved
@@ -1302,19 +1318,41 @@ namespace Akka.Remote.Artery
                 return;
             }
 
-            if (((ITempIdRegistry)Provider).TryGetTempActor(recipient.TemporaryCounter, out var target))
+            var counter = recipient.TemporaryCounter;
+            var registry = (ITempIdRegistry)Provider;
+
+            // Shortcut, taken only when it is provably what the literal form of the same path does. While nothing
+            // but the framework's own plain Ask future has ever been registered in the temp container, resolving
+            // /temp/<name> by path can only find that future or nothing: (1) the resolve cache never holds an
+            // entry for such a path (a plain future is not cacheable and a failed resolve is an uncacheable empty
+            // ref), so there is no stale winner to honour; (2) the container is one namespace keyed by name, so
+            // the number finds the same incumbent the path would; (3) a plain future is its own GetChild of an
+            // empty tail and is not nobody, so the traversal ends on it; (4) the literal route then Tells the
+            // resolved ref, as here. A completed or timed-out Ask is the "nothing" case: the literal route
+            // dead-letters against an empty ref at that same path, which is what is built below.
+            if (registry.OnlyPlainFuturesEverRegistered)
             {
-                target.Tell(message, SenderFor(target, refs));
-                return;
+                if (!registry.TryGetTempActor(counter, out var target))
+                {
+                    new EmptyLocalActorRef(Provider, Provider.RootPath / "temp" / counter.Base64Encode(), System.EventStream)
+                        .Tell(message, ResolveInboundSender(refs));
+                    return;
+                }
+
+                if (target is ITempActorRef { IsPlainFuture: true })
+                {
+                    target.Tell(message, SenderFor(target, refs));
+                    return;
+                }
             }
 
-            var sender = ResolveInboundSender(refs);
-
-            // Not registered (the Ask completed or timed out): dead-letter against the same empty ref the
-            // literal form resolves to (the local /temp/<name> path), without parsing a path or touching
-            // the path caches.
-            new EmptyLocalActorRef(Provider, Provider.RootPath / "temp" / recipient.TemporaryCounter.Base64Encode(), System.EventStream)
-                .Tell(message, sender);
+            // Anything else (a custom or function ref was or is registered, a cached winner may exist, a ref
+            // may forward, throw or answer nobody for an empty tail): the literal route, from the path the
+            // literal form of this recipient would have carried.
+            DispatchToPath(
+                message,
+                (Provider.RootPath / "temp" / counter.Base64Encode()).ToSerializationFormatWithAddress(DefaultAddress),
+                in refs);
         }
 
         /// <summary>

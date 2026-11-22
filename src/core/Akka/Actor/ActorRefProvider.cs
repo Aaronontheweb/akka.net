@@ -179,6 +179,13 @@ namespace Akka.Actor
         /// by id or by its canonical path name.
         /// </summary>
         bool TryGetTempActor(long tempId, out IInternalActorRef actorRef);
+
+        /// <summary>
+        /// <see langword="true"/> until anything other than the framework's own plain Ask future has ever been
+        /// registered in the temp container. While it holds, resolving a temp path by name can only yield the
+        /// registered future itself or nothing, never a ref the resolve cache would hold.
+        /// </summary>
+        bool OnlyPlainFuturesEverRegistered { get; }
     }
 
     /// <summary>
@@ -421,9 +428,7 @@ namespace Akka.Actor
         {
             if (path.Parent != _tempNode)
                 throw new InvalidOperationException("Cannot UnregisterTempActor() with anything not obtained from tempPath()");
-            // An Ask future is registered by number; third-party code that unregisters it by path must find it.
-            if (!_tempContainer.TryRemoveChildByAnyKey(path.Name))
-                _tempContainer.RemoveChild(path.Name); // not registered: logs the same debug line as before
+            _tempContainer.RemoveChild(path.Name);
         }
 
         /// <inheritdoc cref="IActorRefProvider.CreateFutureRef{T}"/>
@@ -449,12 +454,12 @@ namespace Akka.Actor
         /// <inheritdoc/>
         bool ITempIdRegistry.TryGetTempActor(long tempId, out IInternalActorRef actorRef)
         {
-            if (_tempContainer.TryGetChild(tempId, out actorRef))
-                return true;
-
-            // Registered through the path-based API (e.g. a PromiseActorRef): fall back to its name.
-            return _tempContainer.TryGetChildByName(tempId.Base64Encode(), out actorRef);
+            // The container has one namespace: a number and its canonical name are the same key.
+            return _tempContainer.TryGetChild(tempId, out actorRef);
         }
+
+        /// <inheritdoc/>
+        bool ITempIdRegistry.OnlyPlainFuturesEverRegistered => _tempContainer.OnlyPlainFuturesEverRegistered;
 
         /// <summary>
         /// Initializes the ActorRefProvider
