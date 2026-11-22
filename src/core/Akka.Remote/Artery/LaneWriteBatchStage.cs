@@ -79,7 +79,7 @@ namespace Akka.Remote.Artery
             private bool _hasBatch;
             private bool _hasPending;
             private bool _upstreamFinished;
-            private int _batchFrames; // frames in _batch; only maintained when flow diagnostics are on
+            private int _batchFrames; // frames in _batch (an element may carry several); only maintained when flow diagnostics are on
 
             /// <summary>
             /// Bytes discarded by <see cref="OnPush"/>'s catch (an append failure) before
@@ -109,7 +109,8 @@ namespace Akka.Remote.Artery
                     {
                         _batch = ArteryRemoting.AppendFrameToBatch(_batch, frame);
                         _batchBytes += frame.Length;
-                        _batchFrames++;
+                        if (_stage._flow is not null)
+                            _batchFrames += ArteryFlowDiagnostics.CountFrames(frame);
                     }
                     else
                     {
@@ -191,7 +192,7 @@ namespace Akka.Remote.Artery
             {
                 _batch = frame;
                 _batchBytes = frame.Length;
-                _batchFrames = 1;
+                _batchFrames = _stage._flow is null ? 1 : ArteryFlowDiagnostics.CountFrames(frame);
                 _hasBatch = true;
             }
 

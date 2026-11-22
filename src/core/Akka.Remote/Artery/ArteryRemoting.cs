@@ -2010,8 +2010,17 @@ namespace Akka.Remote.Artery
                         _settings.InjectHandshakeInterval, isControlStream: false, forceReqOnStart: isRestart,
                         timeProvider: System.Scheduler);
 
-                    var encodeStage = new ArteryEncodeStage(
-                        System.Serialization, _localUniqueAddress.Uid, _laneEncodeBufferPools![i]);
+                    // outbound-bulk-drain: this lane's encode step also takes whatever is already queued
+                    // in the lane channel and emits it as one element. Off (the default), and whenever
+                    // test-mode is on (its failure-injection stage sits upstream of the handshake stage),
+                    // the lane chain is composed exactly as before.
+                    Flow<IOutboundEnvelope, ReadOnlySequence<byte>, NotUsed> encodeFlow = _settings.OutboundBulkDrain && _testState is null
+                        ? Flow.FromGraph(new ArteryBulkEncodeStage(
+                            System.Serialization, _localUniqueAddress.Uid, association.LaneReader(i),
+                            _settings.OutboundBulkDrainMaxBytes, _settings.OutboundBulkDrainMaxFrames,
+                            _laneEncodeBufferPools![i], BulkDrainDropReporter(remoteAddress)))
+                        : Flow.FromGraph(new ArteryEncodeStage(
+                            System.Serialization, _localUniqueAddress.Uid, _laneEncodeBufferPools![i]));
 
                     // RecoverWithRetries sits AFTER WatchTermination -- the ordering is load-bearing:
                     // the termination task (upstream of the recovery) must still observe the lane's
@@ -2033,7 +2042,7 @@ namespace Akka.Remote.Artery
 
                     var (laneTermination, _) = laneSource
                         .Via(Flow.FromGraph(handshakeStage))
-                        .Via(Flow.FromGraph(encodeStage))
+                        .Via(encodeFlow)
                         .WatchTermination(Keep.Right)
                         .Via(Flow.Create<ReadOnlySequence<byte>>()
                             .RecoverWithRetries(_ => Source.Empty<ReadOnlySequence<byte>>(), attempts: -1))
@@ -2264,8 +2273,16 @@ namespace Akka.Remote.Artery
 
             // Large-message stream (task 10.2) rents from its OWN dedicated, large-sized pool --
             // see _largeEncodeBufferPool's remarks.
-            var encodeStage = new ArteryEncodeStage(
-                System.Serialization, _localUniqueAddress.Uid, isLargeStream ? _largeEncodeBufferPool : _encodeBufferPool);
+            // outbound-bulk-drain applies to the single-lane ORDINARY stream only; control and large
+            // streams, and test-mode, keep the plain one-frame-per-element encode stage.
+            Flow<IOutboundEnvelope, ReadOnlySequence<byte>, NotUsed> encodeFlow =
+                _settings.OutboundBulkDrain && _testState is null && !isControlStream && !isLargeStream
+                    ? Flow.FromGraph(new ArteryBulkEncodeStage(
+                        System.Serialization, _localUniqueAddress.Uid, reader,
+                        _settings.OutboundBulkDrainMaxBytes, _settings.OutboundBulkDrainMaxFrames,
+                        _encodeBufferPool, BulkDrainDropReporter(remoteAddress)))
+                    : Flow.FromGraph(new ArteryEncodeStage(
+                        System.Serialization, _localUniqueAddress.Uid, isLargeStream ? _largeEncodeBufferPool : _encodeBufferPool));
 
             var source = ChannelSource.FromReader(reader);
 
@@ -2320,15 +2337,16 @@ namespace Akka.Remote.Artery
             if (isControlStream)
                 beforeEncode = beforeEncode.Where(association.ShouldSendControl);
 
-            var encoded = beforeEncode.Via(Flow.FromGraph(encodeStage));
+            var encoded = beforeEncode.Via(encodeFlow);
 
-            // flow-diagnostics, single-lane ordinary stream only: every encoded frame is its own write
-            // to the connection stage here (no batching stage exists at outbound-lanes = 1). The tap is
-            // only composed when diagnostics are on, so the disabled graph is unchanged.
+            // flow-diagnostics, single-lane ordinary stream only: every element is its own write to the
+            // connection stage here (no batching stage exists at outbound-lanes = 1); with
+            // outbound-bulk-drain an element carries several frames. The tap is only composed when
+            // diagnostics are on, so the disabled graph is unchanged.
             var frames = !isControlStream && !isLargeStream && association.FlowCounters is { } singleLaneFlow
                 ? encoded.Select(frame =>
                 {
-                    ArteryFlowDiagnostics.RecordWrite(singleLaneFlow.Write, 1, frame.Length);
+                    ArteryFlowDiagnostics.RecordWrite(singleLaneFlow.Write, ArteryFlowDiagnostics.CountFrames(frame), frame.Length);
                     return frame;
                 })
                 : encoded;
@@ -2858,6 +2876,26 @@ namespace Akka.Remote.Artery
 
             return new ReadOnlySequence<byte>(head, batch.Start.GetInteger(), tail, tail.Memory.Length);
         }
+
+        /// <summary>
+        /// Reports already-encoded frame bytes that an <see cref="ArteryBulkEncodeStage"/> still held when its
+        /// stream stopped, the same way the lane write-batch stage does: there is no envelope left to
+        /// return to the channel at that point, so the loss is logged and published as <see cref="Dropped"/>.
+        /// </summary>
+        private Action<long> BulkDrainDropReporter(Address remoteAddress) => bytes =>
+        {
+            _log.Debug(
+                "Outbound Artery bulk-drain encode stage to [{0}] held {1} bytes of already-encoded " +
+                "frame data when its stream stopped; dropping it.",
+                remoteAddress, bytes);
+
+            System.EventStream.Publish(new Dropped(
+                $"{bytes} bytes of already-encoded Artery frame data",
+                $"Outbound Artery bulk-drain encode stage to [{remoteAddress}] held {bytes} bytes of " +
+                "already-encoded frame data when its stream stopped",
+                ActorRefs.NoSender,
+                System.DeadLetters));
+        };
 
         /// <summary>
         /// Whether THIS transport's own streams are going away: the materializer/StreamSupervisor

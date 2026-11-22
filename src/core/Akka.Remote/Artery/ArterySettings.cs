@@ -99,6 +99,27 @@ namespace Akka.Remote.Artery
         public TimeSpan FlowDiagnosticsInterval { get; }
 
         /// <summary>
+        /// <c>akka.remote.artery.advanced.outbound-bulk-drain</c>: when <see langword="true"/> the ordinary
+        /// outbound stream takes every envelope already queued in its lane channel (bounded by
+        /// <see cref="OutboundBulkDrainMaxBytes"/> and <see cref="OutboundBulkDrainMaxFrames"/>) and
+        /// emits their frames as one element, instead of one frame per element. Nothing waits for more
+        /// messages. Ignored when <see cref="TestMode"/> is on.
+        /// </summary>
+        public bool OutboundBulkDrain { get; }
+
+        /// <summary>
+        /// <c>akka.remote.artery.advanced.outbound-bulk-drain-max-bytes</c>: most frame bytes one drained
+        /// element may carry; a single larger frame is still sent, alone. Must be positive.
+        /// </summary>
+        public long OutboundBulkDrainMaxBytes { get; }
+
+        /// <summary>
+        /// <c>akka.remote.artery.advanced.outbound-bulk-drain-max-frames</c>: most frames one drained
+        /// element may carry. Must be positive.
+        /// </summary>
+        public int OutboundBulkDrainMaxFrames { get; }
+
+        /// <summary>
         /// Number of independent, bounded ordinary-outbound channels ("lanes") each association
         /// fans ordinary-stream sends across, Pekko-faithful (<c>Association.scala</c>'s
         /// <c>outboundLanes</c>/<c>OrdinaryQueueIndex</c> array): a message's recipient uid is
@@ -349,6 +370,17 @@ namespace Akka.Remote.Artery
 
             FlowDiagnostics = arteryConfig.GetBoolean("advanced.flow-diagnostics", false);
             FlowDiagnosticsInterval = GetPositiveTimeSpan(arteryConfig, "advanced.flow-diagnostics-interval", TimeSpan.FromSeconds(5));
+
+            OutboundBulkDrain = arteryConfig.GetBoolean("advanced.outbound-bulk-drain", false);
+            OutboundBulkDrainMaxBytes = arteryConfig.GetByteSize("advanced.outbound-bulk-drain-max-bytes", 16 * 1024) ?? 16 * 1024;
+            if (OutboundBulkDrainMaxBytes <= 0)
+                throw new ConfigurationException(
+                    $"akka.remote.artery.advanced.outbound-bulk-drain-max-bytes must be greater than 0, but was [{OutboundBulkDrainMaxBytes}].");
+
+            OutboundBulkDrainMaxFrames = arteryConfig.GetInt("advanced.outbound-bulk-drain-max-frames", 128);
+            if (OutboundBulkDrainMaxFrames <= 0)
+                throw new ConfigurationException(
+                    $"akka.remote.artery.advanced.outbound-bulk-drain-max-frames must be greater than 0, but was [{OutboundBulkDrainMaxFrames}].");
 
             TestMode = arteryConfig.GetBoolean("advanced.test-mode", false);
 

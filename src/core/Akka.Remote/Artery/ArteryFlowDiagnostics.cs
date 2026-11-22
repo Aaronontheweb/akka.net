@@ -133,6 +133,28 @@ namespace Akka.Remote.Artery
             block.Inc(W_BytesHist + BytesBucket(bytes));
         }
 
+        /// <summary>
+        /// Number of frames in one element of the ordinary outbound stream. Every frame is exactly one
+        /// segment of the element's chain (an element is either a single encoded frame, or several
+        /// frames chained by the bulk-drain encode stage or the lane write batch), so this walks the
+        /// chain from start to end. Only called when diagnostics are on.
+        /// </summary>
+        public static int CountFrames(System.Buffers.ReadOnlySequence<byte> element)
+        {
+            if (element.Start.GetObject() is not System.Buffers.ReadOnlySequenceSegment<byte> segment)
+                return element.IsEmpty ? 0 : 1;
+
+            var end = element.End.GetObject();
+            var frames = 1;
+            while (!ReferenceEquals(segment, end) && segment.Next is { } next)
+            {
+                frames++;
+                segment = next;
+            }
+
+            return frames;
+        }
+
         /// <summary>Logs the counters accumulated since the previous call and starts a new window.</summary>
         public void EmitSnapshot()
         {
