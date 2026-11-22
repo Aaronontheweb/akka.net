@@ -1269,24 +1269,14 @@ namespace Akka.Remote.Artery
 
         /// <summary>
         /// Shared part of the system-message acker's expectation, keyed by the sender's full
-        /// <see cref="UniqueAddress"/> (address and uid, as in the reference implementation) so that a
-        /// different address that happens to present the same numeric uid is a different peer. An entry is
-        /// created when the first system message of an indexed uid is admitted and is never removed: it grows
+        /// <see cref="UniqueAddress"/>, as in the reference implementation. An entry is
+        /// created when the first system message of an indexed uid is handled and is never removed: it grows
         /// by one entry per distinct peer incarnation that ever delivered a system message to this transport,
         /// for the lifetime of the ActorSystem. Removing or evicting entries would re-open the replay hole for
-        /// a peer that is seen again. Remaining assumption: the same address AND uid reused by a genuinely new
-        /// process is indistinguishable from a replay. Guarded by <see cref="_handshakeLock"/>.
+        /// a peer that is seen again. The dictionary is guarded by <see cref="_handshakeLock"/>,
+        /// which is only ever held for a lookup or creation, never while an entry's own monitor is taken.
         /// </summary>
-        private readonly Dictionary<UniqueAddress, SharedExpectation> _shared = new();
-
-        private sealed class SharedExpectation
-        {
-            /// <summary>Next expected seq: every lower seq has been committed (acknowledged and pushed).</summary>
-            public long Next;
-
-            /// <summary>The seq reserved by a stage that has not yet committed or aborted it, or 0.</summary>
-            public long InFlight;
-        }
+        private readonly Dictionary<UniqueAddress, InboundSequenceEntry> _shared = new();
 
         private readonly object _handshakeLock = new();
 
@@ -1361,68 +1351,26 @@ namespace Akka.Remote.Artery
         public Association? TryGetByUid(long uid) => _byUid.TryGetValue(uid, out var association) ? association : null;
 
         /// <summary>
-        /// Decides what the acker does with a system message <paramref name="seqNo"/> from
-        /// <paramref name="origin"/> (see <see cref="IInboundContext.AdmitInboundSystemMessage"/>). The shared state
-        /// separates RESERVED from COMMITTED: <c>Next</c> only ever covers committed sequence numbers, and at
-        /// most one sequence number per origin is in flight. The effective expectation is
-        /// <c>max(localExpected, Next)</c>. Below it the frame is a duplicate, above it a gap. At it, the frame is
-        /// <c>Busy</c> if another stage has the sequence in flight (it must be dropped silently, neither
-        /// delivered nor answered, so that the sender's resend timer retries it after the other stage commits or
-        /// aborts); otherwise it is accepted and, if the origin has an entry or is indexed, reserved. An unindexed
-        /// origin without an entry gets none (an unknown origin cannot grow the map): only the caller's
-        /// per-connection memory applies, as before this state existed. Everything happens under one lock.
-        /// Shared state is used only when the frame's origin uid and <paramref name="origin"/> agree.
+        /// Returns the shared acker entry of <paramref name="origin"/>, creating it when the origin has none but
+        /// is indexed, or <see langword="null"/> when the sender uses the per-connection memory only (an unindexed
+        /// origin without an entry: an unknown origin cannot grow the map). Shared state is used only when the
+        /// frame's origin uid and <paramref name="origin"/> agree. The registry lock is held only for this lookup;
+        /// the caller then serializes on the entry itself, see <see cref="InboundSequenceEntry"/>.
         /// </summary>
-        public InboundAdmission AdmitInboundSystemMessage(long originUid, UniqueAddress origin, long seqNo, long localExpected)
+        public InboundSequenceEntry? GetInboundSequenceEntry(long originUid, UniqueAddress origin)
         {
+            if (origin.Uid != originUid)
+                return null;
+
             lock (_handshakeLock)
             {
-                var eligible = origin.Uid == originUid;
-                SharedExpectation? entry = null;
-                if (eligible)
-                    _shared.TryGetValue(origin, out entry);
+                if (_shared.TryGetValue(origin, out var entry))
+                    return entry;
 
-                var expected = Math.Max(localExpected, entry?.Next ?? 1L);
-                if (seqNo < expected)
-                    return new InboundAdmission(InboundAdmissionKind.Duplicate, expected, false);
-                if (seqNo > expected)
-                    return new InboundAdmission(InboundAdmissionKind.Gap, expected, false);
-                if (entry is { InFlight: not 0 })
-                    return new InboundAdmission(InboundAdmissionKind.Busy, expected, false);
+                if (_byUid.TryGetValue(originUid, out var association) && association.RemoteAddress.Equals(origin.Address))
+                    return _shared[origin] = new InboundSequenceEntry();
 
-                var indexed = _byUid.TryGetValue(originUid, out var association) && association.RemoteAddress.Equals(origin.Address);
-                if (eligible && (entry != null || indexed))
-                {
-                    if (entry == null)
-                        _shared[origin] = entry = new SharedExpectation { Next = expected };
-                    entry.InFlight = seqNo;
-                    return new InboundAdmission(InboundAdmissionKind.Accept, expected, true);
-                }
-
-                return new InboundAdmission(InboundAdmissionKind.Accept, expected, false);
-            }
-        }
-
-        /// <summary>The reserved <paramref name="seqNo"/> was acknowledged and pushed: it becomes committed.</summary>
-        public void CommitInboundSystemMessage(UniqueAddress origin, long seqNo)
-        {
-            lock (_handshakeLock)
-            {
-                if (!_shared.TryGetValue(origin, out var entry))
-                    return;
-                if (entry.InFlight == seqNo)
-                    entry.InFlight = 0;
-                entry.Next = Math.Max(entry.Next, seqNo + 1);
-            }
-        }
-
-        /// <summary>The reserved <paramref name="seqNo"/> was not emitted: the reservation is released, the expectation unchanged.</summary>
-        public void AbortInboundSystemMessage(UniqueAddress origin, long seqNo)
-        {
-            lock (_handshakeLock)
-            {
-                if (_shared.TryGetValue(origin, out var entry) && entry.InFlight == seqNo)
-                    entry.InFlight = 0;
+                return null;
             }
         }
 
@@ -1485,26 +1433,27 @@ namespace Akka.Remote.Artery
         }
     }
 
-    /// <summary>INTERNAL API. Outcome of <see cref="AssociationRegistry.AdmitInboundSystemMessage"/>.</summary>
-    internal enum InboundAdmissionKind
-    {
-        /// <summary>The sequence number is the expected one: deliver it.</summary>
-        Accept,
-
-        /// <summary>Below the expectation: already delivered, re-Ack.</summary>
-        Duplicate,
-
-        /// <summary>Above the expectation: Nack with the last committed value.</summary>
-        Gap,
-
-        /// <summary>Another stage has this sequence number in flight: drop silently, neither answer nor remember.</summary>
-        Busy
-    }
-
     /// <summary>
-    /// INTERNAL API. <paramref name="Expected"/> is the effective (committed) expectation; for
-    /// <see cref="InboundAdmissionKind.Accept"/> with <paramref name="Reserved"/> the caller must later commit or
-    /// abort the reservation.
+    /// INTERNAL API. The shared system-message expectation of one sender, which is also its own monitor.
+    /// <see cref="SystemMessageAckerStage"/> handles every system message of that sender inside
+    /// <c>lock (entry)</c>: it reads <c>max(local, Next)</c>, and only after the Ack was sent and the message
+    /// pushed sets <see cref="Next"/> to <c>seq + 1</c>. A second connection of the same sender simply waits for
+    /// the first to finish and then sees either the committed value (a duplicate, re-Acked) or the unchanged one
+    /// (accepted and delivered), so no reservation, abort or wake-up state exists. If sending or pushing throws,
+    /// nothing was advanced and the lock scope releases the monitor.
+    ///
+    /// <para>
+    /// <b>Lock order.</b> The registry lock is taken only inside <see cref="AssociationRegistry.GetInboundSequenceEntry"/>
+    /// and by handshake completion, and released before an entry monitor is taken; nothing that runs under an
+    /// entry monitor takes the registry lock (the Ack goes through <c>EnqueueControl</c>, which only uses
+    /// concurrent collections, a channel write and the association's CAS state; <c>Push</c> merely stores the
+    /// element and the downstream stages run after the handler returns, outside the monitor). A stage holds at
+    /// most one entry monitor and never takes the registry lock while holding it.
+    /// </para>
     /// </summary>
-    internal readonly record struct InboundAdmission(InboundAdmissionKind Kind, long Expected, bool Reserved);
+    internal sealed class InboundSequenceEntry
+    {
+        /// <summary>Next expected seq: every lower seq was acknowledged and pushed. Guarded by the entry's monitor.</summary>
+        public long Next = 1;
+    }
 }

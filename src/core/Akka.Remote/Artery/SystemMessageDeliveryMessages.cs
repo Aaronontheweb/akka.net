@@ -161,8 +161,8 @@ namespace Akka.Remote.Artery
     /// state is held per ACCEPTED CONNECTION and, per sender address and uid, also in the
     /// <see cref="AssociationRegistry"/> (kept for the lifetime of the system, including for superseded
     /// incarnations) -- a genuinely new incarnation requires a new inbound connection, which starts with
-    /// empty per-connection state, and a new connection of the SAME sender resumes from the shared value. This satisfies
-    /// design.md's "do at least incarnation-based cleanup" open decision without a wire round-trip.
+    /// empty per-connection state, and a new connection of the SAME sender resumes from the shared value. Entries are not cleaned up
+    /// (the same unbounded-growth policy as the reference implementation), so no wire round-trip is needed.
     /// It still gets a real entry in <see cref="ArteryControlMessageSerializer"/> (per the task) so
     /// the serializer is complete/robust even though, in normal operation, this type is never
     /// actually serialized onto a socket.

@@ -99,6 +99,10 @@ namespace Akka.Remote.Tests.Artery
             public void AbortControlConnection() => Volatile.Read(ref _abort)!.Invoke();
         }
 
+        /// <summary>
+        /// Aborts the control connection and waits for a new connection attempt. The hook fires when the attempt is
+        /// materialized, not when it is established, so a following drop may hit an attempt that is still connecting.
+        /// </summary>
         private async Task DropControlConnectionAsync(Node node)
         {
             var before = node.Connections;
@@ -239,7 +243,8 @@ namespace Akka.Remote.Tests.Artery
                 a.AssociationTo(b).CurrentState.UniqueRemoteAddress.Should().Be(bIdentity);
                 (a.Nacks + b.Nacks).Should().Be(0);
 
-                // Each Watch took effect exactly once: one real Terminated per watcher.
+                // Both Watches took effect: a real Terminated per watcher. DeathWatch deduplicates watchers, so
+                // this shows recovery, not exactly-once delivery (the stage specs count deliveries).
                 ab.Target.Tell(PoisonPill.Instance);
                 ba.Target.Tell(PoisonPill.Instance);
                 (await ab.Probe.ExpectMsgAsync<Terminated>(5.Seconds())).AddressTerminated.Should().BeFalse();

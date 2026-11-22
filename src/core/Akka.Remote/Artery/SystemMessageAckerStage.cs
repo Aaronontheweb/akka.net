@@ -7,6 +7,7 @@
 
 #nullable enable
 
+using System;
 using System.Collections.Generic;
 using Akka.Streams;
 using Akka.Streams.Stage;
@@ -47,7 +48,7 @@ namespace Akka.Remote.Artery
     /// expected-seq map exactly as before, so within one connection it never forgets, whatever handshakes do.
     /// In addition the <see cref="AssociationRegistry"/> keeps a shared expectation per sender
     /// <see cref="UniqueAddress"/> (address and uid, as in the reference implementation; via
-    /// <see cref="IInboundContext.AdmitInboundSystemMessage"/>), because the sender's
+    /// <see cref="IInboundContext.GetInboundSequenceEntry"/>), because the sender's
     /// <see cref="SystemMessageDeliveryState"/> survives reconnects while a new stage starts empty. The
     /// effective expectation is the larger of the two, so a NEW connection from the SAME sender resumes where the
     /// previous one stopped instead of at 1. The shared entry is created by the first admitted message of a sender
@@ -58,18 +59,18 @@ namespace Akka.Remote.Artery
     /// </para>
     ///
     /// <para>
-    /// <b>Reserve, commit, abort.</b> Admitting sequence number n reserves it in the shared state; it only becomes
-    /// part of the shared (committed) expectation once the Ack was sent and the message pushed. If either fails, or
-    /// the stage stops first, the reservation is released and the expectation is unchanged. While n is reserved, any
-    /// other connection that receives n drops it silently (no delivery, no Ack or Nack, no memory), so the sender's
-    /// resend timer retries it; frames above n are a gap as usual, answered with the last committed value. Two
-    /// connections of one sender therefore never deliver a sequence number twice, and never acknowledge one that
-    /// was not emitted. Strict order is guaranteed per connection, not across two simultaneously open connections
-    /// of one sender. Remaining assumptions: the same address AND uid reused by a genuinely new process is
-    /// indistinguishable from a replay (as in the reference implementation), and a sender that resets its numbering
+    /// <b>Per-sender serialization.</b> A stage handles every system message of a sender with a shared entry while
+    /// holding that entry's monitor (see <see cref="InboundSequenceEntry"/>): it reads the effective expectation,
+    /// answers a duplicate or gap, and for the expected sequence number sends the Ack, pushes, and only then
+    /// advances both its own memory and the shared value. A second connection of the same sender waits for the
+    /// first and then sees either the advanced value (a duplicate, re-Acked) or the unchanged one (accepted and
+    /// delivered), exactly as a single connection would; if sending or pushing throws, nothing was advanced and the
+    /// stage fails as before. Two connections of one sender never deliver a sequence number twice. Strict order is
+    /// guaranteed per connection, not across two simultaneously open connections of one sender (the downstream
+    /// stages run after the handler returns, outside the monitor). Known limit: a sender that resets its numbering
     /// while the receiver's entry for it survives (for example after a stale handshake of an earlier incarnation of
-    /// the peer) has a NEW seq 1 treated as a replay; without a numbering epoch on the wire that is indistinguishable
-    /// from a replay.
+    /// the peer) has a NEW seq 1 treated as a replay; without a numbering epoch on the wire that is
+    /// indistinguishable from a replay.
     /// <see cref="ClearSystemMessageDelivery"/> deliberately never crosses the wire in this
     /// implementation (see its own type docs).
     /// </para>
@@ -129,64 +130,49 @@ namespace Akka.Remote.Artery
 
             public void OnDownstreamFinish(System.Exception cause) => InternalOnDownstreamFinish(cause);
 
-            /// <summary>The reservation this stage holds (origin, seq) until it commits or aborts it.</summary>
-            private (UniqueAddress Origin, long SeqNo)? _reserved;
-
-            public override void PostStop()
-            {
-                // A stage that stops while holding a reservation must release it, or the sequence number
-                // would stay in flight and every other connection would drop it.
-                if (_reserved is { } r)
-                {
-                    _reserved = null;
-                    _stage.Context.AbortInboundSystemMessage(r.Origin, r.SeqNo);
-                }
-            }
-
             private void HandleSystemMessageEnvelope(long originUid, SystemMessageEnvelope sme)
             {
-                var local = _expectedByOriginUid.TryGetValue(originUid, out var e) ? e : 1L;
-                var admission = _stage.Context.AdmitInboundSystemMessage(originUid, sme.AckReplyTo, sme.SeqNo, local);
-                var expected = admission.Expected;
-
-                if (admission.Kind == InboundAdmissionKind.Busy)
+                // Per-sender serialization: while this stage handles a frame of a sender, no other connection of
+                // that sender decides on it, so the outcome is exactly what a single connection would see.
+                // The entry is null for a sender that uses per-connection memory only (dev behavior).
+                var entry = _stage.Context.GetInboundSequenceEntry(originUid, sme.AckReplyTo);
+                if (entry == null)
                 {
-                    // Another connection is delivering this very sequence number and has not committed it yet:
-                    // stay silent (no delivery, no Ack/Nack, no memory) so the sender's resend timer retries it.
-                    Pull(_stage.In);
+                    HandleSerialized(originUid, sme, null);
                     return;
                 }
+
+                lock (entry)
+                    HandleSerialized(originUid, sme, entry);
+            }
+
+            private void HandleSerialized(long originUid, SystemMessageEnvelope sme, InboundSequenceEntry? entry)
+            {
+                var local = _expectedByOriginUid.TryGetValue(originUid, out var e) ? e : 1L;
+                var expected = entry == null ? local : Math.Max(local, entry.Next);
 
                 // The effective expectation is committed state only, and from now on also this connection's own
                 // memory, so it still knows the prefix however the shared state changes later.
                 if (expected > local)
                     _expectedByOriginUid[originUid] = expected;
 
-                if (admission.Kind == InboundAdmissionKind.Accept)
+                if (sme.SeqNo == expected)
                 {
-                    if (admission.Reserved)
-                        _reserved = (sme.AckReplyTo, sme.SeqNo);
+                    // If sending the Ack or pushing throws, nothing has been advanced and the exception
+                    // propagates (the stage fails, as before).
+                    SendAck(sme.AckReplyTo, expected);
 
-                    try
-                    {
-                        SendAck(sme.AckReplyTo, expected);
-
-                        // Re-emitted as an ORDINARY-shaped envelope -- IsControl computes to false since
-                        // the inner message is not an IArteryControlMessage, so it flows straight through
-                        // ArteryRemoting.DispatchInbound's existing ordinary-message path unchanged
-                        // (that path is updated to dispatch via SendSystemMessage, not Tell, when the
-                        // resolved Message is an ISystemMessage).
-                        Push(_stage.Out, new InboundEnvelope(sme.Message, null, sme.RecipientPath, originUid, SerializerId: 0, Manifest: string.Empty));
-                    }
-                    catch
-                    {
-                        ReleaseReservation(commit: false);
-                        throw;
-                    }
+                    // Re-emitted as an ORDINARY-shaped envelope -- IsControl computes to false since
+                    // the inner message is not an IArteryControlMessage, so it flows straight through
+                    // ArteryRemoting.DispatchInbound's existing ordinary-message path unchanged
+                    // (that path is updated to dispatch via SendSystemMessage, not Tell, when the
+                    // resolved Message is an ISystemMessage).
+                    Push(_stage.Out, new InboundEnvelope(sme.Message, null, sme.RecipientPath, originUid, SerializerId: 0, Manifest: string.Empty));
 
                     // Acked and pushed: only now does the sequence number count as delivered.
                     _expectedByOriginUid[originUid] = expected + 1;
-                    ReleaseReservation(commit: true);
+                    if (entry != null)
+                        entry.Next = expected + 1;
                     return;
                 }
 
@@ -204,18 +190,6 @@ namespace Akka.Remote.Artery
                 }
 
                 Pull(_stage.In);
-            }
-
-            private void ReleaseReservation(bool commit)
-            {
-                if (_reserved is not { } r)
-                    return;
-
-                _reserved = null;
-                if (commit)
-                    _stage.Context.CommitInboundSystemMessage(r.Origin, r.SeqNo);
-                else
-                    _stage.Context.AbortInboundSystemMessage(r.Origin, r.SeqNo);
             }
 
             private void SendAck(UniqueAddress replyTo, long seqNo) =>

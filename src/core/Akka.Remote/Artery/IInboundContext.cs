@@ -113,21 +113,12 @@ namespace Akka.Remote.Artery
         bool TryClaimHeartbeatQuarantineNotice(long originUid);
 
         /// <summary>
-        /// Shared, connection-independent part of the system-message acker's expectation for
-        /// <paramref name="origin"/> (the sender's address and uid; <paramref name="originUid"/> is the uid of the
-        /// frame header and must equal <c>origin.Uid</c> for shared state to be used). Reserves, never
-        /// commits: a returned <see cref="InboundAdmissionKind.Accept"/> with <c>Reserved</c> must be followed by
-        /// <see cref="CommitInboundSystemMessage"/> once the Ack was sent and the message pushed, or by
-        /// <see cref="AbortInboundSystemMessage"/> if that failed. See
-        /// <see cref="AssociationRegistry.AdmitInboundSystemMessage"/>.
+        /// The shared, connection-independent acker entry of <paramref name="origin"/> (the sender's address and
+        /// uid; <paramref name="originUid"/> is the uid of the frame header and must equal <c>origin.Uid</c>), or
+        /// <see langword="null"/> if the sender uses per-connection memory only. The caller serializes on the
+        /// entry; see <see cref="InboundSequenceEntry"/> for the protocol and the lock order.
         /// </summary>
-        InboundAdmission AdmitInboundSystemMessage(long originUid, UniqueAddress origin, long seqNo, long localExpected);
-
-        /// <summary>Commits a reserved sequence number: the shared expectation becomes <paramref name="seqNo"/> + 1.</summary>
-        void CommitInboundSystemMessage(UniqueAddress origin, long seqNo);
-
-        /// <summary>Releases a reserved sequence number that was not emitted; the expectation is unchanged.</summary>
-        void AbortInboundSystemMessage(UniqueAddress origin, long seqNo);
+        InboundSequenceEntry? GetInboundSequenceEntry(long originUid, UniqueAddress origin);
     }
 
     /// <summary>
@@ -183,15 +174,7 @@ namespace Akka.Remote.Artery
             _registry.TryGetByUid(originUid)?.TryClaimHeartbeatQuarantineNotice(InboundQuarantineCheckStage.HeartbeatNoticeInterval) ?? false;
 
         /// <inheritdoc/>
-        public InboundAdmission AdmitInboundSystemMessage(long originUid, UniqueAddress origin, long seqNo, long localExpected) =>
-            _registry.AdmitInboundSystemMessage(originUid, origin, seqNo, localExpected);
-
-        /// <inheritdoc/>
-        public void CommitInboundSystemMessage(UniqueAddress origin, long seqNo) =>
-            _registry.CommitInboundSystemMessage(origin, seqNo);
-
-        /// <inheritdoc/>
-        public void AbortInboundSystemMessage(UniqueAddress origin, long seqNo) =>
-            _registry.AbortInboundSystemMessage(origin, seqNo);
+        public InboundSequenceEntry? GetInboundSequenceEntry(long originUid, UniqueAddress origin) =>
+            _registry.GetInboundSequenceEntry(originUid, origin);
     }
 }

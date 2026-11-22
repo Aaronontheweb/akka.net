@@ -68,13 +68,20 @@ namespace Akka.Remote.Tests.Artery
                 .ToMaterialized(this.SinkProbe<IInboundEnvelope>(), Keep.Both)
                 .Run(ActorMaterializer.Create(Sys));
 
-        /// <summary>Admits a message and, when it was reserved, commits it at once. Returns the effective expectation.</summary>
+        /// <summary>Handles a message the way the acker does, under the sender's entry monitor. Returns the effective expectation.</summary>
         private static long Advance(AssociationRegistry registry, UniqueAddress peer, long seqNo, long localExpected)
         {
-            var admission = registry.AdmitInboundSystemMessage(peer.Uid, peer, seqNo, localExpected);
-            if (admission.Kind == InboundAdmissionKind.Accept && admission.Reserved)
-                registry.CommitInboundSystemMessage(peer, seqNo);
-            return admission.Expected;
+            var entry = registry.GetInboundSequenceEntry(peer.Uid, peer);
+            if (entry == null)
+                return localExpected;
+
+            lock (entry)
+            {
+                var expected = Math.Max(localExpected, entry.Next);
+                if (seqNo == expected)
+                    entry.Next = expected + 1;
+                return expected;
+            }
         }
 
         private (List<(Address To, object Message)> SentControl, TestPublisher.Probe<IInboundEnvelope> Pub, TestSubscriber.Probe<IInboundEnvelope> Sub) BuildHarness()
@@ -282,16 +289,20 @@ namespace Akka.Remote.Tests.Artery
             var (registry, _, _) = NewContext(peer);
             // A no-op reply hook: the stages run on different threads, which a plain List would not tolerate.
             var context = new AssociationRegistryInboundContext(registry, NewLocal(), (_, _) => { });
-            var delivered = new System.Collections.Concurrent.ConcurrentQueue<string>();
             var materializer = ActorMaterializer.Create(Sys);
 
-            (TestPublisher.Probe<IInboundEnvelope> Pub, Task Done) Start() =>
-                this.SourceProbe<IInboundEnvelope>()
+            (TestPublisher.Probe<IInboundEnvelope> Pub, Task Done, System.Collections.Concurrent.ConcurrentQueue<long> Delivered) Start()
+            {
+                var delivered = new System.Collections.Concurrent.ConcurrentQueue<long>();
+                var (pub, done) = this.SourceProbe<IInboundEnvelope>()
                     .Via(Flow.FromGraph(new SystemMessageAckerStage(context)))
-                    .ToMaterialized(Sink.ForEach<IInboundEnvelope>(e => delivered.Enqueue(((TestSystemMessage)e.Message).Name)), Keep.Both)
+                    .ToMaterialized(Sink.ForEach<IInboundEnvelope>(e => delivered.Enqueue(long.Parse(((TestSystemMessage)e.Message).Name))), Keep.Both)
                     .Run(materializer);
+                return (pub, done, delivered);
+            }
 
-            // Each connection sends the same ascending window, like an old and a new connection overlapping.
+            // Each connection sends the same ascending window, with duplicates of what the other delivers
+            // interleaved, like an old and a new connection overlapping.
             var streams = new[] { Start(), Start() };
             await Task.WhenAll(streams.Select(stream => Task.Run(async () =>
             {
@@ -301,7 +312,9 @@ namespace Akka.Remote.Tests.Artery
             })));
 
             await Task.WhenAll(streams.Select(stream => stream.Done)).WaitAsync(TimeSpan.FromSeconds(10));
-            delivered.Select(long.Parse).OrderBy(x => x).Should().Equal(Enumerable.Range(1, count).Select(x => (long)x));
+            foreach (var stream in streams)
+                stream.Delivered.Should().BeInAscendingOrder("each connection delivers in order");
+            streams.SelectMany(stream => stream.Delivered).OrderBy(x => x).Should().Equal(Enumerable.Range(1, count).Select(x => (long)x), "each sequence number is delivered exactly once in total");
         }
 
         [Fact(DisplayName = "Should_NeverMoveSharedExpectationBackwards_When_ConcurrentAckersAdvanceIt")]
@@ -464,10 +477,10 @@ namespace Akka.Remote.Tests.Artery
             registry.SharedExpectationCount.Should().Be(0, "an unregistered uid gets no shared entry");
         }
 
-        [Theory(DisplayName = "Should_AcceptNextSeq_When_ReplayWasSuppressedAndAnotherUidHandshakes")]
+        [Theory(DisplayName = "Should_ContinueOnSameConnection_When_ReplayWasSuppressedAndAnotherUidHandshakes")]
         [InlineData(false)]
         [InlineData(true)]
-        public async Task Should_AcceptNextSeq_When_ReplayWasSuppressedAndAnotherUidHandshakes(bool restoreA1)
+        public async Task Should_ContinueOnSameConnection_When_ReplayWasSuppressedAndAnotherUidHandshakes(bool restoreA1)
         {
             var a1 = NewRemotePeer(223L);
             var a0 = NewRemotePeer(222L);
@@ -500,15 +513,16 @@ namespace Akka.Remote.Tests.Artery
             if (restoreA1)
                 registry.CompleteHandshake(a1.Address, a1);
 
-            // That connection must still know the prefix, as a connection that had delivered it itself would.
+            // Continuity guard: the connection carries on exactly as one that had delivered the prefix itself (the shared
+            // entry also stays, so this does not by itself isolate the connection's own memory).
             await c2.SendNextAsync(Envelope(Sme(2L, a1, "m2"), a1.Uid));
             await AwaitAssertAsync(() => delivered.Should().Contain("m2"), TimeSpan.FromSeconds(3));
             replies.OfType<SysNack>().Should().BeEmpty();
             c2.SendComplete();
         }
 
-        [Fact(DisplayName = "Should_RedeliverOnNewStage_When_AcceptanceFailedBeforeThePush")]
-        public async Task Should_RedeliverOnNewStage_When_AcceptanceFailedBeforeThePush()
+        [Fact(DisplayName = "Should_LeaveEntryUnchangedAndMonitorFree_When_SendingTheAckFails")]
+        public async Task Should_LeaveEntryUnchangedAndMonitorFree_When_SendingTheAckFails()
         {
             var peer = NewRemotePeer();
             var (registry, _, _) = NewContext(peer);
@@ -525,57 +539,39 @@ namespace Akka.Remote.Tests.Artery
             await pub1.SendNextAsync(Envelope(Sme(1L, peer, "m1"), peer.Uid));
             (await sub1.ExpectErrorAsync()).Should().BeOfType<InvalidOperationException>();
 
-            // The replay on a new connection must not be suppressed by a reservation that was never emitted.
+            // Nothing advanced, and the entry's monitor is not held by the failed stage.
+            var entry = registry.GetInboundSequenceEntry(peer.Uid, peer)!;
+            entry.Next.Should().Be(1L);
+            (await Task.Run(() =>
+            {
+                var entered = System.Threading.Monitor.TryEnter(entry, TimeSpan.FromSeconds(2));
+                if (entered)
+                    System.Threading.Monitor.Exit(entry);
+                return entered;
+            })).Should().BeTrue();
+
+            // A second stage proceeds and delivers the replay.
             fail = false;
             var (pub2, sub2) = Materialize(context);
             await sub2.RequestAsync(1);
             await pub2.SendNextAsync(Envelope(Sme(1L, peer, "m1"), peer.Uid));
             ((TestSystemMessage)(await sub2.ExpectNextAsync(TimeSpan.FromSeconds(3))).Message).Name.Should().Be("m1");
+            entry.Next.Should().Be(2L);
         }
 
-        [Fact(DisplayName = "Should_KeepReservedSequenceBusyAndRelease_When_AcceptanceIsAborted")]
-        public void Should_KeepReservedSequenceBusyAndRelease_When_AcceptanceIsAborted()
+        [Fact(DisplayName = "Should_ShareOneEntryPerSender_When_SenderIsIndexed")]
+        public void Should_ShareOneEntryPerSender_When_SenderIsIndexed()
         {
-            var peer = NewRemotePeer();
+            var peer = NewRemotePeer(222L);
             var (registry, _, _) = NewContext(peer);
+            var stranger = NewRemotePeer(999L);
 
-            var first = registry.AdmitInboundSystemMessage(peer.Uid, peer, 1L, 1L);
-            (first.Kind, first.Reserved).Should().Be((InboundAdmissionKind.Accept, true));
-            registry.AdmitInboundSystemMessage(peer.Uid, peer, 1L, 1L).Kind.Should().Be(InboundAdmissionKind.Busy, "seq 1 is in flight");
-            registry.AdmitInboundSystemMessage(peer.Uid, peer, 2L, 1L).Should().Be(
-                new InboundAdmission(InboundAdmissionKind.Gap, 1L, false), "a frame above the in-flight one is a gap against the committed value");
-
-            registry.AbortInboundSystemMessage(peer, 1L);
-            registry.AdmitInboundSystemMessage(peer.Uid, peer, 1L, 1L).Kind.Should().Be(InboundAdmissionKind.Accept);
-            registry.CommitInboundSystemMessage(peer, 1L);
-            registry.AdmitInboundSystemMessage(peer.Uid, peer, 1L, 1L).Should().Be(
-                new InboundAdmission(InboundAdmissionKind.Duplicate, 2L, false));
-        }
-
-        [Fact(DisplayName = "Should_DeliverFirstMessage_When_AnotherAddressReusesARetiredNumericUid")]
-        public async Task Should_DeliverFirstMessage_When_AnotherAddressReusesARetiredNumericUid()
-        {
-            var oldPeer = NewRemotePeer(222L);
-            var successor = NewRemotePeer(223L);
-            var (registry, context, _) = NewContext(oldPeer);
-
-            var (pub1, sub1) = Materialize(context);
-            await sub1.RequestAsync(1);
-            await pub1.SendNextAsync(Envelope(Sme(1L, oldPeer, "old-process"), oldPeer.Uid));
-            await sub1.ExpectNextAsync(TimeSpan.FromSeconds(3));
-            pub1.SendComplete();
-
-            registry.CompleteHandshake(successor.Address, successor);
-            registry.TryGetByUid(oldPeer.Uid).Should().BeNull();
-
-            // A different address presents the numeric uid the earlier, superseded peer used.
-            var newcomer = new UniqueAddress(new Address("akka", "another-system", "another-host", 2553), oldPeer.Uid);
-            registry.CompleteHandshake(newcomer.Address, newcomer);
-
-            var (pub2, sub2) = Materialize(context);
-            await sub2.RequestAsync(1);
-            await pub2.SendNextAsync(Envelope(Sme(1L, newcomer, "new-process"), newcomer.Uid));
-            ((TestSystemMessage)(await sub2.ExpectNextAsync(TimeSpan.FromSeconds(3))).Message).Name.Should().Be("new-process");
+            var entry = registry.GetInboundSequenceEntry(peer.Uid, peer);
+            entry.Should().NotBeNull();
+            registry.GetInboundSequenceEntry(peer.Uid, peer).Should().BeSameAs(entry);
+            registry.GetInboundSequenceEntry(stranger.Uid, stranger).Should().BeNull("an unindexed sender gets no entry");
+            registry.GetInboundSequenceEntry(peer.Uid + 1, peer).Should().BeNull("a frame header uid that disagrees with AckReplyTo falls back to local memory");
+            registry.SharedExpectationCount.Should().Be(1);
         }
 
         [Fact(DisplayName = "Should_ResumeSharedEntry_When_SupersededUidHandshakesAgain")]
@@ -661,10 +657,10 @@ namespace Akka.Remote.Tests.Artery
             await sub2.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(300));
         }
 
-        [Theory(DisplayName = "Should_DeliverReplay_When_AnotherConnectionsAcceptanceFails")]
+        [Theory(DisplayName = "Should_DeliverReplayOnce_When_AnotherConnectionsAcceptanceFails")]
         [InlineData(false)]
         [InlineData(true)]
-        public async Task Should_DeliverReplay_When_AnotherConnectionsAcceptanceFails(bool deliverNext)
+        public async Task Should_DeliverReplayOnce_When_AnotherConnectionsAcceptanceFails(bool deliverNext)
         {
             var peer = NewRemotePeer();
             var (registry, _, _) = NewContext(peer);
@@ -672,7 +668,8 @@ namespace Akka.Remote.Tests.Artery
 
             using var release = new System.Threading.ManualResetEventSlim();
             var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var acks = new System.Collections.Concurrent.ConcurrentQueue<long>();
+            var ackedOne = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var ackedTwo = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
             // Connection 1 accepts seq 1 and blocks inside the Ack send, then fails.
             var failingContext = new AssociationRegistryInboundContext(registry, NewLocal(), (_, _) =>
@@ -684,8 +681,10 @@ namespace Akka.Remote.Tests.Artery
             });
             var healthyContext = new AssociationRegistryInboundContext(registry, NewLocal(), (_, message) =>
             {
-                if (message is SysAck ack)
-                    acks.Enqueue(ack.SeqNo);
+                if (message is SysAck { SeqNo: 1 })
+                    ackedOne.TrySetResult(true);
+                if (message is SysAck { SeqNo: 2 })
+                    ackedTwo.TrySetResult(true);
             });
 
             var failed = Materialize(failingContext);
@@ -693,34 +692,87 @@ namespace Akka.Remote.Tests.Artery
             await failed.Sub.RequestAsync(1);
             await healthy.Sub.RequestAsync(3);
 
-            try
-            {
-                await failed.Pub.SendNextAsync(Envelope(Sme(1L, peer, "m1"), peer.Uid));
-                await entered.Task.WaitAsync(timeout);
+            await failed.Pub.SendNextAsync(Envelope(Sme(1L, peer, "m1"), peer.Uid));
+            await entered.Task.WaitAsync(timeout);
 
-                // While seq 1 is in flight elsewhere, the replay is neither delivered nor acknowledged.
-                await healthy.Pub.SendNextAsync(Envelope(Sme(1L, peer, "m1"), peer.Uid));
-                await healthy.Sub.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(300));
-                acks.Should().BeEmpty("a reserved but uncommitted sequence number must not be acknowledged by another connection");
-            }
-            finally
+            // The replay reaches the second connection while the first still holds seq 1; the barrier is
+            // released from another thread, so the second connection waits and then decides on what is left.
+            var releaser = Task.Run(async () =>
             {
+                await Task.Delay(400);
                 release.Set();
-            }
+            });
+            await healthy.Pub.SendNextAsync(Envelope(Sme(1L, peer, "m1"), peer.Uid));
+            await healthy.Sub.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(150)); // still waiting for the first connection
 
             (await failed.Sub.ExpectErrorAsync().WaitAsync(timeout)).Should().BeOfType<InvalidOperationException>();
+            await releaser;
 
-            // The sender's resend arrives after the reservation was aborted: now it is delivered.
-            await healthy.Pub.SendNextAsync(Envelope(Sme(1L, peer, "m1"), peer.Uid));
+            // The replay is delivered exactly once and acknowledged, with no further transmission.
+            await ackedOne.Task.WaitAsync(timeout);
             ((TestSystemMessage)(await healthy.Sub.ExpectNextAsync(timeout)).Message).Name.Should().Be("m1");
+            await healthy.Sub.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(200));
 
             if (deliverNext)
             {
                 await healthy.Pub.SendNextAsync(Envelope(Sme(2L, peer, "m2"), peer.Uid));
+                await ackedTwo.Task.WaitAsync(timeout);
                 ((TestSystemMessage)(await healthy.Sub.ExpectNextAsync(timeout)).Message).Name.Should().Be("m2");
             }
 
             healthy.Pub.SendComplete();
+        }
+
+        [Fact(DisplayName = "Should_PreserveRecoveryOpportunity_When_FirstConnectionFailsWhileReplayWaits")]
+        public async Task Should_PreserveRecoveryOpportunity_When_FirstConnectionFailsWhileReplayWaits()
+        {
+            var peer = NewRemotePeer();
+            var (registry, _, _) = NewContext(peer);
+            var timeout = TimeSpan.FromSeconds(3);
+            using var release = new System.Threading.ManualResetEventSlim();
+            var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var delivered = new System.Collections.Concurrent.ConcurrentQueue<object>();
+
+            var failing = new AssociationRegistryInboundContext(registry, NewLocal(), (_, _) =>
+            {
+                entered.TrySetResult(true);
+                if (!release.Wait(TimeSpan.FromSeconds(10)))
+                    throw new TimeoutException();
+                throw new InvalidOperationException("Ack failed before push");
+            });
+            var healthy = new AssociationRegistryInboundContext(registry, NewLocal(), (_, _) => { });
+            var failed = Materialize(failing);
+            var (replacementPub, _) = this.SourceProbe<IInboundEnvelope>()
+                .Via(Flow.FromGraph(new SystemMessageAckerStage(healthy)))
+                .ToMaterialized(Sink.ForEach<IInboundEnvelope>(e => delivered.Enqueue(e.Message)), Keep.Both)
+                .Run(ActorMaterializer.Create(Sys));
+
+            try
+            {
+                await failed.Sub.RequestAsync(1);
+                await failed.Pub.SendNextAsync(Envelope(Sme(1L, peer, "m1"), peer.Uid));
+                await entered.Task.WaitAsync(timeout);
+
+                // The replacement connection's eager replay arrives while the first connection is inside the Ack send.
+                var releaser = Task.Run(async () =>
+                {
+                    await Task.Delay(300);
+                    release.Set();
+                });
+                await replacementPub.SendNextAsync(Envelope(Sme(1L, peer, "m1"), peer.Uid));
+                delivered.Should().BeEmpty("the replay waits for the first connection");
+
+                (await failed.Sub.ExpectErrorAsync().WaitAsync(timeout)).Should().BeOfType<InvalidOperationException>();
+                await releaser;
+
+                // No further transmission by the sender: the replay that was waiting is delivered, once.
+                await AwaitAssertAsync(() => delivered.Count.Should().Be(1), timeout);
+            }
+            finally
+            {
+                release.Set();
+                replacementPub.SendComplete();
+            }
         }
     }
 }
