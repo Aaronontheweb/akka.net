@@ -86,6 +86,14 @@ namespace Akka.Remote.Artery
         public int InboundLaneBufferSize { get; }
 
         /// <summary>
+        /// Maximum number of <see cref="System.Threading.SpinWait"/> iterations an inbound lane's
+        /// consumer loop spins, after draining its queue, waiting for the next item before it parks.
+        /// 0 (the default) never spins. Irrelevant when <see cref="InboundLanes"/> is 1. Experimental
+        /// latency/CPU trade-off.
+        /// </summary>
+        public int InboundLaneSpinIterations { get; }
+
+        /// <summary>
         /// Number of independent, bounded ordinary-outbound channels ("lanes") each association
         /// fans ordinary-stream sends across, Pekko-faithful (<c>Association.scala</c>'s
         /// <c>outboundLanes</c>/<c>OrdinaryQueueIndex</c> array): a message's recipient uid is
@@ -333,6 +341,11 @@ namespace Akka.Remote.Artery
             if (InboundLaneBufferSize <= 0)
                 throw new ConfigurationException(
                     $"akka.remote.artery.advanced.inbound-lane-buffer-size must be greater than 0, but was [{InboundLaneBufferSize}].");
+
+            InboundLaneSpinIterations = arteryConfig.GetInt("advanced.inbound-lane-spin-iterations", 0);
+            if (InboundLaneSpinIterations < 0)
+                throw new ConfigurationException(
+                    $"akka.remote.artery.advanced.inbound-lane-spin-iterations must be >= 0, but was [{InboundLaneSpinIterations}].");
 
             TestMode = arteryConfig.GetBoolean("advanced.test-mode", false);
 
