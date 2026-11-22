@@ -397,23 +397,32 @@ namespace Akka.Remote.Tests.Artery
             }
         }
 
-        [Fact(DisplayName = "Should_dead_letter_a_reply_on_the_sending_side_When_the_association_peer_uid_is_not_the_ref_owner")]
-        public async Task Should_dead_letter_a_reply_on_the_sending_side_When_the_association_peer_uid_is_not_the_ref_owner()
+        [Fact(DisplayName = "Should_send_the_reply_with_its_explicit_owner_uid_and_have_the_receiver_dead_letter_it_When_the_association_peer_uid_is_not_the_ref_owner")]
+        public async Task Should_send_the_reply_with_its_explicit_owner_uid_and_have_the_receiver_dead_letter_it_When_the_association_peer_uid_is_not_the_ref_owner()
         {
             var (asker, responder, reports) = StartPair(true, true);
             try
             {
-                var deadLetters = CreateTestProbe(responder);
-                responder.EventStream.Subscribe(deadLetters, typeof(DeadLetter));
+                var askerDeadLetters = CreateTestProbe(asker);
+                asker.EventStream.Subscribe(askerDeadLetters, typeof(DeadLetter));
 
                 (await AskResponder(asker, responder, "ping")).Should().Be("pong");
                 var sender = (RemoteTempActorRef)await Next<IActorRef>(reports);
+                var ask = AskResponder(asker, responder, "hold");
+                var held = (RemoteTempActorRef)await Next<IActorRef>(reports);
 
-                var stale = new RemoteTempActorRef(
-                    TransportOf(responder), AddressOf(responder), sender.Association, AddressOf(asker), sender.OwnerUid + 1, sender.TempId);
-                stale.Tell("to-old-incarnation", ActorRefs.NoSender);
+                // The association's current peer is the asker, but the ref names another owner uid (as after a late
+                // handshake from an old incarnation flipped the association state). The sender does not second-guess
+                // it: the frame reaches the wire with the explicit owner and the receiver's fence dead-letters it.
+                var mismatched = new RemoteTempActorRef(
+                    TransportOf(responder), AddressOf(responder), sender.Association, AddressOf(asker), sender.OwnerUid + 1, held.TempId);
+                mismatched.Tell("to-another-incarnation", ActorRefs.NoSender);
 
-                await deadLetters.FishForMessageAsync<DeadLetter>(d => d.Message is "to-old-incarnation", Timeout);
+                await askerDeadLetters.FishForMessageAsync<DeadLetter>(d => d.Message is "to-another-incarnation", Timeout);
+                ask.IsCompleted.Should().BeFalse("a reply naming another owner uid must not complete a live Ask with the same counter");
+
+                held.Tell("to-the-live-ask", ActorRefs.NoSender);
+                (await ask).Should().Be("to-the-live-ask");
             }
             finally
             {

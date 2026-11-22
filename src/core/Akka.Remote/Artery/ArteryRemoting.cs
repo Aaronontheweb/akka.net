@@ -949,29 +949,28 @@ namespace Akka.Remote.Artery
 
             var association = recipient.Association;
 
-            // Incarnation fence: the ref names a temp ref of the peer incarnation that sent the request. If
-            // the association has since moved to another uid (restart, new handshake), the asker is gone.
+            // The incarnation fence is on the RECEIVER: the numeric record always carries the ref's explicit owner
+            // uid, and a receiver whose uid differs dead-letters it (DispatchToNumericRecipient). It is deliberately
+            // not checked here against the association's current peer: that state can briefly name another
+            // incarnation (a late handshake from an old one is applied after a new one), and dev would deliver.
             // The fence covers ONLY replies that take this numeric path. It does NOT cover: replies written as
             // literal paths (the responder has numeric-refs off, or the ref was obtained from a payload or a
             // forward, which are literal), system messages and selections (always by path), or any send while
             // the large-message stream is enabled. Those keep the pre-existing path-only behaviour.
-            if (association.CurrentState.UniqueRemoteAddress is not { } peer || peer.Uid != recipient.OwnerUid)
-            {
-                if (_log.IsDebugEnabled)
-                    _log.Debug(
-                        "Dead-lettering [{0}] addressed to temp ref [{1}] of uid [{2}]: the association's current peer is [{3}].",
-                        message.GetType(), recipient.TempId, recipient.OwnerUid,
-                        association.CurrentState.UniqueRemoteAddress is { } current ? current.Uid.ToString() : "unknown");
-                System.DeadLetters.Tell(message, sender);
-                return;
-            }
 
-            if (association.IsQuarantined(peer.Uid))
+            // Quarantine gate, as Send() does it for the association's current peer; also drop when the ref's own
+            // owner incarnation is quarantined.
+            var currentPeer = association.CurrentState.UniqueRemoteAddress;
+            var quarantinedUid =
+                currentPeer is { } peer && association.IsQuarantined(peer.Uid) ? peer.Uid
+                : association.IsQuarantined(recipient.OwnerUid) ? recipient.OwnerUid
+                : (long?)null;
+            if (quarantinedUid is { } uid)
             {
-                if (association.ShouldLogQuarantineDrop(peer.Uid))
+                if (association.ShouldLogQuarantineDrop(uid))
                     _log.Warning(
                         "Dropping messages to quarantined association [{0}] (uid [{1}]); further drops for this " +
-                        "association/uid will not be logged individually.", association.RemoteAddress, peer.Uid);
+                        "association/uid will not be logged individually.", association.RemoteAddress, uid);
 
                 System.DeadLetters.Tell(message, sender);
                 return;
