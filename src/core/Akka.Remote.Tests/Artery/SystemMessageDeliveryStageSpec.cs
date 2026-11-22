@@ -336,6 +336,55 @@ namespace Akka.Remote.Tests.Artery
             await AwaitAssertAsync(() => h.State.Buffer.Count.Should().Be(0), TimeSpan.FromSeconds(3));
         }
 
+        [Fact(DisplayName = "Should_PreserveNumbering_When_SupersededIncarnationHandshakesLate")]
+        public async Task Should_PreserveNumbering_When_SupersededIncarnationHandshakesLate()
+        {
+            var materializer = ActorMaterializer.Create(Sys);
+            var h = BuildHarness(materializer, resendInterval: TimeSpan.FromSeconds(30));
+            var oldPeer = h.CompleteHandshake(remoteUid: 776L);
+
+            await h.Sub.RequestAsync(4);
+            await h.Pub.SendNextAsync(SystemMessageElement("m1"));
+            await h.Sub.ExpectNextAsync(TimeSpan.FromSeconds(3));
+            h.DeliverControlMessage(oldPeer.Uid, new SysAck(1L, oldPeer));
+
+            // The peer restarts: a new incarnation, numbering starts again at 1.
+            var livePeer = h.CompleteHandshake(remoteUid: 777L);
+            await h.Pub.SendNextAsync(SystemMessageElement("m2"));
+            ((SystemMessageEnvelope)(await h.Sub.ExpectNextAsync(TimeSpan.FromSeconds(3))).Message).SeqNo.Should().Be(1L);
+            h.DeliverControlMessage(livePeer.Uid, new SysAck(1L, livePeer));
+            await AwaitAssertAsync(() => h.State.Buffer.Count.Should().Be(0), TimeSpan.FromSeconds(3));
+
+            // A delayed handshake of the superseded incarnation must not look like another restart.
+            h.CompleteHandshake(remoteUid: 776L);
+            await h.Pub.SendNextAsync(SystemMessageElement("m3"));
+            ((SystemMessageEnvelope)(await h.Sub.ExpectNextAsync(TimeSpan.FromSeconds(3))).Message).SeqNo.Should().Be(2L);
+        }
+
+        [Fact(DisplayName = "Should_AllowImmediateNackResend_When_DeliveryStateWasReset")]
+        public async Task Should_AllowImmediateNackResend_When_DeliveryStateWasReset()
+        {
+            var materializer = ActorMaterializer.Create(Sys);
+            var h = BuildHarness(materializer, resendInterval: TimeSpan.FromSeconds(30));
+            var peer = h.CompleteHandshake(remoteUid: 880L);
+
+            await h.Sub.RequestAsync(10);
+            await h.Pub.SendNextAsync(SystemMessageElement("m1"));
+            await h.Sub.ExpectNextAsync(TimeSpan.FromSeconds(3));
+
+            h.DeliverControlMessage(peer.Uid, new SysNack(0L, peer));
+            await h.Sub.ExpectNextAsync(TimeSpan.FromSeconds(2)); // the one immediate no-progress resend
+            h.DeliverControlMessage(peer.Uid, new SysNack(0L, peer));
+            await h.Sub.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(300)); // now suppressed
+
+            // A new incarnation resets the delivery state, including the suppression.
+            var newPeer = h.CompleteHandshake(remoteUid: 881L);
+            await h.Pub.SendNextAsync(SystemMessageElement("m2"));
+            ((SystemMessageEnvelope)(await h.Sub.ExpectNextAsync(TimeSpan.FromSeconds(3))).Message).SeqNo.Should().Be(1L);
+            h.DeliverControlMessage(newPeer.Uid, new SysNack(0L, newPeer));
+            ((SystemMessageEnvelope)(await h.Sub.ExpectNextAsync(TimeSpan.FromSeconds(2))).Message).SeqNo.Should().Be(1L);
+        }
+
         [Fact(DisplayName = "the resend timer periodically resends the whole unacknowledged window while any entry remains unacked")]
         public async Task Should_Resend_Unacked_Window_Periodically()
         {

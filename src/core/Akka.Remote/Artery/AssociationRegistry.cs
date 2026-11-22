@@ -1151,21 +1151,31 @@ namespace Akka.Remote.Artery
         /// snapshot, so <see cref="AssociationRegistry"/> can tell — without a separate,
         /// racy read — whether (and from what uid) an incarnation change just happened.
         /// </summary>
-        public (AssociationState Previous, AssociationState Updated) CompleteHandshake(UniqueAddress peer) =>
-            Transition(peer, static (state, p) => state.CompleteHandshake(p));
+        public (AssociationState Previous, AssociationState Updated) CompleteHandshake(UniqueAddress peer, bool notify = true) =>
+            Transition(peer, static (state, p) => state.CompleteHandshake(p), notify);
 
         /// <summary>
         /// As <see cref="CompleteHandshake"/>, but applying
         /// <see cref="AssociationState.CompleteOutboundHandshake"/> -- the only path that sets
         /// <see cref="AssociationState.OutboundHandshakeCompleted"/> (issue #8496).
         /// </summary>
-        public (AssociationState Previous, AssociationState Updated) CompleteOutboundHandshake(UniqueAddress peer) =>
-            Transition(peer, static (state, p) => state.CompleteOutboundHandshake(p));
+        public (AssociationState Previous, AssociationState Updated) CompleteOutboundHandshake(UniqueAddress peer, bool notify = true) =>
+            Transition(peer, static (state, p) => state.CompleteOutboundHandshake(p), notify);
 
+        /// <summary>
+        /// <paramref name="notify"/> false defers listener notification to the caller
+        /// (<see cref="NotifyHandshakeStateChanged"/>), which <see cref="AssociationRegistry"/> uses to
+        /// notify after releasing its lock. A handshake naming a retired uid is ignored entirely: no
+        /// generation increment, no state change, no notification.
+        /// </summary>
         private (AssociationState Previous, AssociationState Updated) Transition(
             UniqueAddress peer,
-            Func<AssociationState, UniqueAddress, AssociationState> transition)
+            Func<AssociationState, UniqueAddress, AssociationState> transition,
+            bool notify)
         {
+            if (_state.IsRetired(peer.Uid))
+                return (_state, _state);
+
             Interlocked.Increment(ref _handshakeGeneration);
 
             while (true)
@@ -1177,7 +1187,8 @@ namespace Akka.Remote.Artery
                 {
                     // A no-op on the SNAPSHOT is still an event: the generation counter advanced,
                     // and that is precisely what a restarted (ForceReqOnStart) stream waits for.
-                    NotifyHandshakeStateChanged();
+                    if (notify)
+                        NotifyHandshakeStateChanged();
                     return (current, current);
                 }
 
@@ -1185,7 +1196,8 @@ namespace Akka.Remote.Artery
                 // compiler-generated VALUE equality and a lost CAS could masquerade as a won one.
                 if (ReferenceEquals(Interlocked.CompareExchange(ref _state, updated, current), current))
                 {
-                    NotifyHandshakeStateChanged();
+                    if (notify)
+                        NotifyHandshakeStateChanged();
                     return (current, updated);
                 }
             }
@@ -1196,7 +1208,7 @@ namespace Akka.Remote.Artery
         /// state swap and the generation increment, so a woken subscriber always reads the snapshot
         /// the notification belongs to.
         /// </summary>
-        private void NotifyHandshakeStateChanged()
+        internal void NotifyHandshakeStateChanged()
         {
             foreach (var listener in _handshakeListeners.Values)
                 listener();
@@ -1260,26 +1272,26 @@ namespace Akka.Remote.Artery
         private readonly ConcurrentDictionary<long, Association> _byUid = new();
 
         /// <summary>
-        /// How many superseded ("retired") uids per association keep their expected system-message seq.
-        /// A late handshake can make a superseded uid eligible again; it then resumes where it left off
-        /// instead of restarting at seq 1 and being redelivered. Only if more than this many newer
-        /// incarnations of one address are registered while that late handshake is outstanding is the
-        /// oldest history evicted, and such a uid would restart at seq 1 if registered again.
-        /// </summary>
-        internal const int MaxRetiredUidsPerAssociation = 8;
-
-        /// <summary>
-        /// Next expected system-message seq per origin uid, shared by every inbound control connection
-        /// of this system. Guarded by <see cref="_inboundSeqLock"/>. Holds the entry of each association's
-        /// current uid plus at most <see cref="MaxRetiredUidsPerAssociation"/> retired uids per association
-        /// (see <see cref="AdvanceInboundSystemMessageSeq"/>).
+        /// Next expected system-message seq of each association's CURRENT uid, shared by every inbound
+        /// control connection of this system. Guarded by <see cref="_inboundSeqLock"/>; at most one entry
+        /// per association (see <see cref="AdvanceInboundSystemMessageSeq"/>).
         /// </summary>
         private readonly Dictionary<long, long> _inboundExpectedSeq = new();
 
-        /// <summary>Retired uids per association, oldest first. Guarded by <see cref="_inboundSeqLock"/>.</summary>
-        private readonly Dictionary<Association, List<long>> _retiredUids = new();
-
         private readonly object _inboundSeqLock = new();
+
+        /// <summary>Number of uids in the reverse index (test observability).</summary>
+        internal int UidIndexCount => _byUid.Count;
+
+        /// <summary>Number of stored inbound system-message expectations (test observability).</summary>
+        internal int InboundSequenceEntryCount
+        {
+            get
+            {
+                lock (_inboundSeqLock)
+                    return _inboundExpectedSeq.Count;
+            }
+        }
         private readonly int _outboundQueueCapacity;
         private readonly int _controlQueueCapacity;
         private readonly int _largeQueueCapacity;
@@ -1358,15 +1370,12 @@ namespace Akka.Remote.Artery
         /// </para>
         ///
         /// <para>
-        /// Lifecycle: an entry is created lazily at seq 1, only for an association's current uid. When
-        /// <see cref="Complete"/> supersedes that uid with a new incarnation, the entry is retired, not
-        /// deleted: eligibility is still decided by the uid index, the current-uid check and quarantine, but
-        /// the expectation survives so a uid made eligible again by a late handshake resumes exactly where it
-        /// was. At most <see cref="MaxRetiredUidsPerAssociation"/> retired entries are kept per association,
-        /// oldest evicted first, so the map is bounded by (1 + that) per association. Frames of a quarantined
-        /// uid are dropped upstream by <see cref="InboundQuarantineCheckStage"/> and its entry normally
-        /// remains until the uid is superseded; a quarantined uid stays quarantined, so keeping the entry
-        /// is harmless.
+        /// Lifecycle: an entry is created lazily at seq 1, only for an association's current uid, and
+        /// is removed in <see cref="Complete"/> when a different uid replaces it. The replaced uid is retired
+        /// in <see cref="AssociationState.RetiredUids"/> and can never become current again, so no history
+        /// has to be kept for it and the map holds at most one entry per association. Frames of a
+        /// quarantined uid are dropped upstream by <see cref="InboundQuarantineCheckStage"/> and its entry
+        /// normally remains until the uid is superseded.
         /// </para>
         /// </summary>
         public long AdvanceInboundSystemMessageSeq(long originUid, long seqNo)
@@ -1399,13 +1408,11 @@ namespace Akka.Remote.Artery
         /// Completes the handshake for <paramref name="remoteAddress"/> with peer
         /// <paramref name="peer"/>: materializes the address-keyed association if needed, applies
         /// the CAS transition, and maintains the uid reverse index per the policy documented on
-        /// this type.
+        /// this type. A peer uid that was already superseded (see <see cref="AssociationState.RetiredUids"/>)
+        /// is ignored.
         /// </summary>
-        public AssociationState CompleteHandshake(Address remoteAddress, UniqueAddress peer)
-        {
-            var association = AssociationFor(remoteAddress);
-            return Complete(association, peer, association.CompleteHandshake(peer));
-        }
+        public AssociationState CompleteHandshake(Address remoteAddress, UniqueAddress peer) =>
+            Complete(remoteAddress, peer, outbound: false);
 
         /// <summary>
         /// As <see cref="CompleteHandshake"/>, but records that the peer answered a
@@ -1413,57 +1420,42 @@ namespace Akka.Remote.Artery
         /// <see cref="AssociationState.OutboundHandshakeCompleted"/>. Called only from
         /// <see cref="InboundHandshakeStage"/>'s <c>HandleRsp</c>.
         /// </summary>
-        public AssociationState CompleteOutboundHandshake(Address remoteAddress, UniqueAddress peer)
+        public AssociationState CompleteOutboundHandshake(Address remoteAddress, UniqueAddress peer) =>
+            Complete(remoteAddress, peer, outbound: true);
+
+        /// <summary>
+        /// One critical section for the association state transition, the uid-index update and the retirement
+        /// of the superseded uid's sequence entry, so completions are totally ordered and a stale one cannot
+        /// overwrite a newer one. Listeners are notified after the lock is released. The lock is a leaf
+        /// lock: inside it only the association's lock-free CAS and immutable-state reads run.
+        /// </summary>
+        private AssociationState Complete(Address remoteAddress, UniqueAddress peer, bool outbound)
         {
             var association = AssociationFor(remoteAddress);
-            return Complete(association, peer, association.CompleteOutboundHandshake(peer));
-        }
+            AssociationState previous, updated;
 
-        /// <summary>Marks <paramref name="uid"/> retired for <paramref name="association"/>, evicting the oldest beyond the bound. Caller holds the lock.</summary>
-        private void Retire(Association association, long uid)
-        {
-            if (!_retiredUids.TryGetValue(association, out var retired))
-                _retiredUids[association] = retired = new List<long>();
-
-            retired.Remove(uid);
-            retired.Add(uid);
-            while (retired.Count > MaxRetiredUidsPerAssociation)
-            {
-                _inboundExpectedSeq.Remove(retired[0]);
-                retired.RemoveAt(0);
-            }
-        }
-
-        private AssociationState Complete(
-            Association association,
-            UniqueAddress peer,
-            (AssociationState Previous, AssociationState Updated) transition)
-        {
-            var (previous, updated) = transition;
-
-            // Same lock as AdvanceInboundSystemMessageSeq: a superseded uid leaves the index and is retired
-            // (its sequence state is kept, bounded) atomically, so a late frame cannot observe a half state.
             lock (_inboundSeqLock)
             {
-                // A retired uid that becomes eligible again is no longer retired; its history resumes.
-                // Done before retiring the uid it replaces, so that retirement cannot evict it.
-                if (_retiredUids.TryGetValue(association, out var retired))
-                    retired.Remove(peer.Uid);
+                (previous, updated) = outbound
+                    ? association.CompleteOutboundHandshake(peer, notify: false)
+                    : association.CompleteHandshake(peer, notify: false);
+
+                if (previous.IsRetired(peer.Uid))
+                    return updated; // fenced: no state change, no index change, no notification
 
                 if (!ReferenceEquals(previous, updated) &&
                     previous.UniqueRemoteAddress is { } previousPeer &&
                     previousPeer.Uid != peer.Uid)
                 {
-                    // Conditional remove: only removes if the old uid still points at THIS
-                    // association (a concurrent, newer mapping is never clobbered).
                     ((ICollection<KeyValuePair<long, Association>>)_byUid).Remove(
                         new KeyValuePair<long, Association>(previousPeer.Uid, association));
-                    Retire(association, previousPeer.Uid);
+                    _inboundExpectedSeq.Remove(previousPeer.Uid);
                 }
 
                 _byUid[peer.Uid] = association;
             }
 
+            association.NotifyHandshakeStateChanged();
             return updated;
         }
     }

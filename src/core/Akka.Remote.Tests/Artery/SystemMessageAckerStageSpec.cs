@@ -370,35 +370,154 @@ namespace Akka.Remote.Tests.Artery
             sentControl[^1].Message.Should().Be(new SysAck(3L, NewLocal()));
         }
 
-        [Fact(DisplayName = "Should_ResumeRetiredUid_When_WithinRetentionBound")]
-        public void Should_ResumeRetiredUid_When_WithinRetentionBound()
+        /// <summary>Runs <paramref name="older"/> and pauses it, from inside a handshake listener, right after its state transition.</summary>
+        private static async Task<(Task Older, System.Threading.ManualResetEventSlim Release)> StartPausedCompletionAsync(
+            AssociationRegistry registry, Association association, UniqueAddress older)
         {
-            var peers = Enumerable.Range(0, AssociationRegistry.MaxRetiredUidsPerAssociation + 1).Select(i => NewRemotePeer(300L + i)).ToArray();
-            var registry = new AssociationRegistry();
-            registry.CompleteHandshake(peers[0].Address, peers[0]);
-            registry.AdvanceInboundSystemMessageSeq(peers[0].Uid, 1L).Should().Be(1L);
+            var entered = new System.Threading.ManualResetEventSlim();
+            var release = new System.Threading.ManualResetEventSlim();
+            var armed = 1;
+            association.SubscribeHandshakeStateChanged(new object(), () =>
+            {
+                if (System.Threading.Interlocked.Exchange(ref armed, 0) == 1)
+                {
+                    entered.Set();
+                    release.Wait(TimeSpan.FromSeconds(10));
+                }
+            });
 
-            // The first uid ends up as the oldest of exactly MaxRetiredUidsPerAssociation retired uids.
-            foreach (var peer in peers.Skip(1))
-                registry.CompleteHandshake(peer.Address, peer);
-            registry.CompleteHandshake(peers[0].Address, peers[0]);
-
-            registry.AdvanceInboundSystemMessageSeq(peers[0].Uid, 99L).Should().Be(2L);
+            var task = Task.Run(() => registry.CompleteHandshake(older.Address, older));
+            (await Task.Run(() => entered.Wait(TimeSpan.FromSeconds(3)))).Should().BeTrue();
+            return (task, release);
         }
 
-        [Fact(DisplayName = "Should_RestartEvictedUidAtSeqOne_When_RetentionBoundIsExceeded")]
-        public void Should_RestartEvictedUidAtSeqOne_When_RetentionBoundIsExceeded()
+        [Fact(DisplayName = "Should_KeepCurrentUidEligible_When_OlderCompletionIsPausedAfterItsTransition")]
+        public async Task Should_KeepCurrentUidEligible_When_OlderCompletionIsPausedAfterItsTransition()
         {
-            var peers = Enumerable.Range(0, AssociationRegistry.MaxRetiredUidsPerAssociation + 2).Select(i => NewRemotePeer(300L + i)).ToArray();
+            var a = NewRemotePeer(222L);
+            var b = NewRemotePeer(223L);
             var registry = new AssociationRegistry();
-            registry.CompleteHandshake(peers[0].Address, peers[0]);
-            registry.AdvanceInboundSystemMessageSeq(peers[0].Uid, 1L).Should().Be(1L);
+            registry.CompleteHandshake(a.Address, a);
+            registry.AdvanceInboundSystemMessageSeq(a.Uid, 1L).Should().Be(1L);
+            var association = registry.AssociationFor(a.Address);
 
-            foreach (var peer in peers.Skip(1))
-                registry.CompleteHandshake(peer.Address, peer); // one more than the bound: the first uid is evicted
-            registry.CompleteHandshake(peers[0].Address, peers[0]);
+            // A -> B completes its transition and then pauses; B -> A completes while it is paused.
+            var (older, release) = await StartPausedCompletionAsync(registry, association, b);
+            try
+            {
+                registry.CompleteHandshake(a.Address, a);
+            }
+            finally
+            {
+                release.Set();
+                await older;
+            }
 
-            registry.AdvanceInboundSystemMessageSeq(peers[0].Uid, 99L).Should().Be(1L);
+            var currentUid = association.CurrentState.UniqueRemoteAddress!.Value.Uid;
+            registry.TryGetByUid(currentUid).Should().BeSameAs(association, "the association's current uid must stay indexed");
+            registry.AdvanceInboundSystemMessageSeq(currentUid, 1L).Should().NotBe(0L, "the current uid must stay eligible");
+        }
+
+        [Fact(DisplayName = "Should_KeepOneIndexAndSequenceEntry_When_DelayedNoOpCompletionsInterleaveWithRestarts")]
+        public async Task Should_KeepOneIndexAndSequenceEntry_When_DelayedNoOpCompletionsInterleaveWithRestarts()
+        {
+            var registry = new AssociationRegistry();
+            var first = NewRemotePeer(500L);
+            registry.CompleteHandshake(first.Address, first);
+            var association = registry.AssociationFor(first.Address);
+
+            var current = first;
+            for (var i = 1; i <= 5; i++)
+            {
+                registry.AdvanceInboundSystemMessageSeq(current.Uid, 1L).Should().Be(1L);
+                // A same-uid completion is paused after its transition while the peer restarts.
+                var (noOp, release) = await StartPausedCompletionAsync(registry, association, current);
+                var next = NewRemotePeer(500L + i);
+                try
+                {
+                    registry.CompleteHandshake(next.Address, next);
+                }
+                finally
+                {
+                    release.Set();
+                    await noOp;
+                }
+
+                current = next;
+            }
+
+            registry.AdvanceInboundSystemMessageSeq(current.Uid, 1L).Should().Be(1L);
+            registry.UidIndexCount.Should().Be(1);
+            registry.InboundSequenceEntryCount.Should().Be(1);
+        }
+
+        [Theory(DisplayName = "Should_IgnoreHandshake_When_SupersededUidArrivesLate")]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void Should_IgnoreHandshake_When_SupersededUidArrivesLate(bool responsePath)
+        {
+            var a = NewRemotePeer(222L);
+            var b = NewRemotePeer(223L);
+            var registry = new AssociationRegistry();
+            registry.CompleteHandshake(a.Address, a);
+            registry.CompleteHandshake(b.Address, b);
+            var association = registry.AssociationFor(a.Address);
+            var incarnation = association.CurrentState.Incarnation;
+            var generation = association.HandshakeGeneration;
+            var notifications = 0;
+            association.SubscribeHandshakeStateChanged(new object(), () => notifications++);
+
+            var state = responsePath ? registry.CompleteOutboundHandshake(a.Address, a) : registry.CompleteHandshake(a.Address, a);
+
+            state.UniqueRemoteAddress.Should().Be(b);
+            association.CurrentState.Incarnation.Should().Be(incarnation, "a superseded uid must not start another incarnation");
+            association.HandshakeGeneration.Should().Be(generation);
+            notifications.Should().Be(0);
+            registry.TryGetByUid(a.Uid).Should().BeNull();
+            registry.TryGetByUid(b.Uid).Should().BeSameAs(association);
+            registry.UidIndexCount.Should().Be(1);
+        }
+
+        [Fact(DisplayName = "Should_NotRedeliver_When_RetiredUidHandshakesAgainAfterManyRestarts")]
+        public async Task Should_NotRedeliver_When_RetiredUidHandshakesAgainAfterManyRestarts()
+        {
+            var oldPeer = NewRemotePeer(222L);
+            var (registry, context, _) = NewContext(oldPeer);
+            var (pub, sub) = Materialize(context);
+
+            await sub.RequestAsync(2);
+            await pub.SendNextAsync(Envelope(Sme(1L, oldPeer, "m1"), oldPeer.Uid));
+            await sub.ExpectNextAsync(TimeSpan.FromSeconds(3));
+
+            for (var i = 1; i <= 20; i++)
+            {
+                var peer = NewRemotePeer(222L + i);
+                registry.CompleteHandshake(peer.Address, peer);
+            }
+
+            registry.CompleteHandshake(oldPeer.Address, oldPeer);
+            registry.AssociationFor(oldPeer.Address).CurrentState.UniqueRemoteAddress!.Value.Uid.Should().Be(242L, "a retired uid must not become current again");
+
+            await pub.SendNextAsync(Envelope(Sme(1L, oldPeer, "m1-replay"), oldPeer.Uid));
+            await sub.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(300));
+            registry.InboundSequenceEntryCount.Should().BeLessOrEqualTo(1);
+        }
+
+        [Fact(DisplayName = "Should_KeepUidIneligible_When_QuarantinedUidIsRetiredAndHandshakesAgain")]
+        public void Should_KeepUidIneligible_When_QuarantinedUidIsRetiredAndHandshakesAgain()
+        {
+            var a = NewRemotePeer(222L);
+            var b = NewRemotePeer(223L);
+            var registry = new AssociationRegistry();
+            registry.CompleteHandshake(a.Address, a);
+            registry.AdvanceInboundSystemMessageSeq(a.Uid, 1L).Should().Be(1L);
+            registry.AssociationFor(a.Address).Quarantine(a.Uid).Should().BeTrue();
+
+            registry.CompleteHandshake(b.Address, b);
+            registry.CompleteHandshake(a.Address, a);
+
+            registry.AdvanceInboundSystemMessageSeq(a.Uid, 2L).Should().Be(0L);
+            registry.AssociationFor(a.Address).CurrentState.IsQuarantined(a.Uid).Should().BeTrue();
         }
     }
 }
