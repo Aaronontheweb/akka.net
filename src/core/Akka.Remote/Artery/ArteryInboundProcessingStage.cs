@@ -179,6 +179,7 @@ namespace Akka.Remote.Artery
         /// <see langword="null"/> (the default, and the only value when test-mode is off) disables
         /// the lane-path blackhole check entirely.
         /// </param>
+        /// <param name="flowDiagnostics">Flow-diagnostics counters, or <see langword="null"/> (the default) when disabled.</param>
         public ArteryInboundProcessingStage(
             int maxFrameLength,
             int maxLargeFrameLength,

@@ -421,6 +421,7 @@ namespace Akka.Remote.Artery
         /// </param>
         /// <param name="quarantineNotificationTimeout">Bounded best-effort retention, configured from handshake-timeout.</param>
         /// <param name="monotonicClock">Monotonic clock; injectable for deadline tests.</param>
+        /// <param name="flowCounters">Flow-diagnostics counters, or <see langword="null"/> when disabled.</param>
         public Association(
             Address remoteAddress,
             int outboundQueueCapacity = DefaultOutboundQueueCapacity,
@@ -1305,6 +1306,7 @@ namespace Akka.Remote.Artery
         /// gate B).
         /// </param>
         /// <param name="quarantineNotificationTimeout">Bounded notice retention from handshake-timeout.</param>
+        /// <param name="flowDiagnostics">Flow-diagnostics counters, or <see langword="null"/> when disabled.</param>
         public AssociationRegistry(
             int outboundQueueCapacity = Association.DefaultOutboundQueueCapacity,
             int controlQueueCapacity = Association.DefaultControlQueueCapacity,
