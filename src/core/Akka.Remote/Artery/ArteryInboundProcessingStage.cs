@@ -11,6 +11,7 @@ using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.Text;
+using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using Akka.Actor;
@@ -409,6 +410,14 @@ namespace Akka.Remote.Artery
             private Action<bool>? _onLaneWriteAvailable;
             private Action<Task<bool>>? _onLaneWriteReady;
 
+            /// <summary>Set first thing in <see cref="PostStop"/>, so a consumer that ends because the channels were completed is a normal shutdown.</summary>
+            private int _stopped;
+
+            /// <summary>The failure of the first lane consumer that ended while the stage was running.</summary>
+            private Exception? _laneFailure;
+
+            private Action<Exception>? _onLaneConsumerFailed;
+
             public Logic(ArteryInboundProcessingStage stage) : base(stage.Shape)
             {
                 _stage = stage;
@@ -418,6 +427,7 @@ namespace Akka.Remote.Artery
                 if (_stage.InboundLanes > 1)
                 {
                     _onLaneWriteAvailable = GetAsyncCallback<bool>(OnLaneWriteAvailable);
+                    _onLaneConsumerFailed = GetAsyncCallback<Exception>(e => FailStage(e));
                     _onLaneWriteReady = t =>
                     {
                         if (t.IsFaulted)
@@ -490,6 +500,13 @@ namespace Akka.Remote.Artery
 
             private void CompleteInputStage()
             {
+                // A lane consumer that ended abnormally wins over a normal completion.
+                if (Volatile.Read(ref _laneFailure) is { } laneFailure)
+                {
+                    FailStage(laneFailure);
+                    return;
+                }
+
                 // An unused connection can close cleanly. Once framing starts, natural EOF
                 // must coincide with a preamble/frame boundary, including after lane backpressure.
                 if ((!_preambleParsed && _preambleFilled != 0) || _frameParser is { HasBufferedBytes: true })
@@ -517,6 +534,7 @@ namespace Akka.Remote.Artery
             /// </summary>
             public override void PostStop()
             {
+                Volatile.Write(ref _stopped, 1);
                 if (_lanes is not null)
                 {
                     foreach (var lane in _lanes)
@@ -697,10 +715,14 @@ namespace Akka.Remote.Artery
                     lanes[i] = channel;
 
                     var reader = channel.Reader;
+                    var writer = channel.Writer;
                     var log = _laneLog;
                     var serialization = _stage.Serialization;
                     var dispatch = _stage.DispatchOrdinary!;
-                    _ = Task.Run(() => RunLaneConsumer(reader, serialization, dispatch, log));
+                    var laneIndex = i;
+                    // Runs once, when the consumer loop ends.
+                    _ = Task.Run(() => RunLaneConsumer(reader, serialization, dispatch, log))
+                        .ContinueWith(task => OnLaneConsumerExited(laneIndex, writer, task, log), TaskContinuationOptions.ExecuteSynchronously);
                 }
 
                 _lanes = lanes;
@@ -740,7 +762,7 @@ namespace Akka.Remote.Artery
                                 var message = serialization.Deserialize(item.Payload, item.SerializerId, item.Manifest);
                                 dispatch(message, item.SenderPath, item.RecipientPath, item.OriginUid);
                             }
-                            catch (Exception ex)
+                            catch (Exception ex) when (!Akka.IO.TlsCertificateSource.IsFatal(ex))
                             {
                                 log.Warning(
                                     ex,
@@ -751,10 +773,40 @@ namespace Akka.Remote.Artery
                         }
                     }
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (!Akka.IO.TlsCertificateSource.IsFatal(ex))
                 {
                     log.Warning(ex, "Inbound Artery lane consumer loop terminated unexpectedly.");
                 }
+            }
+
+            /// <summary>
+            /// Runs once per lane, on a pool thread, when its consumer loop has ended. The loop only ends normally
+            /// when its channel is completed, which only <see cref="PostStop"/> does; any other end (a fatal
+            /// exception, which the loop does not catch) leaves the reader routing to a lane that no longer drains.
+            /// The failure is recorded BEFORE the lane's channel is completed (that wakes a write parked on it, whose
+            /// handler must already see the failure), and the stage is failed through an async callback, so the
+            /// connection is torn down like an inline-mode dispatch failure.
+            /// </summary>
+            private void OnLaneConsumerExited(int laneIndex, ChannelWriter<LaneWorkItem> writer, Task consumer, ILoggingAdapter log)
+            {
+                Exception? error = consumer.IsFaulted ? consumer.Exception!.GetBaseException()
+                    : consumer.IsCanceled ? new OperationCanceledException()
+                    : null;
+
+                if (Volatile.Read(ref _stopped) != 0)
+                {
+                    writer.TryComplete(error);
+                    if (error is not null)
+                        log.Error(error, "Inbound Artery lane [{0}] consumer loop ended with an exception while the connection was stopping.", laneIndex);
+                    return;
+                }
+
+                var failure = new ArteryLaneConsumerException(laneIndex, error);
+                Interlocked.CompareExchange(ref _laneFailure, failure, null);
+                writer.TryComplete(error);
+
+                log.Error(error, "Inbound Artery lane [{0}] consumer loop ended unexpectedly; failing the connection.", laneIndex);
+                _onLaneConsumerFailed!(failure);
             }
 
             private void DrainReadyFramesLaneMode()
@@ -1019,6 +1071,14 @@ namespace Akka.Remote.Artery
             private void OnLaneWriteAvailable(bool available)
             {
                 _writeInFlight = false;
+
+                if (Volatile.Read(ref _laneFailure) is { } laneFailure)
+                {
+                    _parkedItem = default;
+                    FailStage(laneFailure);
+                    return;
+                }
+
                 var writer = _lanes![_parkedLaneIndex].Writer;
 
                 if (available && writer.TryWrite(_parkedItem))
@@ -1047,5 +1107,20 @@ namespace Akka.Remote.Artery
 
             #endregion
         }
+    }
+
+    /// <summary>
+    /// Fails an inbound connection whose lane consumer loop ended while the connection was still running.
+    /// <see cref="Exception.InnerException"/> is the exception that ended the loop, if there was one.
+    /// </summary>
+    internal sealed class ArteryLaneConsumerException : Exception
+    {
+        public ArteryLaneConsumerException(int laneIndex, Exception? inner)
+            : base($"Inbound Artery lane [{laneIndex}] consumer loop ended unexpectedly.", inner)
+        {
+            LaneIndex = laneIndex;
+        }
+
+        public int LaneIndex { get; }
     }
 }
