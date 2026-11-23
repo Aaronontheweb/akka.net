@@ -127,6 +127,23 @@ namespace Akka.Remote
         /// <param name="sender">The sender.</param>
         protected override void TellInternal(object message, IActorRef sender)
         {
+            // Everything this daemon receives comes from a peer and is handled synchronously on the calling
+            // thread, which for Artery is the inbound stream or a lane consumer. The known parses of
+            // peer-controlled names are guarded where they happen; this catch is the backstop for one that is
+            // missed, so a bad message is dropped instead of failing the connection. It is in the daemon's own
+            // receive, not around every recipient Tell, so ordinary actor delivery does not pass through it.
+            try
+            {
+                HandleTell(message, sender);
+            }
+            catch (Exception ex) when (!Akka.IO.TlsCertificateSource.IsFatal(ex))
+            {
+                Log.Warning(ex, "Dropping a [{0}] sent to RemoteSystemDaemon on [{1}] because handling it failed.", message.GetType(), Path.Address);
+            }
+        }
+
+        private void HandleTell(object message, IActorRef sender)
+        {
             //note: RemoteDaemon does not handle ActorSelection messages - those are handled directly by the RemoteActorRefProvider.
             if (message is IDaemonMsg)
             {
@@ -135,6 +152,14 @@ namespace Akka.Remote
             }
             else if (message is ActorSelectionMessage sel)
             {
+                // A serialized selection can carry an element of an unsupported kind (it deserializes to null).
+                if (sel.Elements is null || sel.Elements.Any(el => el is not (SelectChildName or SelectParent or SelectChildPattern)))
+                {
+                    Log.Warning("Ignoring ActorSelection with an unsupported element sent to RemoteSystemDaemon on [{0}]", Path.Address);
+                    _system.EventStream.Publish(new DeadLetter(sel, sender, this));
+                    return;
+                }
+
                 var iter = sel.Elements.Iterator();
 
                 (IEnumerable<string>, object) Rec(IImmutableList<string> acc)
@@ -169,8 +194,18 @@ namespace Akka.Remote
                 var child = GetChild(concatenatedChildNames.ToList());
                 if (child.IsNobody())
                 {
-                    var emptyRef = new EmptyLocalActorRef(_system.Provider,
-                        Path / sel.Elements.Select(el => el.ToString()), _system.EventStream);
+                    // The elements can hold a malformed name, which cannot form a path: dead-letter at the daemon's own path.
+                    ActorPath emptyPath;
+                    try
+                    {
+                        emptyPath = Path / sel.Elements.Select(el => el.ToString());
+                    }
+                    catch (FormatException)
+                    {
+                        emptyPath = Path;
+                    }
+
+                    var emptyRef = new EmptyLocalActorRef(_system.Provider, emptyPath, _system.EventStream);
                     emptyRef.Tell(sel, sender);
                 }
                 else
@@ -265,10 +300,29 @@ namespace Akka.Remote
             var supervisor = (IInternalActorRef) message.Supervisor;
             var parent = supervisor;
             Props props = message.Props;
-            if(ActorPath.TryParse(message.Path, out var childPath))
+            // The path is peer-controlled. TryParse reads the uid of the last segment only and the other segments
+            // stay literal text, so rebuilding the path can throw for any segment: parse and rebuild before creating anything.
+            ActorPath childPath;
+            bool parsed;
+            IEnumerable<string> subPath = null;
+            ActorPath p = null;
+            try
             {
-                IEnumerable<string> subPath = childPath.ElementsWithUid.Drop(1); //drop the /remote
-                ActorPath p = Path/subPath;
+                parsed = ActorPath.TryParse(message.Path, out childPath);
+                if (parsed)
+                {
+                    subPath = childPath.ElementsWithUid.Drop(1).ToList(); //drop the /remote
+                    p = Path / subPath;
+                }
+            }
+            catch (FormatException ex)
+            {
+                Log.Warning("Ignoring DaemonMsgCreate with a malformed path [{0}] sent to RemoteSystemDaemon on [{1}]: {2}", message.Path, Path.Address, ex.Message);
+                return;
+            }
+
+            if(parsed)
+            {
                 var s = subPath.Join("/");
                 var i = s.IndexOf("#", StringComparison.Ordinal);
                 var childName = i < 0 ? s : s.Substring(0, i); // extract the name without the UID
@@ -312,7 +366,19 @@ namespace Akka.Remote
             var n = 0;
             while (true)
             {
-                var (s, uid) = ActorCell.GetNameAndUid(path);
+                string s;
+                long uid;
+                try
+                {
+                    (s, uid) = ActorCell.GetNameAndUid(path);
+                }
+                catch (FormatException ex)
+                {
+                    // A malformed uid fragment can name no child, like an unknown name.
+                    Log.Warning("Ignoring malformed child name [{0}] sent to RemoteSystemDaemon on [{1}]: {2}", path, Path.Address, ex.Message);
+                    return Nobody.Instance;
+                }
+
                 if (TryGetChild(s, out var child))
                 {
                     if (uid != ActorCell.UndefinedUid && uid != child.Path.Uid)
