@@ -453,6 +453,9 @@ namespace Akka.Remote.Artery
                 {
                     SingleReader = true,
                     SingleWriter = false,
+                    // ChannelSource's read continuation posts to the stream interpreter. Let the
+                    // writer make that post directly when it wakes an idle ordinary lane.
+                    AllowSynchronousContinuations = true,
                     FullMode = BoundedChannelFullMode.Wait
                 });
             }

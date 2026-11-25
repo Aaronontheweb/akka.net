@@ -7,7 +7,9 @@
 
 #nullable enable
 
+using System;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Remote.Artery;
@@ -171,6 +173,33 @@ namespace Akka.Remote.Tests.Artery
         }
 
         // --- Bounded queues + backpressure (task group 8, design.md Decision 7 / Invariants) ---
+
+        [Theory(DisplayName = "Should notify a parked ordinary lane reader on the writer thread")]
+        [InlineData(0)]
+        [InlineData(3)]
+        public async Task Should_NotifyReaderOnWriterThread_When_OrdinaryLaneIsParked(int lane)
+        {
+            var association = new Association(AddressA, outboundLanes: 4);
+            var reader = association.LaneReader(lane);
+            var envelope = new OutboundEnvelope("wake", null, null);
+            // Register outside the test runner's synchronization context, like ChannelSource.
+            await Task.Run(() =>
+            {
+                var wait = reader.WaitToReadAsync().GetAwaiter();
+                Assert.False(wait.IsCompleted);
+                var notifiedThread = 0;
+                wait.OnCompleted(() =>
+                {
+                    if (wait.GetResult())
+                        Volatile.Write(ref notifiedThread, Environment.CurrentManagedThreadId);
+                });
+
+                Assert.True(association.TryEnqueueOutbound(envelope, lane));
+                Assert.Equal(Environment.CurrentManagedThreadId, Volatile.Read(ref notifiedThread));
+            });
+            Assert.True(reader.TryRead(out var received));
+            Assert.Same(envelope, received);
+        }
 
         [Fact(DisplayName = "Ordinary outbound queue accepts up to capacity, rejects the overflow, and resumes accepting once drained (task 8.5: no permanent wedge)")]
         public void Ordinary_queue_should_accept_to_capacity_reject_overflow_and_resume_after_drain()
